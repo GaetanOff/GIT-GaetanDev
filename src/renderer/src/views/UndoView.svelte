@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   import Icon from '@/components/Icon.svelte'
   import type { DeletedBranch, NewerTip, OperationKind, RepoOperationEntry } from '@shared/types'
   import { recordedDeleted, restoreDeleted } from '@/lib/actions'
@@ -45,36 +46,62 @@
     if (!app.repo || !gone.length) return
     const repo = app.repo.path
     const found = await app.run('Searching remotes', () => api['git:remoteSearch'](repo, gone.map(g => ({ name: g.name, sha: g.sha }))), { refresh: false })
-    if (!found) return
+    if (!found || app.repo?.path !== repo) return
     remoteSearched = true
     remoteNewer = Object.fromEntries(found.map(n => [n.name, n]))
     toast(found.length ? 'success' : 'info', found.length ? `Newer commits found for ${found.length} branch${found.length > 1 ? 'es' : ''}.` : 'Nothing newer on the remotes.')
   }
 
+  /**
+   * What the lists depend on. Status and refs objects are replaced on every
+   * refresh (each window focus), so the effects key on this string instead:
+   * they rerun only when HEAD or a branch really moved.
+   */
+  const repoState = $derived(`${app.repo?.path}|${app.status?.head}|${app.status?.branch}|${app.refs.branches.map(b => `${b.name}@${b.sha}`).join(',')}`)
+  let token = 0
+  let newerToken = 0
+  let lastRepo: string | undefined
+
   // Reload whenever HEAD or a branch moves, so the list is always current.
   $effect(() => {
-    const repo = app.repo?.path
-    void app.status?.head
-    void app.status?.branch
+    void repoState
+    const repo = untrack(() => app.repo?.path)
     if (!repo) return
+    if (repo !== lastRepo) {
+      // Another repository: results found for the previous one do not apply.
+      lastRepo = repo
+      localNewer = {}
+      remoteNewer = {}
+      remoteSearched = false
+    }
+    const t = ++token
     api['git:operations'](repo)
-      .then(o => { ops = o; error = null })
-      .catch(e => (error = asError(e).message))
-      .finally(() => (loading = false))
+      .then(o => { if (t === token) { ops = o; error = null } })
+      .catch(e => { if (t === token) error = asError(e).message })
+      .finally(() => { if (t === token) loading = false })
     // Deleted branches: exact tips recorded by the app win over guesses from the reflog.
-    void app.refs.branches
     api['git:deletedBranches'](repo).then(found => {
-      const exact: DeletedBranch[] = recordedDeleted().map(r => ({ ...r, subject: found.find(f => f.sha === r.sha)?.subject ?? '', source: 'app' }))
+      if (t !== token) return
+      const exact: DeletedBranch[] = untrack(recordedDeleted).map(r => ({ ...r, subject: found.find(f => f.sha === r.sha)?.subject ?? '', source: 'app' }))
       const names = new Set(exact.map(e => e.name))
       gone = [...exact, ...found.filter(f => !names.has(f.name))].sort((a, b) => b.date - a.date)
-      if (!gone.length) return
-      // Slower search (remote branches, unreferenced commits): fills in when ready.
-      searching = true
-      api['git:newerTips'](repo, gone.map(g => ({ name: g.name, sha: g.sha })))
-        .then(list => (localNewer = Object.fromEntries(list.map(n => [n.name, n]))))
-        .catch(() => (localNewer = {}))
-        .finally(() => (searching = false))
-    }).catch(() => (gone = []))
+    }).catch(() => { if (t === token) gone = [] })
+  })
+
+  /** The deleted branches and their known tips: the slow search reruns only when these change. */
+  const goneKey = $derived(gone.map(g => `${g.name}@${g.sha}`).join(','))
+  $effect(() => {
+    if (!goneKey) return
+    const repo = untrack(() => app.repo?.path)
+    const list = untrack(() => gone.map(g => ({ name: g.name, sha: g.sha })))
+    if (!repo) return
+    const t = ++newerToken
+    // Slower search (remote branches, unreferenced commits): fills in when ready.
+    searching = true
+    api['git:newerTips'](repo, list)
+      .then(found => { if (t === newerToken && app.repo?.path === repo) localNewer = Object.fromEntries(found.map(n => [n.name, n])) })
+      .catch(() => { if (t === newerToken) localNewer = {} })
+      .finally(() => { if (t === newerToken) searching = false })
   })
 
   async function restoreBranch(b: DeletedBranch, at: 'newest' | 'known' = 'newest') {
