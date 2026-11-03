@@ -3,10 +3,12 @@
   type Pick = 'ours' | 'theirs' | 'base' | 'ours+theirs' | 'theirs+ours' | 'custom'
   interface Resolution { pick: Pick; text?: string }
   const memory = new Map<string, Record<number, Resolution>>()
+  /** Unsaved Result editor text, by repo and path, so moving to another file loses nothing. */
+  const results = new Map<string, string>()
 </script>
 
 <script lang="ts">
-  import { tick } from 'svelte'
+  import { tick, untrack } from 'svelte'
   import Icon from './Icon.svelte'
   import DiffView from './DiffView.svelte'
   import Code from './Code.svelte'
@@ -27,8 +29,13 @@
   let draft = $state('')
   let showBase = $state(loadShowBase())
   let tab = $state<'resolve' | 'result' | 'diff'>('resolve')
+  /** This view is mounted per repository and file (see ChangesView), so the key is fixed. */
+  const resultKey = untrack(() => `${app.repo?.path}\0${path}`)
   /** The whole result file, edited freely; null until the Result tab is opened. */
-  let resultText = $state<string | null>(null)
+  let resultText = $state<string | null>(results.get(resultKey) ?? null)
+  $effect(() => {
+    if (resultText !== null) results.set(resultKey, resultText)
+  })
   let gutter = $state<HTMLDivElement>()
   let saving = $state(false)
   let body = $state<HTMLDivElement>()
@@ -218,6 +225,7 @@
       const text = file.eol === '\r\n' ? resultText.replace(/\r?\n/g, '\r\n') : resultText
       await api['git:resolveContent'](app.repo.path, path, text, file.encoding)
       memory.delete(`${app.repo.path}\0${path}`)
+      results.delete(resultKey)
       toast('success', `${basename(path)} resolved and staged.`)
     } catch (e) {
       toast('error', asError(e).message)

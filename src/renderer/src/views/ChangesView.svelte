@@ -232,7 +232,7 @@
 
   <section class="right">
     {#if source && app.selected?.area === 'conflicted'}
-      {#key app.selected.path}<ConflictView path={app.selected.path} />{/key}
+      {#key `${app.repo?.id}\0${app.selected.path}`}<ConflictView path={app.selected.path} />{/key}
     {:else if source}
       <DiffView {source} area={app.selected?.area ?? 'unstaged'} />
     {:else}
