@@ -104,6 +104,11 @@ export function contextMenu(e: MouseEvent, items: MenuItem[]): void {
   menu.open = true
 }
 
+/** The keys that open a context menu from the keyboard: the Menu key, or Shift+F10. */
+export function isMenuKey(e: KeyboardEvent): boolean {
+  return e.key === 'ContextMenu' || (e.key === 'F10' && e.shiftKey)
+}
+
 export function menuAt(el: HTMLElement, items: MenuItem[]): void {
   const r = el.getBoundingClientRect()
   menu.items = items

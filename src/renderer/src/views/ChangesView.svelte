@@ -11,7 +11,7 @@
   import { discardPaths, fileMenu, stagePaths, unstagePaths } from '@/lib/files'
   import { basename, dirname, statusStyle } from '@/lib/format'
   import { app, type Area } from '@/lib/state.svelte'
-  import { contextMenu, menuAt, openDialog } from '@/lib/ui.svelte'
+  import { contextMenu, isMenuKey, menuAt, openDialog } from '@/lib/ui.svelte'
 
   type Row = { kind: 'head'; area: Area; count: number } | { kind: 'file'; area: Area; file: FileChange }
 
@@ -113,6 +113,11 @@
     } else if (e.key === 'Delete' && app.selected && app.selected.area !== 'conflicted') {
       e.preventDefault()
       discardPaths(selectedPathsIn(app.selected.area))
+    } else if (isMenuKey(e) && app.selected && selectedFile) {
+      // The context menu from the keyboard, under the selected file.
+      e.preventDefault()
+      const el = (e.currentTarget as HTMLElement).querySelector<HTMLElement>('.file.sel')
+      if (el) menuAt(el, fileMenu(selectedFile, app.selected.area, selectedPathsIn(app.selected.area)))
     } else if (e.key === 'a' && (e.ctrlKey || e.metaKey) && app.selected) {
       e.preventDefault()
       const area = app.selected.area
@@ -146,6 +151,7 @@
 
     {#if fileCount}
       <div class="files-wrap" class:focused role="listbox" tabindex="0" aria-label="Changed files"
+        aria-activedescendant={selectedIndex >= 0 ? `file-${selectedIndex}` : undefined}
         onkeydown={onKey} onfocus={() => (focused = true)} onblur={() => (focused = false)}>
         <VirtualList bind:this={list} items={rows} rowHeight={28} class="files">
           {#snippet row(r: Row, i: number)}
@@ -167,7 +173,7 @@
               {@const sel = app.selected?.area === r.area && app.selected.path === r.file.path}
               {@const multi = app.multi.has(key(r.area, r.file.path))}
               <div
-                class="file" class:sel class:multi role="option" aria-selected={sel || multi} tabindex="-1"
+                id="file-{i}" class="file" class:sel class:multi role="option" aria-selected={sel || multi} tabindex="-1"
                 onclick={e => click(e, i, r.area, r.file)}
                 ondblclick={() => r.area !== 'conflicted' && toggleStage(r.area, [r.file.path])}
                 oncontextmenu={e => {

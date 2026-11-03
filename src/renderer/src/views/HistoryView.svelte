@@ -8,7 +8,7 @@
   import { commitMenu, commitsMenu } from '@/lib/actions'
   import { initials, relativeTime, shortSha, tone } from '@/lib/format'
   import { app } from '@/lib/state.svelte'
-  import { contextMenu, menuAt } from '@/lib/ui.svelte'
+  import { contextMenu, isMenuKey, menuAt } from '@/lib/ui.svelte'
   import type { SearchMode } from '@shared/types'
   import type { IconName } from '@/lib/icons'
 
@@ -95,6 +95,13 @@
     else if (e.key === 'PageUp') { e.preventDefault(); move(selectedIndex - 20) }
     else if (e.key === 'Home') { e.preventDefault(); move(0) }
     else if (e.key === 'End') { e.preventDefault(); move(app.commits.length - 1) }
+    else if (isMenuKey(e) && selectedIndex >= 0) {
+      // The context menu from the keyboard, under the selected commit.
+      e.preventDefault()
+      const el = (e.currentTarget as HTMLElement).querySelector<HTMLElement>('.commit.sel')
+      const c = app.commits[selectedIndex]
+      if (el) menuAt(el, picked.size > 1 && picked.has(c.sha) ? commitsMenu(app.commits.filter(x => picked.has(x.sha))) : commitMenu(c))
+    }
   }
 
   function onWindowKey(e: KeyboardEvent) {
@@ -150,13 +157,14 @@
       </div>
     {:else}
       <div class="list-wrap" class:focused role="listbox" tabindex="0" aria-label="Commits" onkeydown={onKey}
+        aria-activedescendant={selectedIndex >= 0 ? `commit-${selectedIndex}` : undefined}
         onfocus={() => (focused = true)} onblur={() => (focused = false)}>
         <VirtualList bind:this={list} items={app.commits} rowHeight={28} class="commits" onEnd={() => app.loadMoreHistory()}>
           {#snippet row(c: Commit, i: number)}
             {@const g = app.graph[i]}
             {@const t = tone(c.author)}
             <div
-              class="commit" class:sel={c.sha === app.selectedCommit} class:picked={picked.size > 1 && picked.has(c.sha)} role="option" aria-selected={c.sha === app.selectedCommit} tabindex="-1"
+              id="commit-{i}" class="commit" class:sel={c.sha === app.selectedCommit} class:picked={picked.size > 1 && picked.has(c.sha)} role="option" aria-selected={c.sha === app.selectedCommit} tabindex="-1"
               onclick={e => clickCommit(e, c, i)} onkeydown={() => undefined}
               oncontextmenu={e => commitContext(e, c)}
             >

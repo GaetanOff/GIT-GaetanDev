@@ -9,7 +9,7 @@
   import { api, asError } from '@/lib/api'
   import { basename, dirname, fullDate, initials, relativeTime, shortSha, statusStyle, tone } from '@/lib/format'
   import { app } from '@/lib/state.svelte'
-  import { contextMenu, toast, type MenuItem } from '@/lib/ui.svelte'
+  import { contextMenu, isMenuKey, menuAt, toast, type MenuItem } from '@/lib/ui.svelte'
 
   const PAGE = 300
   let last = app.fileTarget!
@@ -70,8 +70,22 @@
 
   const current = $derived(commits.find(c => c.sha === selected) ?? null)
 
+  function fileCommitMenu(c: FileCommit): MenuItem[] {
+    return [
+      { label: 'Show commit in history', icon: 'history', run: () => showCommit(c.sha) },
+      { label: 'Blame at this commit', icon: 'user', run: () => app.openFile(c.path, 'blame', c.sha) },
+      { label: 'Copy SHA', icon: 'copy', run: () => app.copy(c.sha, 'SHA copied') },
+    ]
+  }
+
   function historyKeys(e: KeyboardEvent) {
     const i = commits.findIndex(c => c.sha === selected)
+    if (isMenuKey(e) && i >= 0) {
+      e.preventDefault()
+      const el = (e.currentTarget as HTMLElement).querySelector<HTMLElement>('.fc.sel')
+      if (el) menuAt(el, fileCommitMenu(commits[i]))
+      return
+    }
     if (e.key === 'ArrowDown') { e.preventDefault(); selected = commits[Math.min(i + 1, commits.length - 1)]?.sha ?? selected }
     if (e.key === 'ArrowUp') { e.preventDefault(); selected = commits[Math.max(i - 1, 0)]?.sha ?? selected }
   }
@@ -172,11 +186,7 @@
                 {@const st = statusStyle(c.status || 'M')}
                 <div class="fc" class:sel={c.sha === selected} role="option" aria-selected={c.sha === selected} tabindex="-1"
                   onclick={() => (selected = c.sha)} onkeydown={() => undefined}
-                  oncontextmenu={e => { selected = c.sha; contextMenu(e, [
-                    { label: 'Show commit in history', icon: 'history', run: () => showCommit(c.sha) },
-                    { label: 'Blame at this commit', icon: 'user', run: () => app.openFile(c.path, 'blame', c.sha) },
-                    { label: 'Copy SHA', icon: 'copy', run: () => app.copy(c.sha, 'SHA copied') },
-                  ]) }}>
+                  oncontextmenu={e => { selected = c.sha; contextMenu(e, fileCommitMenu(c)) }}>
                   <div class="row1">
                     <span class="subject truncate">{c.subject}</span>
                     <span class="st" style="color:{st.color}" title={st.label}>{st.letter}</span>
