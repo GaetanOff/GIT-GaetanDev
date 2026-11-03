@@ -1,4 +1,7 @@
+import { open } from 'node:fs/promises'
+import { join } from 'node:path'
 import { git } from './exec'
+import { gitDir } from './status'
 
 /**
  * Git's built-in file system monitor (Windows and macOS, git 2.36+) answers
@@ -10,12 +13,27 @@ export async function fsmonitorInfo(repo: string): Promise<{ enabled: boolean; s
   const [cfg, version, files] = await Promise.all([
     git(repo, ['config', '--get', 'core.fsmonitor'], { okCodes: [1] }).then(r => r.stdout.trim()),
     git(repo, ['version']).then(r => r.stdout),
-    git(repo, ['ls-files', '-z']).then(r => r.raw.reduce((n, b) => (b === 0 ? n + 1 : n), 0)),
+    indexEntries(repo),
   ])
   const m = /(\d+)\.(\d+)/.exec(version)
   const recent = !!m && (+m[1] > 2 || (+m[1] === 2 && +m[2] >= 36))
   const supported = recent && (process.platform === 'win32' || process.platform === 'darwin')
   return { enabled: cfg === 'true', supported, files }
+}
+
+/** Files in the index, read from its header (bytes 8 to 11) instead of listing them all. */
+async function indexEntries(repo: string): Promise<number> {
+  try {
+    const fh = await open(join(await gitDir(repo), 'index'), 'r')
+    try {
+      const head = Buffer.alloc(12)
+      await fh.read(head, 0, 12, 0)
+      if (head.toString('latin1', 0, 4) === 'DIRC') return head.readUInt32BE(8)
+    } finally {
+      await fh.close()
+    }
+  } catch { /* no index yet, or unreadable: count below */ }
+  return git(repo, ['ls-files', '-z']).then(r => r.raw.reduce((n, b) => (b === 0 ? n + 1 : n), 0))
 }
 
 export async function setFsmonitor(repo: string, on: boolean): Promise<boolean> {
