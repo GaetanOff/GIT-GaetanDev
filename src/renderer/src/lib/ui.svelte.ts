@@ -50,6 +50,8 @@ export type Dialog =
   | { kind: 'stash' }
   | { kind: 'remote' }
   | { kind: 'shortcuts' }
+  | { kind: 'worktree'; branch?: string }
+  | { kind: 'output'; title: string; message?: string; text: string; actions?: { label: string; variant?: 'primary' | 'secondary' | 'danger'; run: () => void }[] }
 
 export const dialogs = $state<Dialog[]>([])
 
@@ -78,6 +80,11 @@ export function choose<T>(opts: { title: string; message: string; options: Choic
   return new Promise(resolve => {
     openDialog({ kind: 'choice', ...opts, resolve: resolve as (v: unknown) => void })
   })
+}
+
+/** Shows a command's full output (hook logs…), with optional follow-up actions. */
+export function showOutput(title: string, text: string, message?: string, actions?: { label: string; variant?: 'primary' | 'secondary' | 'danger'; run: () => void }[]): void {
+  openDialog({ kind: 'output', title, text, message, actions })
 }
 
 /* ─── Context menu ──────────────────────────────────────────────────────────── */

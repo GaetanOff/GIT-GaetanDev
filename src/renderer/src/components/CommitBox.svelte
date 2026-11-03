@@ -4,12 +4,73 @@
   import { undoLastCommit } from '@/lib/commands'
   import { initials, MOD, tone } from '@/lib/format'
   import { app } from '@/lib/state.svelte'
-  import { dialogs, openDialog, toast } from '@/lib/ui.svelte'
+  import { dialogs, menuAt, openDialog, showOutput, toast } from '@/lib/ui.svelte'
+  import { rank } from '@/lib/fuzzy'
+  import type { Author } from '@shared/types'
 
   let identity = $state<{ name: string; email: string; scope: string } | null>(null)
   let committing = $state(false)
   let summaryEl = $state<HTMLInputElement>()
   let amendBackup: { summary: string; body: string } | null = null
+  let setup = $state<{ template: string; signing: boolean }>({ template: '', signing: false })
+  let authors = $state.raw<Author[]>([])
+  let coOpen = $state(false)
+  let coQuery = $state('')
+  let coInput = $state<HTMLInputElement>()
+
+  // commit.template and commit.gpgsign, read once per repository.
+  $effect(() => {
+    const repo = app.repo?.path
+    if (!repo) return
+    api['git:commitSetup'](repo).then(s => {
+      setup = s
+      if (s.template && !app.draft.summary.trim() && !app.draft.body.trim()) Object.assign(app.draft, splitTemplate(s.template))
+    }).catch(() => undefined)
+  })
+
+  /** A commit template's first line is the summary, the rest the description. */
+  function splitTemplate(t: string): { summary: string; body: string } {
+    const [first, ...rest] = t.split('\n')
+    return { summary: first ?? '', body: rest.join('\n').trim() }
+  }
+
+  const coAuthors = $derived(app.draft.coAuthors ?? [])
+  const coResults = $derived(
+    rank(authors.filter(a => a.email !== identity?.email), coQuery, a => `${a.name} ${a.email}`, 12),
+  )
+
+  async function openCoAuthors() {
+    coOpen = !coOpen
+    coQuery = ''
+    if (coOpen && !authors.length && app.repo) authors = await api['git:authors'](app.repo.path).catch(() => [])
+    queueMicrotask(() => coInput?.focus())
+  }
+
+  function toggleCoAuthor(a: { name: string; email: string }) {
+    const line = `${a.name} <${a.email}>`
+    draft.coAuthors = coAuthors.includes(line) ? coAuthors.filter(x => x !== line) : [...coAuthors, line]
+    app.saveDrafts()
+  }
+
+  /** "Name <email>" typed by hand when the person never committed here. */
+  function addTyped() {
+    const m = /^(.+?)\s*<([^>]+@[^>]+)>$/.exec(coQuery.trim())
+    if (m) { toggleCoAuthor({ name: m[1], email: m[2] }); coQuery = '' }
+    else if (coResults[0]) toggleCoAuthor(coResults[0].item)
+  }
+
+  const TYPES = ['feat', 'fix', 'docs', 'style', 'refactor', 'perf', 'test', 'build', 'ci', 'chore', 'revert']
+  /** Conventional Commits prefix: replaces an existing "type(scope)!: " or adds one. */
+  function setType(e: MouseEvent) {
+    menuAt(e.currentTarget as HTMLElement, TYPES.map(type => ({
+      label: type, run: () => {
+        const m = /^(\w+)(\([^)]*\))?(!)?:\s*/.exec(draft.summary)
+        draft.summary = m ? `${type}${m[2] ?? ''}${m[3] ?? ''}: ${draft.summary.slice(m[0].length)}` : `${type}: ${draft.summary}`
+        app.saveDrafts()
+        summaryEl?.focus()
+      },
+    })))
+  }
 
   // Re-read after any dialog closes: the identity may have been edited in Settings.
   $effect(() => {
@@ -73,21 +134,32 @@
     app.saveDrafts()
   }
 
-  async function commit() {
+  async function commit(opts: { noVerify?: boolean } = {}) {
     if (!canCommit || !app.repo) return
     const repo = app.repo.path
-    const message = draft.body.trim() ? `${draft.summary.trim()}\n\n${draft.body.trim()}` : draft.summary.trim()
+    const trailers = coAuthors.map(c => `Co-authored-by: ${c}`).join('\n')
+    const body = [draft.body.trim(), trailers].filter(Boolean).join('\n\n')
+    const message = body ? `${draft.summary.trim()}\n\n${body}` : draft.summary.trim()
     committing = true
     app.busy = 'Committing'
     try {
       if (willStageAll) await api['git:stage'](repo, app.unstaged.map(f => f.path))
-      const sha = await api['git:commit'](repo, message, draft.amend)
-      Object.assign(draft, { summary: '', body: '', amend: false })
+      const sha = await api['git:commit'](repo, message, draft.amend, opts)
+      Object.assign(draft, { ...splitTemplate(setup.template), amend: false, coAuthors: [] })
       amendBackup = null
       app.saveDrafts()
       toast('success', `Committed ${sha.slice(0, 7)} to ${branch}.`, { label: 'Undo', run: undoLastCommit })
     } catch (e) {
-      toast('error', asError(e).message)
+      const err = asError(e) as { message: string; code?: string; details?: string }
+      // Hook output (linters, tests…) deserves more than a toast.
+      if (err.code === 'HOOK_FAILED' || (err.details && err.details.split('\n').length > 3)) {
+        showOutput(
+          err.code === 'HOOK_FAILED' ? 'Commit blocked by a hook' : 'Commit failed',
+          err.details ?? err.message,
+          err.code === 'HOOK_FAILED' ? 'A pre-commit or commit-msg hook rejected the commit. Fix what it reports, or commit without running hooks.' : undefined,
+          err.code === 'HOOK_FAILED' ? [{ label: 'Commit without hooks', variant: 'danger', run: () => commit({ noVerify: true }) }] : undefined,
+        )
+      } else toast('error', err.message)
     } finally {
       committing = false
       app.busy = null
@@ -157,15 +229,45 @@
     oninput={() => app.saveDrafts()}
     onkeydown={onKey}
   ></textarea>
+  {#if coAuthors.length}
+    <div class="chips">
+      {#each coAuthors as c (c)}
+        <span class="chip" title={c}><Icon name="user" size={11} />{c.replace(/ <.*$/, '')}<button onclick={() => { draft.coAuthors = coAuthors.filter(x => x !== c); app.saveDrafts() }} aria-label="Remove"><Icon name="x" size={10} /></button></span>
+      {/each}
+    </div>
+  {/if}
   <div class="opts">
     <label class="check" title="Rewrite the last commit with the staged changes and this message">
       <input type="checkbox" checked={draft.amend} onchange={toggleAmend} disabled={!app.status?.hasCommits} />
       Amend
     </label>
+    <button class="mini" onclick={setType} title="Conventional Commits type">type</button>
+    <div class="co">
+      <button class="mini" class:on={coAuthors.length} onclick={openCoAuthors} title="Add co-authors (Co-authored-by trailers)"><Icon name="user" size={11} />+</button>
+      {#if coOpen}
+        <div class="co-pop">
+          <input bind:this={coInput} bind:value={coQuery} class="input" placeholder="Search, or Name <email>" spellcheck="false"
+            onkeydown={e => { if (e.key === 'Enter') { e.preventDefault(); addTyped() } else if (e.key === 'Escape') { e.stopPropagation(); coOpen = false } }} />
+          <div class="co-list">
+            {#each coResults as { item } (item.email)}
+              {@const on = coAuthors.includes(`${item.name} <${item.email}>`)}
+              <button class="co-item" class:on onclick={() => toggleCoAuthor(item)}>
+                <Icon name={on ? 'check' : 'user'} size={12} />
+                <span class="grow truncate">{item.name} <span class="dim">{item.email}</span></span>
+                <span class="dim">{item.commits}</span>
+              </button>
+            {:else}
+              <div class="dim pad">{authors.length ? 'No match. Type Name <email> and press Enter.' : 'Loading…'}</div>
+            {/each}
+          </div>
+        </div>
+      {/if}
+    </div>
+    {#if setup.signing}<span class="signed" title="commit.gpgsign is on: commits are signed"><Icon name="lock" size={11} />Signed</span>{/if}
     <span class="grow"></span>
     <span class="hint"><kbd>{MOD}</kbd><kbd>↵</kbd></span>
   </div>
-  <button class="btn btn-primary lg block" disabled={!canCommit} onclick={commit} title={conflicts ? 'Resolve conflicts first' : ''}>
+  <button class="btn btn-primary lg block" disabled={!canCommit} onclick={() => commit()} title={conflicts ? 'Resolve conflicts first' : ''}>
     {#if committing}<span class="spinner"></span>{:else}<Icon name="commit" size={15} />{/if}
     <span class="truncate">{buttonLabel}</span>
   </button>
@@ -183,6 +285,21 @@
   .len { position: absolute; right: 9px; font-size: 10.5px; font-weight: 700; color: var(--text-faint); font-variant-numeric: tabular-nums; }
   .len.over { color: var(--red); }
   .body { min-height: 58px; font-size: 12.5px; }
+  .mini { height: 20px; padding: 0 6px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface-1); color: var(--text-faint); font-size: 10.5px; font-weight: 700; display: inline-flex; align-items: center; gap: 2px; margin-left: 6px; }
+  .mini:hover, .mini.on { color: #fff; background: var(--surface-3); }
+  .co { position: relative; }
+  .co-pop { position: absolute; bottom: calc(100% + 6px); left: 0; width: 320px; z-index: 50; padding: 6px; border-radius: var(--radius-lg); background: var(--overlay); border: 1px solid var(--border-strong); box-shadow: var(--shadow-pop); animation: popIn 120ms var(--ease-pop); }
+  .co-list { max-height: 220px; overflow-y: auto; margin-top: 4px; }
+  .co-item { width: 100%; display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 6px; border: none; border-radius: var(--radius-sm); background: none; color: #d1d5db; text-align: left; font-size: 12px; }
+  .co-item:hover { background: var(--surface-2); }
+  .co-item.on { color: #86efac; }
+  .dim { color: var(--text-faint); font-size: 11px; }
+  .pad { padding: 8px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; }
+  .chip { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 4px 0 6px; border-radius: 10px; background: var(--purple-soft); color: #e9d5ff; font-size: 11px; }
+  .chip button { border: none; background: none; color: inherit; display: flex; padding: 1px; border-radius: 50%; }
+  .chip button:hover { background: rgba(255, 255, 255, 0.15); }
+  .signed { display: inline-flex; align-items: center; gap: 3px; margin-left: 8px; font-size: 10.5px; font-weight: 700; color: #86efac; }
   .opts { display: flex; align-items: center; }
   .hint { display: flex; gap: 3px; opacity: 0.7; }
 </style>

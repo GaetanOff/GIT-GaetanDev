@@ -1,4 +1,4 @@
-import type { Commit, CommitDetail, CommitFile, LogQuery } from '@shared/types'
+import type { Commit, CommitDetail, CommitFile, LogQuery, Signature } from '@shared/types'
 import { git, gitOut } from './exec'
 
 const RS = '\x1e'
@@ -68,11 +68,15 @@ export async function commitDetail(repo: string, sha: string): Promise<CommitDet
   const meta = await gitOut(repo, ['show', '-s', `--format=${DETAIL_FORMAT}`, '--decorate=full', sha])
   const [h, parents, author, email, date, committer, committerEmail, committerDate, refs, subject, body] = meta.split(US)
   const parentList = parents ? parents.split(' ') : []
-  const files = await changedFiles(repo, parentList[0] ?? null, h)
+  const [files, sig] = await Promise.all([
+    changedFiles(repo, parentList[0] ?? null, h),
+    git(repo, ['show', '-s', '--format=%G?%x1f%GS%x1f%GK', h], { okCodes: [128] }).then(r => r.stdout.trim().split(US)).catch(() => ['N']),
+  ])
+  const signature = sig[0] && sig[0] !== 'N' ? { status: sig[0] as Signature['status'], signer: sig[1] ?? '', key: sig[2] ?? '' } : undefined
   return {
     sha: h, parents: parentList, author, email, date: +date, committer, committerEmail,
     committerDate: +committerDate, refs: refs ? refs.split(', ').map(cleanRef).filter(Boolean) : [],
-    subject, body: (body ?? '').trim(), files,
+    subject, body: (body ?? '').trim(), files, signature,
   }
 }
 

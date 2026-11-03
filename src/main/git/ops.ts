@@ -1,7 +1,9 @@
+import { existsSync } from 'node:fs'
 import { appendFile, readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { isAbsolute, join } from 'node:path'
 import { shell } from 'electron'
-import type { DiffOptions, LineSelection, Progress, PullMode, ResetMode, RepoStatus } from '@shared/types'
+import type { Author, DiffOptions, LineSelection, Progress, PullMode, ResetMode, RepoStatus } from '@shared/types'
 import { applyPatch, buildPartialPatch, diff } from './diff'
 import { git, gitOut, GitError } from './exec'
 import { currentBranch, defaultRemote, upstreamOf } from './refs'
@@ -30,19 +32,19 @@ export async function stageLines(repo: string, path: string, selection: LineSele
   if (untracked) await git(repo, ['add', '--intent-to-add', '--', path])
   const d = await diff(repo, { kind: 'worktree', path }, { ...opts, ignoreWhitespace: false, force: true })
   const patch = buildPartialPatch(d, selection, 'forward')
-  if (patch) await applyPatch(repo, patch, ['--cached'])
+  if (patch) await applyPatch(repo, patch, ['--cached'], d.encoding)
 }
 
 export async function unstageLines(repo: string, path: string, selection: LineSelection, opts = FULL_CONTEXT): Promise<void> {
   const d = await diff(repo, { kind: 'index', path }, { ...opts, ignoreWhitespace: false, force: true })
   const patch = buildPartialPatch(d, selection, 'reverse')
-  if (patch) await applyPatch(repo, patch, ['--cached', '--reverse'])
+  if (patch) await applyPatch(repo, patch, ['--cached', '--reverse'], d.encoding)
 }
 
 export async function discardLines(repo: string, path: string, selection: LineSelection, opts = FULL_CONTEXT): Promise<void> {
   const d = await diff(repo, { kind: 'worktree', path }, { ...opts, ignoreWhitespace: false, force: true })
   const patch = buildPartialPatch(d, selection, 'reverse')
-  if (patch) await applyPatch(repo, patch, ['--reverse'])
+  if (patch) await applyPatch(repo, patch, ['--reverse'], d.encoding)
 }
 
 /**
@@ -81,11 +83,44 @@ export async function ignore(repo: string, pattern: string): Promise<void> {
 
 /* ─── Commits ───────────────────────────────────────────────────────────────── */
 
-export async function commit(repo: string, message: string, amend: boolean): Promise<string> {
+export async function commit(repo: string, message: string, amend: boolean, opts: { noVerify?: boolean } = {}): Promise<string> {
   const args = ['commit', '-F', '-', '--cleanup=strip']
   if (amend) args.push('--amend')
-  await git(repo, args, { input: message })
+  if (opts.noVerify) args.push('--no-verify')
+  try {
+    await git(repo, args, { input: message })
+  } catch (e) {
+    // A failure git does not explain itself is almost always a pre-commit or commit-msg hook.
+    if (e instanceof GitError && !e.code && (await hasCommitHook(repo))) e.code = 'HOOK_FAILED'
+    throw e
+  }
   return (await gitOut(repo, ['rev-parse', 'HEAD'])).trim()
+}
+
+async function hasCommitHook(repo: string): Promise<boolean> {
+  const custom = (await git(repo, ['config', '--get', 'core.hooksPath'], { okCodes: [1] })).stdout.trim()
+  const dir = custom ? (isAbsolute(custom) ? custom : join(repo, custom)) : join(await gitDir(repo), 'hooks')
+  return ['pre-commit', 'commit-msg', 'prepare-commit-msg'].some(h => existsSync(join(dir, h)))
+}
+
+/** People who committed here, most active first: suggestions for co-authors. */
+export async function authors(repo: string): Promise<Author[]> {
+  const out = (await git(repo, ['shortlog', '-sne', '--all', 'HEAD'], { okCodes: [128] })).stdout
+  return out.split('\n').map(l => /^\s*(\d+)\s+(.+?) <([^>]+)>$/.exec(l)).filter(m => !!m)
+    .map(m => ({ commits: +m![1], name: m![2], email: m![3] })).slice(0, 300)
+}
+
+/** The commit.template file, without its comment lines, and whether commits get signed. */
+export async function commitSetup(repo: string): Promise<{ template: string; signing: boolean }> {
+  const read = (key: string) => git(repo, ['config', '--get', key], { okCodes: [1] }).then(r => r.stdout.trim())
+  const [templatePath, gpgsign] = await Promise.all([read('commit.template'), read('commit.gpgsign')])
+  let template = ''
+  if (templatePath) {
+    const file = templatePath.replace(/^~(?=[\\/])/, homedir())
+    const text = await readFile(isAbsolute(file) ? file : join(repo, file), 'utf8').catch(() => '')
+    template = text.split(/\r?\n/).filter(l => !l.startsWith('#')).join('\n').trim()
+  }
+  return { template, signing: gpgsign === 'true' }
 }
 
 /** The message git prepared for an in-progress merge, squash or cherry-pick, without comments. */
@@ -140,13 +175,23 @@ export async function skipOp(repo: string): Promise<void> {
   if (op && op !== 'merge') await git(repo, [op, '--skip'], NO_EDITOR)
 }
 
-export async function cherryPick(repo: string, sha: string): Promise<void> {
-  await git(repo, ['cherry-pick', sha], NO_EDITOR)
+/** Oldest first, so several picked commits land in their original order. */
+async function chronological(repo: string, shas: string[]): Promise<string[]> {
+  if (shas.length < 2) return shas
+  const order = (await gitOut(repo, ['rev-list', '--topo-order', '--no-walk', ...shas])).trim().split('\n')
+  return order.reverse()
 }
 
-export async function revert(repo: string, sha: string): Promise<void> {
-  const parents = (await gitOut(repo, ['rev-list', '--parents', '-n1', sha])).trim().split(' ').length - 1
-  await git(repo, ['revert', '--no-edit', ...(parents > 1 ? ['-m', '1'] : []), sha], NO_EDITOR)
+export async function cherryPick(repo: string, shas: string[]): Promise<void> {
+  await git(repo, ['cherry-pick', ...(await chronological(repo, shas))], NO_EDITOR)
+}
+
+/** Reverts newest first, so each revert applies cleanly on top of the previous one. */
+export async function revert(repo: string, shas: string[]): Promise<void> {
+  const ordered = (await chronological(repo, shas)).reverse()
+  const merges = await Promise.all(ordered.map(async sha => (await gitOut(repo, ['rev-list', '--parents', '-n1', sha])).trim().split(' ').length > 2))
+  if (merges.some(Boolean) && ordered.length > 1) throw new GitError('Revert merge commits one at a time.')
+  await git(repo, ['revert', '--no-edit', ...(merges[0] ? ['-m', '1'] : []), ...ordered], NO_EDITOR)
 }
 
 export async function reset(repo: string, sha: string, mode: ResetMode): Promise<void> {
@@ -300,7 +345,7 @@ export async function deleteRemoteBranch(repo: string, remote: string, branch: s
 
 export async function clone(url: string, parent: string, name: string, report: Reporter): Promise<void> {
   try {
-    await git(parent, ['clone', '--progress', '--', url, name], { onStderrLine: progressHandler('clone', `Cloning ${name}`, report) })
+    await git(parent, ['clone', '--progress', '--recurse-submodules', '--', url, name], { onStderrLine: progressHandler('clone', `Cloning ${name}`, report) })
   } finally {
     report(null)
   }

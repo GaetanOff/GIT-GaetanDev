@@ -5,7 +5,7 @@
   import GraphCell from '@/components/GraphCell.svelte'
   import CommitDetail from '@/components/CommitDetail.svelte'
   import type { Commit } from '@shared/types'
-  import { commitMenu } from '@/lib/actions'
+  import { commitMenu, commitsMenu } from '@/lib/actions'
   import { initials, relativeTime, shortSha, tone } from '@/lib/format'
   import { app } from '@/lib/state.svelte'
   import { contextMenu, menuAt } from '@/lib/ui.svelte'
@@ -37,6 +37,42 @@
     { id: 'content', label: 'Code: added or removed text', icon: 'code', hint: '-S', placeholder: 'Text added or removed in a commit' },
     { id: 'regex', label: 'Code: diff matches a regex', icon: 'code', hint: '-G', placeholder: 'Regex matched by a changed line' },
   ]
+
+  /** Extra commits picked with Ctrl/Shift-click, for cherry-picking or reverting several at once. */
+  let picked = $state<Set<string>>(new Set())
+  let anchor = -1
+  $effect(() => {
+    void app.commits
+    picked = new Set()
+  })
+
+  function clickCommit(e: MouseEvent, c: Commit, i: number) {
+    if (e.shiftKey && anchor >= 0) {
+      const [a, b] = [Math.min(anchor, i), Math.max(anchor, i)]
+      picked = new Set(app.commits.slice(a, b + 1).map(x => x.sha))
+    } else if (e.ctrlKey || e.metaKey) {
+      const next = new Set(picked.size ? picked : [app.selectedCommit ?? c.sha])
+      if (next.has(c.sha)) next.delete(c.sha)
+      else next.add(c.sha)
+      picked = next
+      anchor = i
+    } else {
+      picked = new Set()
+      anchor = i
+    }
+    app.selectedCommit = c.sha
+  }
+
+  function commitContext(e: MouseEvent, c: Commit) {
+    if (picked.size > 1 && picked.has(c.sha)) {
+      // History order is newest first; actions get the same order.
+      contextMenu(e, commitsMenu(app.commits.filter(x => picked.has(x.sha))))
+      return
+    }
+    picked = new Set()
+    app.selectedCommit = c.sha
+    contextMenu(e, commitMenu(c))
+  }
 
   function onSearch(e: Event) {
     app.historySearch = (e.target as HTMLInputElement).value
@@ -120,9 +156,9 @@
             {@const g = app.graph[i]}
             {@const t = tone(c.author)}
             <div
-              class="commit" class:sel={c.sha === app.selectedCommit} role="option" aria-selected={c.sha === app.selectedCommit} tabindex="-1"
-              onclick={() => (app.selectedCommit = c.sha)} onkeydown={() => undefined}
-              oncontextmenu={e => { app.selectedCommit = c.sha; contextMenu(e, commitMenu(c)) }}
+              class="commit" class:sel={c.sha === app.selectedCommit} class:picked={picked.size > 1 && picked.has(c.sha)} role="option" aria-selected={c.sha === app.selectedCommit} tabindex="-1"
+              onclick={e => clickCommit(e, c, i)} onkeydown={() => undefined}
+              oncontextmenu={e => commitContext(e, c)}
             >
               {#if g}<div class="g" style="width:{lanes * 14 + 4}px"><GraphCell row={g} {lanes} head={c.sha === headSha} /></div>{/if}
               <span class="subject truncate">
@@ -175,6 +211,7 @@
   .commit { display: flex; align-items: center; gap: 8px; height: 28px; padding-right: 10px; padding-left: 4px; }
   .commit:hover { background: var(--surface-1); }
   .commit.sel { background: var(--surface-3); }
+  .commit.picked { background: rgba(192, 132, 252, 0.12); box-shadow: inset 2px 0 0 var(--purple); }
   .focused .commit.sel { background: rgba(74, 222, 128, 0.13); box-shadow: inset 2px 0 0 var(--green); }
   .g { flex-shrink: 0; overflow: hidden; }
   .subject { flex: 1; display: flex; align-items: center; gap: 5px; }

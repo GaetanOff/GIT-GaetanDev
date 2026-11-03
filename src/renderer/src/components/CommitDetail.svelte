@@ -104,6 +104,14 @@
         </span>
         <span class="dim" title={fullDate(detail.date)}>{relativeTime(detail.date)}</span>
         {#if coAuthored}<span class="dim">committed by {coAuthored}</span>{/if}
+        {#if detail.signature}
+          {@const sg = detail.signature}
+          <span class="sig {sg.status === 'G' ? 'ok' : sg.status === 'U' ? 'warn' : sg.status === 'B' || sg.status === 'R' ? 'bad' : 'warn'}"
+            title="{sg.signer ? `Signed by ${sg.signer}` : 'Signed'}{sg.key ? `\nKey ${sg.key}` : ''}">
+            <Icon name="lock" size={11} />
+            {sg.status === 'G' ? 'Verified' : sg.status === 'U' ? 'Signed, untrusted key' : sg.status === 'B' ? 'Bad signature' : sg.status === 'R' ? 'Revoked key' : sg.status === 'X' || sg.status === 'Y' ? 'Expired' : 'Signed, unverified'}
+          </span>
+        {/if}
       </div>
       <div class="facts">
         {#if stash === undefined}
@@ -159,6 +167,10 @@
   .who b { color: #e5e7eb; font-weight: 600; }
   .av { width: 20px; height: 20px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 8.5px; font-weight: 800; }
   .dim { color: var(--text-faint); }
+  .sig { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 7px; border-radius: 10px; font-size: 10.5px; font-weight: 700; }
+  .sig.ok { background: var(--green-soft); color: #86efac; }
+  .sig.warn { background: var(--amber-soft); color: #fde68a; }
+  .sig.bad { background: var(--red-soft); color: #fca5a5; }
   .chip {
     display: inline-flex; align-items: center; gap: 5px; height: 22px; padding: 0 7px; border-radius: var(--radius-sm);
     border: 1px solid var(--border); background: var(--surface-1); color: var(--text-muted); font-size: 11px;

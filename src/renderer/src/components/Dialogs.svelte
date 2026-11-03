@@ -4,6 +4,7 @@
   import SettingsDialog from './dialogs/SettingsDialog.svelte'
   import BranchDialog from './dialogs/BranchDialog.svelte'
   import ShortcutsDialog from './dialogs/ShortcutsDialog.svelte'
+  import WorktreeDialog from './dialogs/WorktreeDialog.svelte'
   import { api } from '@/lib/api'
   import { app } from '@/lib/state.svelte'
   import { closeDialog, dialogs, type Dialog } from '@/lib/ui.svelte'
@@ -156,6 +157,23 @@
       <BranchDialog from={top.from} fromLabel={top.fromLabel} name={top.name} onclose={() => closeDialog(top)} />
     {:else if top.kind === 'shortcuts'}
       <ShortcutsDialog onclose={() => closeDialog(top)} />
+    {:else if top.kind === 'worktree'}
+      <WorktreeDialog branch={top.branch} onclose={() => closeDialog(top)} />
+    {:else if top.kind === 'output'}
+      <Modal title={top.title} icon="terminal" tone="red" width={760} onclose={() => closeDialog(top)}>
+        {#if top.message}<p class="msg">{top.message}</p>{/if}
+        <pre class="output mono">{top.text || '(no output)'}</pre>
+        {#snippet footer()}
+          <button type="button" class="btn btn-ghost" onclick={() => top.kind === 'output' && app.copy(top.text, 'Output copied')}>Copy</button>
+          <span style="flex:1"></span>
+          <button type="button" class="btn btn-secondary" onclick={() => closeDialog(top)}>Close</button>
+          {#if top.kind === 'output'}
+            {#each top.actions ?? [] as a}
+              <button type="button" class="btn btn-{a.variant ?? 'secondary'}" onclick={() => { closeDialog(top); a.run() }}>{a.label}</button>
+            {/each}
+          {/if}
+        {/snippet}
+      </Modal>
     {/if}
   {/key}
 {/if}
@@ -169,4 +187,5 @@
   .field { margin-top: 14px; }
   .err { font-size: 11.5px; color: var(--red); }
   .pw { display: flex; gap: 6px; align-items: center; }
+  .output { margin: 8px 0 0; max-height: 52vh; overflow: auto; padding: 12px 14px; border-radius: var(--radius-lg); background: #070b10; border: 1px solid var(--border); color: #d1d5db; font-size: 11.5px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; user-select: text; }
 </style>

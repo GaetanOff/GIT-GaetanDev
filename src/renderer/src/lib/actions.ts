@@ -151,13 +151,53 @@ export function commitMenu(c: Commit): MenuItem[] {
       if (ok) await app.run('Checking out', () => api['git:checkoutCommit'](repo(), c.sha))
     } },
     'sep',
-    { label: 'Cherry-pick onto current branch', icon: 'commit', disabled: !onBranch, run: () => app.run('Cherry-picking', () => api['git:cherryPick'](repo(), c.sha), { success: `Cherry-picked ${shortSha(c.sha)}.` }) },
+    { label: 'Cherry-pick onto current branch', icon: 'commit', disabled: !onBranch, run: () => app.run('Cherry-picking', () => api['git:cherryPick'](repo(), [c.sha]), { success: `Cherry-picked ${shortSha(c.sha)}.` }) },
     { label: 'Revert this commit', icon: 'undo', disabled: !onBranch, run: async () => {
       const ok = await confirm({ title: 'Revert commit?', message: `A new commit will undo the changes of “${c.subject}”.`, confirmLabel: 'Revert' })
-      if (ok) await app.run('Reverting', () => api['git:revert'](repo(), c.sha), { success: 'Revert commit created.' })
+      if (ok) await app.run('Reverting', () => api['git:revert'](repo(), [c.sha]), { success: 'Revert commit created.' })
     } },
     { label: 'Reset current branch to here…', icon: 'undo', danger: true, disabled: !onBranch, run: () => resetTo(c) },
   ]
+}
+
+/** Actions on several selected commits in History. */
+export function commitsMenu(list: Commit[]): MenuItem[] {
+  const onBranch = !!app.status?.branch
+  const n = list.length
+  const shas = list.map(c => c.sha)
+  return [
+    { label: `Cherry-pick ${n} commits onto ${app.status?.branch ?? 'HEAD'}`, icon: 'commit', disabled: !onBranch, run: () => app.run('Cherry-picking', () => api['git:cherryPick'](repo(), shas), { success: `Cherry-picked ${n} commits.` }) },
+    { label: `Revert ${n} commits`, icon: 'undo', disabled: !onBranch, run: async () => {
+      const ok = await confirm({ title: `Revert ${n} commits?`, message: 'One revert commit is created per commit, newest first.', confirmLabel: 'Revert' })
+      if (ok) await app.run('Reverting', () => api['git:revert'](repo(), shas), { success: `Reverted ${n} commits.` })
+    } },
+    'sep',
+    { label: 'Compare oldest and newest', icon: 'split', run: () => app.openCompare(`${list[list.length - 1].sha}^`, list[0].sha, false) },
+    { label: 'Copy SHAs', icon: 'copy', run: () => app.copy(shas.join('\n'), `${n} SHAs copied`) },
+  ]
+}
+
+/** A branch dropped on another one: merge it in, or rebase onto it. */
+export async function dropBranch(dragged: string, target: string): Promise<void> {
+  if (dragged === target) return
+  const current = app.status?.branch
+  const choice = await choose({
+    title: `${dragged} → ${target}`,
+    message: target === current
+      ? `Merge ${dragged} into the current branch, or replay ${target} on top of ${dragged}?`
+      : `${target} is not checked out: it is switched to first, then the operation runs.`,
+    options: [
+      { label: `Merge into ${target}`, value: 'merge' as const, variant: 'primary' },
+      { label: `Rebase ${target} onto it`, value: 'rebase' as const, variant: 'secondary' },
+    ],
+  })
+  if (!choice) return
+  if (target !== current) {
+    await app.checkout(target)
+    if (app.status?.branch !== target) return
+  }
+  if (choice === 'merge') await mergeInto(dragged)
+  else await rebaseOnto(dragged)
 }
 
 /* ─── Tags & stashes ────────────────────────────────────────────────────────── */
