@@ -46,6 +46,15 @@ export function setGitEnv(env: NodeJS.ProcessEnv): void {
 
 const GLOBAL_ARGS = ['-c', 'core.quotepath=false', '-c', 'color.ui=false', '-c', 'i18n.logOutputEncoding=UTF-8']
 
+/** The git command an argument list runs: "stash" for ['-c', 'k=v', 'stash', 'push']. */
+function subcommand(args: string[]): string | undefined {
+  for (let i = 0; i < args.length; i++) {
+    if (args[i] === '-c') i++
+    else if (!args[i].startsWith('-')) return args[i]
+  }
+  return undefined
+}
+
 /**
  * Runs git and resolves with its output. Rejects with a GitError whose message
  * is the last meaningful stderr line, and whose code classifies the failure.
@@ -64,7 +73,9 @@ export function git(cwd: string, args: string[], opts: ExecOptions = {}): Promis
         GIT_OPTIONAL_LOCKS: '0',
         GIT_PAGER: 'cat',
         // Paths are file names, not patterns: discarding "a[1].txt" must not touch "a1.txt".
-        GIT_LITERAL_PATHSPECS: '1',
+        // Except for stash, whose own pathspec magic (":/" to clear stashed untracked files)
+        // breaks in literal mode: callers give it ":(literal)" paths instead.
+        GIT_LITERAL_PATHSPECS: subcommand(args) === 'stash' ? '0' : '1',
         ...opts.env,
       },
     })

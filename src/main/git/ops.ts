@@ -289,7 +289,8 @@ export async function stash(repo: string, message: string, includeUntracked: boo
   const args = ['stash', 'push']
   if (includeUntracked) args.push('--include-untracked')
   if (message.trim()) args.push('-m', message.trim())
-  if (paths?.length) args.push('--', ...paths)
+  // stash runs without the literal pathspec mode (see exec): mark each path literal itself.
+  if (paths?.length) args.push('--', ...paths.map(p => `:(literal)${p}`))
   await git(repo, args)
 }
 
