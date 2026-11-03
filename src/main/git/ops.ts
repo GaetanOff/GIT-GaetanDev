@@ -3,7 +3,7 @@ import { appendFile, copyFile, lstat, mkdir, readFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { basename, isAbsolute, join } from 'node:path'
 import { shell } from 'electron'
-import type { Author, DiffOptions, LineSelection, Progress, PullMode, ResetMode, RepoStatus } from '@shared/types'
+import { selectionFingerprint, type Author, type DiffOptions, type FileDiff, type LineSelection, type Progress, type PullMode, type ResetMode, type RepoStatus } from '@shared/types'
 import { applyPatch, buildPartialPatch, diff } from './diff'
 import { assertRefName, git, gitOut, GitError } from './exec'
 import { currentBranch, defaultRemote, upstreamOf } from './refs'
@@ -29,10 +29,18 @@ export async function unstage(repo: string, paths: string[]): Promise<void> {
 
 const FULL_CONTEXT: DiffOptions = { context: 3, ignoreWhitespace: false, force: true }
 
-export async function stageLines(repo: string, path: string, selection: LineSelection, untracked: boolean, opts = FULL_CONTEXT): Promise<void> {
+/** Refuses a line operation whose selection no longer points at the lines the user saw. */
+function sameSelection(d: FileDiff, selection: LineSelection, expect?: string): void {
+  if (expect !== undefined && selectionFingerprint(d, selection) !== expect) {
+    throw new GitError('The file changed since its diff was shown. Look at the new diff and select the lines again.')
+  }
+}
+
+export async function stageLines(repo: string, path: string, selection: LineSelection, untracked: boolean, opts = FULL_CONTEXT, expect?: string): Promise<void> {
   if (untracked) await git(repo, ['add', '--intent-to-add', '--', path])
   try {
     const d = await diff(repo, { kind: 'worktree', path }, { ...opts, ignoreWhitespace: false, force: true })
+    sameSelection(d, selection, expect)
     const patch = buildPartialPatch(d, selection, 'forward')
     if (patch) await applyPatch(repo, patch, ['--cached'], d.encoding)
     else if (untracked) await git(repo, ['rm', '--cached', '-q', '--', path])
@@ -43,14 +51,17 @@ export async function stageLines(repo: string, path: string, selection: LineSele
   }
 }
 
-export async function unstageLines(repo: string, path: string, selection: LineSelection, opts = FULL_CONTEXT): Promise<void> {
-  const d = await diff(repo, { kind: 'index', path }, { ...opts, ignoreWhitespace: false, force: true })
+export async function unstageLines(repo: string, path: string, selection: LineSelection, opts = FULL_CONTEXT, expect?: string, oldPath?: string): Promise<void> {
+  // A staged rename is diffed against its old path, as it was shown; without it the file reads as all new.
+  const d = await diff(repo, { kind: 'index', path, oldPath }, { ...opts, ignoreWhitespace: false, force: true })
+  sameSelection(d, selection, expect)
   const patch = buildPartialPatch(d, selection, 'reverse')
   if (patch) await applyPatch(repo, patch, ['--cached', '--reverse'], d.encoding)
 }
 
-export async function discardLines(repo: string, path: string, selection: LineSelection, opts = FULL_CONTEXT): Promise<void> {
+export async function discardLines(repo: string, path: string, selection: LineSelection, opts = FULL_CONTEXT, expect?: string): Promise<void> {
   const d = await diff(repo, { kind: 'worktree', path }, { ...opts, ignoreWhitespace: false, force: true })
+  sameSelection(d, selection, expect)
   const patch = buildPartialPatch(d, selection, 'reverse')
   if (!patch) return
   // The file stays in place, so a copy of it goes to the recycle bin.

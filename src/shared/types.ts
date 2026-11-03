@@ -140,6 +140,21 @@ export interface DiffOptions {
 /** Line selection for partial staging: hunk index → selected line indexes. */
 export type LineSelection = Record<number, number[]>
 
+/**
+ * What a line selection points at: the selected hunks' ranges and the
+ * selected lines' text. The main process recomputes the diff before staging
+ * or discarding lines; when the file changed in between, the same indexes
+ * would point at other lines, and the fingerprints differ.
+ */
+export function selectionFingerprint(d: FileDiff, sel: LineSelection): string {
+  return Object.keys(sel).map(Number).sort((a, b) => a - b).map(hi => {
+    const h = d.hunks[hi]
+    if (!h) return `missing ${hi}`
+    const lines = (sel[hi] ?? []).map(li => (h.lines[li] ? `${h.lines[li].type} ${h.lines[li].text}` : `missing ${li}`))
+    return [`${h.oldStart},${h.oldLines} ${h.newStart},${h.newLines}`, ...lines].join('\n')
+  }).join('\n\n')
+}
+
 /* ─── History ───────────────────────────────────────────────────────────────── */
 
 export interface Commit {

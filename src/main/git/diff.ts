@@ -302,6 +302,15 @@ export function buildPartialPatch(d: FileDiff, selection: LineSelection, directi
 
   if (!out.length) return null
   let header = d.header.filter(h => !/^(index |similarity|dissimilarity|Binary)/.test(h))
+  // Lines of a renamed (or copied) file change that file only: kept as a rename, the patch
+  // would also move it back (unstaging one line undid the whole rename).
+  const target = header.find(h => h.startsWith('+++ '))?.slice(4)
+  if (d.oldPath && d.oldPath !== d.path && target) {
+    const source = target.replace(/^("?)b\//, '$1a/')
+    header = header
+      .filter(h => !/^(rename|copy) (from|to) /.test(h))
+      .map(h => (h.startsWith('diff --git ') ? `diff --git ${source} ${target}` : h.startsWith('--- ') ? `--- ${source}` : h))
+  }
   // Part of a created/deleted file is a plain modification of the target.
   if (partial && ((direction === 'reverse' && d.isNew) || (direction === 'forward' && d.isDeleted))) {
     header = header

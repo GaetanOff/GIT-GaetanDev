@@ -26,10 +26,10 @@ export interface Api {
   'git:diff'(repo: string, source: DiffSource, opts: DiffOptions): Promise<FileDiff>
   'git:stage'(repo: string, paths: string[]): Promise<void>
   'git:unstage'(repo: string, paths: string[]): Promise<void>
-  'git:stageLines'(repo: string, path: string, selection: LineSelection, untracked: boolean): Promise<void>
-  'git:unstageLines'(repo: string, path: string, selection: LineSelection): Promise<void>
+  'git:stageLines'(repo: string, path: string, selection: LineSelection, untracked: boolean, expect?: string): Promise<void>
+  'git:unstageLines'(repo: string, path: string, selection: LineSelection, expect?: string, oldPath?: string): Promise<void>
   'git:discard'(repo: string, paths: string[]): Promise<void>
-  'git:discardLines'(repo: string, path: string, selection: LineSelection): Promise<void>
+  'git:discardLines'(repo: string, path: string, selection: LineSelection, expect?: string): Promise<void>
   'git:ignore'(repo: string, pattern: string): Promise<void>
   'git:commit'(repo: string, message: string, amend: boolean, opts?: { noVerify?: boolean }): Promise<string>
   'git:authors'(repo: string): Promise<Author[]>

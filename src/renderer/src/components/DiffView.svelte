@@ -3,7 +3,7 @@
   import Code from './Code.svelte'
   import VirtualList from './VirtualList.svelte'
   import { langFor, type LexState } from '@/lib/syntax'
-  import type { DiffLine, DiffSource, FileDiff, LineSelection } from '@shared/types'
+  import { selectionFingerprint, type DiffLine, type DiffSource, type FileDiff, type LineSelection } from '@shared/types'
   import { api, asError } from '@/lib/api'
   import { longestLine, splitRows, unifiedRows, type DiffRow } from '@/lib/diffrows'
   import type { Segment } from '@/lib/intraline'
@@ -127,10 +127,13 @@
       if (!ok) return
     }
     const path = diff.path
+    const oldPath = diff.oldPath
+    // The main process checks the lines are still the ones shown here before touching the file.
+    const expect = selectionFingerprint(diff, sel)
     await app.run(kind === 'stage' ? 'Staging lines' : kind === 'unstage' ? 'Unstaging lines' : 'Discarding lines', async () => {
-      if (kind === 'stage') await api['git:stageLines'](repo, path, sel, untracked)
-      else if (kind === 'unstage') await api['git:unstageLines'](repo, path, sel)
-      else await api['git:discardLines'](repo, path, sel)
+      if (kind === 'stage') await api['git:stageLines'](repo, path, sel, untracked, expect)
+      else if (kind === 'unstage') await api['git:unstageLines'](repo, path, sel, expect, oldPath)
+      else await api['git:discardLines'](repo, path, sel, expect)
     })
     selected = new Set()
   }
