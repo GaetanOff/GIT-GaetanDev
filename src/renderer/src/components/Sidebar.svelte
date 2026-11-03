@@ -8,7 +8,7 @@
   import { api } from '@/lib/api'
   import { relativeTime } from '@/lib/format'
   import { app } from '@/lib/state.svelte'
-  import { confirm, contextMenu, openDialog } from '@/lib/ui.svelte'
+  import { confirm, contextMenu, openDialog, toast } from '@/lib/ui.svelte'
 
   let filter = $state('')
   let collapsed = $state<Record<string, boolean>>(loadCollapsed())
@@ -90,7 +90,7 @@
     contextMenu(e, [
       { label: 'Open as repository', icon: 'repo', disabled: w.current, run: () => app.addRepo(w.path) },
       { label: 'Show in Explorer', icon: 'folder', run: () => api['shell:reveal'](w.path) },
-      { label: 'Open in terminal', icon: 'terminal', run: () => api['shell:terminal'](w.path) },
+      { label: 'Open in terminal', icon: 'terminal', run: () => api['shell:terminal'](w.path).catch(e => toast('error', e.message)) },
       'sep',
       { label: 'Remove worktree…', icon: 'trash', danger: true, disabled: w.current || w.bare, run: async () => {
         const repo = app.repo!.path

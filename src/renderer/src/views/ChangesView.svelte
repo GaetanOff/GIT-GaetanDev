@@ -11,7 +11,7 @@
   import { discardPaths, fileMenu, stagePaths, unstagePaths } from '@/lib/files'
   import { basename, dirname, statusStyle } from '@/lib/format'
   import { app, type Area } from '@/lib/state.svelte'
-  import { contextMenu, isMenuKey, menuAt, openDialog } from '@/lib/ui.svelte'
+  import { contextMenu, isMenuKey, menuAt, openDialog, toast } from '@/lib/ui.svelte'
 
   type Row = { kind: 'head'; area: Area; count: number } | { kind: 'file'; area: Area; file: FileChange }
 
@@ -251,7 +251,7 @@
         <p>{fileCount ? 'Pick a file on the left to see its diff.' : 'Open the repository in your editor and start coding.'}</p>
         {#if !fileCount}
           <div class="row" style="margin-top:6px">
-            <button class="btn btn-secondary" onclick={() => window.gdg.invoke['shell:editor'](app.repo!.path)}><Icon name="code" size={14} />Open in editor</button>
+            <button class="btn btn-secondary" onclick={() => window.gdg.invoke['shell:editor'](app.repo!.path).catch(e => toast('error', e.message))}><Icon name="code" size={14} />Open in editor</button>
             <button class="btn btn-secondary" onclick={() => window.gdg.invoke['shell:reveal'](app.repo!.path)}><Icon name="folder" size={14} />Show in Explorer</button>
           </div>
         {/if}

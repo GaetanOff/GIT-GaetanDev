@@ -143,7 +143,7 @@ export const COMMANDS: Command[] = [
   { id: 'undo', title: 'Undo last commit', group: 'Changes', icon: 'undo', keys: 'mod+z', when: () => !!app.status?.hasCommits && app.view !== 'history' && !isTyping(), run: () => undoLastCommit({ ask: true }) },
   { id: 'explorer', title: 'Show in Explorer', group: 'Repository', icon: 'folder', keys: 'mod+shift+e', when: hasRepo, run: () => api['shell:reveal'](app.repo!.path) },
   { id: 'editor', title: 'Open in editor', group: 'Repository', icon: 'code', keys: 'mod+shift+a', when: hasRepo, run: () => api['shell:editor'](app.repo!.path).catch(e => toast('error', e.message)) },
-  { id: 'terminal', title: 'Open in terminal', group: 'Repository', icon: 'terminal', keys: 'mod+`', when: hasRepo, run: () => api['shell:terminal'](app.repo!.path) },
+  { id: 'terminal', title: 'Open in terminal', group: 'Repository', icon: 'terminal', keys: 'mod+`', when: hasRepo, run: () => api['shell:terminal'](app.repo!.path).catch(e => toast('error', e.message)) },
   { id: 'refresh', title: 'Refresh', group: 'Repository', icon: 'fetch', keys: 'f5', when: hasRepo, run: () => app.refreshAll() },
   { id: 'addRemote', title: 'Add remote…', group: 'Repository', icon: 'cloud', when: hasRepo, run: () => openDialog({ kind: 'remote' }) },
   { id: 'undoHistory', title: 'Show undo history', group: 'View', icon: 'undo', keys: 'mod+3', when: hasRepo, run: () => (app.view = 'undo') },
