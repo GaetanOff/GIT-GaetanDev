@@ -54,6 +54,8 @@ async function rawDiff(repo: string, source: DiffSource, opts: DiffOptions): Pro
       if (source.untracked) return run(['diff', ...args, EMPTY_TREE, `${ref}^3`, '--', source.path])
       return run(['diff', ...args, `${ref}^1`, ref, '--', source.path])
     }
+    case 'range':
+      return run(['diff', ...args, source.from, source.to, ...paths(source.path, source.oldPath)])
   }
 }
 
@@ -177,6 +179,11 @@ async function imagePreview(repo: string, source: DiffSource, d: FileDiff): Prom
       if (source.untracked) return { after: toUrl(await blob(`${ref}^3:${source.path}`)) }
       return { before: toUrl(await blob(`${ref}^1:${source.path}`)), after: toUrl(await blob(`${ref}:${source.path}`)) }
     }
+    case 'range':
+      return {
+        before: d.isNew ? undefined : toUrl(await blob(`${source.from}:${oldPath}`)),
+        after: d.isDeleted ? undefined : toUrl(await blob(`${source.to}:${source.path}`)),
+      }
   }
 }
 
