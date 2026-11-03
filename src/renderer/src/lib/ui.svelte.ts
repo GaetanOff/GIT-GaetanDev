@@ -13,14 +13,49 @@ export interface Toast {
 let toastId = 0
 export const toasts = $state<Toast[]>([])
 
-export function toast(kind: Toast['kind'], message: string, action?: Toast['action'], ms = kind === 'error' ? 8000 : 3500): void {
+/** Time left for each toast; paused while the pointer is over it. */
+const timers = new Map<number, { left: number; started: number; handle: ReturnType<typeof setTimeout> | null }>()
+
+/**
+ * Shows a toast. One with an action (Undo, Pull now…) stays 10 s by default,
+ * long enough to reach it, and is the last to be pushed out when more than
+ * four are on screen.
+ */
+export function toast(kind: Toast['kind'], message: string, action?: Toast['action'], ms = action ? 10_000 : kind === 'error' ? 8000 : 3500): void {
   const t: Toast = { id: ++toastId, kind, message, action }
   toasts.push(t)
-  if (toasts.length > 4) toasts.splice(0, toasts.length - 4)
-  setTimeout(() => dismissToast(t.id), ms)
+  while (toasts.length > 4) {
+    const plain = toasts.findIndex(x => !x.action && x.id !== t.id)
+    const [gone] = toasts.splice(plain >= 0 ? plain : 0, 1)
+    clearTimer(gone.id)
+  }
+  timers.set(t.id, { left: ms, started: Date.now(), handle: setTimeout(() => dismissToast(t.id), ms) })
+}
+
+function clearTimer(id: number): void {
+  const timer = timers.get(id)
+  if (timer?.handle) clearTimeout(timer.handle)
+  timers.delete(id)
+}
+
+/** Hovering a toast stops its countdown, so its action stays within reach. */
+export function pauseToast(id: number): void {
+  const timer = timers.get(id)
+  if (!timer?.handle) return
+  clearTimeout(timer.handle)
+  timer.handle = null
+  timer.left -= Date.now() - timer.started
+}
+
+export function resumeToast(id: number): void {
+  const timer = timers.get(id)
+  if (!timer || timer.handle) return
+  timer.started = Date.now()
+  timer.handle = setTimeout(() => dismissToast(id), Math.max(timer.left, 1500))
 }
 
 export function dismissToast(id: number): void {
+  clearTimer(id)
   const t = toasts.find(x => x.id === id)
   if (!t || t.leaving) return
   t.leaving = true

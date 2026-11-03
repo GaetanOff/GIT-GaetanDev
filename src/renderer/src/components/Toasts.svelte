@@ -1,11 +1,13 @@
 <script lang="ts">
   import Icon from './Icon.svelte'
-  import { dismissToast, toasts } from '@/lib/ui.svelte'
+  import { dismissToast, pauseToast, resumeToast, toasts } from '@/lib/ui.svelte'
 </script>
 
 <div class="toasts" aria-live="polite">
   {#each toasts as t (t.id)}
-    <div class="toast {t.kind}" class:leaving={t.leaving} role={t.kind === 'error' ? 'alert' : 'status'}>
+    <div class="toast {t.kind}" class:leaving={t.leaving} role={t.kind === 'error' ? 'alert' : 'status'}
+      onpointerenter={() => pauseToast(t.id)} onpointerleave={() => resumeToast(t.id)}
+      onfocusin={() => pauseToast(t.id)} onfocusout={() => resumeToast(t.id)}>
       <span class="ico"><Icon name={t.kind === 'success' ? 'check' : t.kind === 'error' ? 'alert' : 'info'} size={13} /></span>
       <div class="body">
         <div class="msg">{t.message}</div>
