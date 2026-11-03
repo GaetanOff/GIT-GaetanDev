@@ -107,7 +107,8 @@ export async function ignore(repo: string, pattern: string): Promise<void> {
 /* ─── Commits ───────────────────────────────────────────────────────────────── */
 
 export async function commit(repo: string, message: string, amend: boolean, opts: { noVerify?: boolean } = {}): Promise<string> {
-  const args = ['commit', '-F', '-', '--cleanup=strip']
+  // whitespace, not strip: the message comes from the app, and a line like "#123 fix login" is content.
+  const args = ['commit', '-F', '-', '--cleanup=whitespace']
   if (amend) args.push('--amend')
   if (opts.noVerify) args.push('--no-verify')
   try {

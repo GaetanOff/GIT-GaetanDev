@@ -87,7 +87,8 @@ export async function rebaseRun(repo: string, base: string | null, steps: Rebase
     if (pending === null) return
     const file = join(dir, `msg-${++n}.txt`)
     await writeFile(file, pending, 'utf8')
-    todo.push(`exec git commit --amend --allow-empty --cleanup=strip -F ${quote(file)}`)
+    // whitespace, not strip: a line starting with "#" ("#123 fixed") is part of the message.
+    todo.push(`exec git commit --amend --allow-empty --cleanup=whitespace -F ${quote(file)}`)
     pending = null
   }
 
