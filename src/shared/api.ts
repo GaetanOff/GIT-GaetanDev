@@ -135,6 +135,8 @@ export interface ApiEvents {
   'repo:changed': RepoChangeEvent
   'progress': Progress | null
   'askpass': AskPassRequest
+  /** A credential prompt git stopped waiting for (it timed out): its dialog closes. */
+  'askpass:cancel': string
   'menu': string
   /** A folder passed to a second launch of the app ("Open with"). */
   'open:path': string

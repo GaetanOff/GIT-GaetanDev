@@ -364,7 +364,11 @@ export function askRenderer(req: { id: string; prompt: string; kind: 'password' 
   return new Promise(resolve => {
     const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
     if (!win) return resolve(null)
-    const timer = setTimeout(() => respond(req.id, null), 5 * 60_000)
+    // Unanswered, the prompt is declined, and its dialog closes: an answer typed later would go nowhere.
+    const timer = setTimeout(() => {
+      respond(req.id, null)
+      send('askpass:cancel', req.id)
+    }, 5 * 60_000)
     registerPending(req.id, value => {
       clearTimeout(timer)
       resolve(value)

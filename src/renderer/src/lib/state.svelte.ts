@@ -2,7 +2,7 @@ import type { Commit, FileChange, Progress, Refs, RepoEntry, RepoStatus, Restore
 import { DEFAULT_SETTINGS } from '@shared/types'
 import { api, asError, on, type AppError } from './api'
 import { GraphBuilder, type GraphRow } from './graph'
-import { choose, confirm, openDialog, toast } from './ui.svelte'
+import { choose, closeDialog, confirm, dialogs, openDialog, toast } from './ui.svelte'
 
 export type View = 'changes' | 'history' | 'stash' | 'file' | 'rebase' | 'undo' | 'compare'
 type MainView = 'changes' | 'history' | 'stash' | 'undo'
@@ -168,6 +168,11 @@ class AppState {
         kind: 'askpass', id: req.id, prompt: req.prompt, mode: req.kind,
         resolve: v => api['askpass:respond'](req.id, v),
       })
+    })
+    on('askpass:cancel', id => {
+      const d = dialogs.find(x => x.kind === 'askpass' && x.id === id)
+      if (d) closeDialog(d)
+      toast('info', 'A credential prompt went unanswered for five minutes and was declined.')
     })
     on('menu', m => {
       if (m === 'focus' && this.repo) this.refreshAll()
