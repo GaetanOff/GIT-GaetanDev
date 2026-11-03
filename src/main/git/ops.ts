@@ -202,8 +202,26 @@ export async function skipOp(repo: string): Promise<void> {
 /** Oldest first, so several picked commits land in their original order. */
 async function chronological(repo: string, shas: string[]): Promise<string[]> {
   if (shas.length < 2) return shas
-  const order = (await gitOut(repo, ['rev-list', '--topo-order', '--no-walk', ...shas])).trim().split('\n')
-  return order.reverse()
+  // "rev-list --no-walk" orders by commit date, and rebased commits often share the same
+  // second: ancestry decides instead, the date only orders commits on separate lines.
+  const dates = new Map((await gitOut(repo, ['log', '--no-walk=unsorted', '--format=%H %ct', ...shas])).trim().split('\n')
+    .map(l => l.split(' ')).map(([sha, t]) => [sha, +t] as const))
+  const ancestor = async (a: string, b: string) =>
+    (await git(repo, ['merge-base', '--is-ancestor', a, b], { okCodes: [1] })).code === 0
+  const older = (a: string, b: string) => (dates.get(a) ?? 0) < (dates.get(b) ?? 0)
+  // Past a few dozen commits, pairwise ancestry checks cost too much: dates only.
+  const before = async (a: string, b: string) =>
+    shas.length > 40 ? older(a, b) : (await ancestor(a, b)) || (!(await ancestor(b, a)) && older(a, b))
+  const out: string[] = []
+  for (const sha of shas) {
+    // Insertion before the first picked commit it must come before.
+    let at = out.length
+    for (let i = 0; i < out.length; i++) {
+      if (await before(sha, out[i])) { at = i; break }
+    }
+    out.splice(at, 0, sha)
+  }
+  return out
 }
 
 export async function cherryPick(repo: string, shas: string[]): Promise<void> {
