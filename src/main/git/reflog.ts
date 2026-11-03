@@ -135,13 +135,22 @@ export async function deletedBranches(repo: string): Promise<DeletedBranch[]> {
   }
 
   const gone = [...tips].filter(([name]) => !locals.has(name) && looksLikeBranch(name))
-  const out: DeletedBranch[] = []
-  for (const [name, tip] of gone) {
-    // Only offer tips whose commit still exists (not garbage-collected).
-    const r = await git(repo, ['log', '-1', '--format=%s', tip.sha], { okCodes: [128] })
-    if (r.code === 0) out.push({ name, sha: tip.sha, date: tip.date, subject: r.stdout.trim(), source: 'reflog' })
+  if (!gone.length) return []
+  // Only offer tips whose commit still exists (not garbage-collected): one batch query for all.
+  const shas = [...new Set(gone.map(([, tip]) => tip.sha))]
+  const check = await git(repo, ['cat-file', '--batch-check=%(objectname) %(objecttype)'], { input: `${shas.join('\n')}\n` })
+  const alive = shas.filter(s => check.stdout.includes(`${s} commit`))
+  const subjects = new Map<string, string>()
+  if (alive.length) {
+    const log = await gitOut(repo, ['log', '--no-walk=unsorted', `--format=%H${US}%s`, ...alive])
+    for (const line of log.split('\n')) {
+      const [sha, subject] = line.split(US)
+      if (sha) subjects.set(sha, subject ?? '')
+    }
   }
-  return out.sort((a, b) => b.date - a.date)
+  return gone.filter(([, tip]) => subjects.has(tip.sha))
+    .map(([name, tip]): DeletedBranch => ({ name, sha: tip.sha, date: tip.date, subject: subjects.get(tip.sha)!, source: 'reflog' }))
+    .sort((a, b) => b.date - a.date)
 }
 
 export async function restoreBranch(repo: string, name: string, sha: string): Promise<void> {
