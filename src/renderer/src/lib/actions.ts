@@ -254,7 +254,7 @@ export function tagMenu(t: Tag): MenuItem[] {
 }
 
 export async function applyStash(s: Stash, pop: boolean): Promise<void> {
-  await app.run(pop ? 'Popping stash' : 'Applying stash', () => api['git:stashApply'](repo(), s.index, pop), {
+  await app.run(pop ? 'Popping stash' : 'Applying stash', () => api['git:stashApply'](repo(), s.index, pop, s.sha), {
     success: pop ? 'Stash restored and removed.' : 'Stash applied.',
   })
   if (pop && app.view === 'stash') {
@@ -266,7 +266,7 @@ export async function applyStash(s: Stash, pop: boolean): Promise<void> {
 export async function dropStash(s: Stash): Promise<void> {
   const ok = await confirm({ title: 'Drop stash?', message: `“${s.message}” will be deleted.`, confirmLabel: 'Drop', danger: true })
   if (!ok) return
-  await app.run('Dropping stash', () => api['git:stashDrop'](repo(), s.index))
+  await app.run('Dropping stash', () => api['git:stashDrop'](repo(), s.index, s.sha))
   if (app.selectedStash === s.index) {
     app.selectedStash = null
     app.view = 'changes'

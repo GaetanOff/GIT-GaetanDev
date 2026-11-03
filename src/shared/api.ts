@@ -78,8 +78,8 @@ export interface Api {
   'git:deleteTag'(repo: string, name: string): Promise<void>
   'git:pushTag'(repo: string, remote: string, name: string): Promise<void>
   'git:stash'(repo: string, message: string, includeUntracked: boolean, paths?: string[]): Promise<void>
-  'git:stashApply'(repo: string, index: number, pop: boolean): Promise<void>
-  'git:stashDrop'(repo: string, index: number): Promise<void>
+  'git:stashApply'(repo: string, index: number, pop: boolean, sha?: string): Promise<void>
+  'git:stashDrop'(repo: string, index: number, sha?: string): Promise<void>
   'git:stashFiles'(repo: string, index: number): Promise<CommitDetail>
   'git:addRemote'(repo: string, name: string, url: string): Promise<void>
   'git:removeRemote'(repo: string, name: string): Promise<void>

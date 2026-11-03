@@ -225,7 +225,21 @@ export async function reset(repo: string, sha: string, mode: ResetMode): Promise
 /* ─── Branches ──────────────────────────────────────────────────────────────── */
 
 export async function checkout(repo: string, branch: string, opts: { stash?: boolean } = {}): Promise<void> {
-  if (opts.stash) await git(repo, ['stash', 'push', '--include-untracked', '-m', `Auto-stash before switching to ${branch}`])
+  if (!opts.stash) return switchTo(repo, branch)
+  const top = () => git(repo, ['rev-parse', '-q', '--verify', 'refs/stash'], { okCodes: [1] }).then(r => r.stdout.trim())
+  const before = await top()
+  await git(repo, ['stash', 'push', '--include-untracked', '-m', `Auto-stash before switching to ${branch}`])
+  const stashed = (await top()) !== before
+  try {
+    await switchTo(repo, branch)
+  } catch (e) {
+    // Still on the old branch: put the changes back where they were, so nothing seems lost.
+    if (stashed) await git(repo, ['stash', 'pop', '--index']).catch(() => git(repo, ['stash', 'pop'])).catch(() => undefined)
+    throw e
+  }
+}
+
+async function switchTo(repo: string, branch: string): Promise<void> {
   // A remote branch ("origin/feature") gets a local tracking branch.
   const isLocal = await git(repo, ['rev-parse', '--verify', '-q', `refs/heads/${branch}`], { okCodes: [1] }).then(r => r.code === 0)
   if (isLocal) return void (await git(repo, ['switch', branch]))
@@ -294,7 +308,19 @@ export async function stash(repo: string, message: string, includeUntracked: boo
   await git(repo, args)
 }
 
-export async function stashApply(repo: string, index: number, pop: boolean): Promise<void> {
+/**
+ * Stash entries are addressed by index, which shifts whenever a stash is
+ * added or dropped (an auto-stash, another tool): with the sha the user saw,
+ * an entry that moved is refused rather than the wrong one applied or dropped.
+ */
+async function checkStash(repo: string, index: number, sha?: string): Promise<void> {
+  if (!sha) return
+  const at = (await git(repo, ['rev-parse', '-q', '--verify', `stash@{${index}}`], { okCodes: [1, 128] })).stdout.trim()
+  if (at !== sha) throw new GitError('The stash list changed since it was shown. Look at it again and retry.')
+}
+
+export async function stashApply(repo: string, index: number, pop: boolean, sha?: string): Promise<void> {
+  await checkStash(repo, index, sha)
   await git(repo, ['stash', pop ? 'pop' : 'apply', '--index', `stash@{${index}}`]).catch(async e => {
     // --index fails when the staged state cannot be restored; fall back to a plain apply.
     if (e instanceof GitError && e.code !== 'CONFLICTS') await git(repo, ['stash', pop ? 'pop' : 'apply', `stash@{${index}}`])
@@ -302,7 +328,8 @@ export async function stashApply(repo: string, index: number, pop: boolean): Pro
   })
 }
 
-export async function stashDrop(repo: string, index: number): Promise<void> {
+export async function stashDrop(repo: string, index: number, sha?: string): Promise<void> {
+  await checkStash(repo, index, sha)
   await git(repo, ['stash', 'drop', `stash@{${index}}`])
 }
 
