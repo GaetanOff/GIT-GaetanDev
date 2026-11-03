@@ -14,28 +14,47 @@
     footer?: Snippet
   } = $props()
 
+  const titleId = `dialog-${Math.random().toString(36).slice(2)}`
+  const FOCUSABLE = 'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+
   function onKey(e: KeyboardEvent) {
     if (e.key === 'Escape') {
       e.preventDefault()
       e.stopPropagation()
       onclose()
     }
+    // Tab cycles inside the dialog: the page behind it is out of reach while it is open.
+    if (e.key === 'Tab') {
+      const dialog = (e.currentTarget as HTMLElement).querySelector<HTMLElement>('.dialog')
+      const items = [...(dialog?.querySelectorAll<HTMLElement>(FOCUSABLE) ?? [])].filter(el => el.offsetParent !== null)
+      if (!items.length) return e.preventDefault()
+      const first = items[0]
+      const last = items[items.length - 1]
+      if (e.shiftKey && (document.activeElement === first || !dialog?.contains(document.activeElement))) { e.preventDefault(); last.focus() }
+      else if (!e.shiftKey && (document.activeElement === last || !dialog?.contains(document.activeElement))) { e.preventDefault(); first.focus() }
+    }
   }
 
+  /** Focuses the first useful control, and gives focus back to where it was when the dialog closes. */
   function autofocus(el: HTMLElement) {
+    const previous = document.activeElement as HTMLElement | null
     const target = el.querySelector<HTMLElement>('[autofocus], input:not([type=checkbox]):not([disabled]), textarea, .btn-primary, .btn-danger')
-    queueMicrotask(() => target?.focus())
+    queueMicrotask(() => (target ?? el).focus())
+    return {
+      destroy: () => { if (previous?.isConnected) queueMicrotask(() => previous.focus()) },
+    }
   }
 </script>
 
-<div class="overlay" role="presentation" onpointerdown={e => e.target === e.currentTarget && onclose()} onkeydown={onKey}>
+<div class="overlay" role="dialog" aria-modal="true" aria-labelledby={titleId} tabindex="-1" onpointerdown={e => e.target === e.currentTarget && onclose()} onkeydown={onKey}>
   <form
     class="dialog" style="max-width:{width}px" use:autofocus
+    tabindex="-1"
     onsubmit={e => { e.preventDefault(); onsubmit?.() }}
   >
     <header>
       {#if icon}<span class="ico {tone}"><Icon name={icon} size={17} /></span>{/if}
-      <h2>{title}</h2>
+      <h2 id={titleId}>{title}</h2>
       <button type="button" class="icon-btn sm" onclick={onclose} aria-label="Close"><Icon name="x" size={14} /></button>
     </header>
     <div class="content">{@render children()}</div>
