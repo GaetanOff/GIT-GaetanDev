@@ -1,7 +1,7 @@
 import { app } from 'electron'
 import { randomUUID } from 'node:crypto'
-import { readFileSync } from 'node:fs'
-import { rename, writeFile } from 'node:fs/promises'
+import { closeSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs'
+import { open, rename, rm } from 'node:fs/promises'
 import { basename, join, normalize } from 'node:path'
 import { DEFAULT_SETTINGS, type RepoEntry, type Settings } from '@shared/types'
 
@@ -13,37 +13,106 @@ interface State {
 }
 
 const file = () => join(app.getPath('userData'), 'state.json')
+const fresh = (): State => ({ repos: [], lastRepo: null, settings: { ...DEFAULT_SETTINGS } })
 
 function load(): State {
+  let text: string
   try {
-    const raw = JSON.parse(readFileSync(file(), 'utf8')) as Partial<State>
+    text = readFileSync(file(), 'utf8')
+  } catch {
+    return fresh() // first launch
+  }
+  try {
+    const raw = JSON.parse(text) as Partial<State>
+    const isRepo = (r: unknown): r is RepoEntry =>
+      !!r && typeof (r as RepoEntry).id === 'string' && typeof (r as RepoEntry).path === 'string'
     return {
-      repos: raw.repos ?? [],
-      lastRepo: raw.lastRepo ?? null,
-      settings: { ...DEFAULT_SETTINGS, ...raw.settings },
-      window: raw.window,
+      repos: Array.isArray(raw.repos) ? raw.repos.filter(isRepo) : [],
+      lastRepo: typeof raw.lastRepo === 'string' ? raw.lastRepo : null,
+      settings: { ...DEFAULT_SETTINGS, ...(raw.settings && typeof raw.settings === 'object' ? raw.settings : {}) },
+      window: raw.window && typeof raw.window === 'object' ? raw.window : undefined,
     }
   } catch {
-    return { repos: [], lastRepo: null, settings: { ...DEFAULT_SETTINGS } }
+    // Unreadable: set it aside instead of overwriting it with defaults on the next save.
+    try { renameSync(file(), join(app.getPath('userData'), `state.corrupt-${Date.now()}.json`)) } catch { /* keep going */ }
+    return fresh()
   }
 }
 
 let state: State | null = null
 let saveTimer: NodeJS.Timeout | null = null
+let writing: Promise<void> = Promise.resolve()
+let seq = 0
+let inFlight = 0
 
 export function getState(): State {
   state ??= load()
   return state
 }
 
-/** Debounced atomic write: a crash mid-save never leaves a truncated file. */
+const RETRYABLE = new Set(['EPERM', 'EBUSY', 'EACCES'])
+
+/**
+ * Atomic write: the data goes to a temporary file of its own, is flushed to
+ * disk, then replaces state.json, so a crash never leaves a truncated file.
+ * An antivirus or sync client briefly holding state.json gets a few retries.
+ */
+async function write(): Promise<void> {
+  const data = JSON.stringify(getState(), null, 2)
+  const tmp = `${file()}.${process.pid}-${++seq}.tmp`
+  const fh = await open(tmp, 'w')
+  try {
+    await fh.writeFile(data, 'utf8')
+    await fh.sync()
+  } finally {
+    await fh.close()
+  }
+  for (let attempt = 1; ; attempt++) {
+    try {
+      return await rename(tmp, file())
+    } catch (e) {
+      if (attempt >= 5 || !RETRYABLE.has((e as NodeJS.ErrnoException).code ?? '')) {
+        await rm(tmp, { force: true })
+        throw e
+      }
+      await new Promise(r => setTimeout(r, 60 * attempt))
+    }
+  }
+}
+
+/** Debounced; writes run one after another, and a failure is logged rather than lost silently. */
 export function save(): void {
   if (saveTimer) clearTimeout(saveTimer)
-  saveTimer = setTimeout(async () => {
-    const tmp = `${file()}.tmp`
-    await writeFile(tmp, JSON.stringify(getState(), null, 2), 'utf8')
-    await rename(tmp, file())
+  saveTimer = setTimeout(() => {
+    saveTimer = null
+    inFlight++
+    writing = writing.then(write).catch(e => console.error('Could not save settings:', (e as Error).message)).finally(() => inFlight--)
   }, 200)
+}
+
+/**
+ * Writes the state at once, synchronously, if a save is pending or still
+ * being written: called on quit, when neither a timer nor an async write
+ * would get to finish.
+ */
+export function flush(): void {
+  if ((!saveTimer && !inFlight) || !state) return
+  if (saveTimer) clearTimeout(saveTimer)
+  saveTimer = null
+  const tmp = `${file()}.${process.pid}-${++seq}.tmp`
+  try {
+    const fd = openSync(tmp, 'w')
+    try {
+      writeSync(fd, JSON.stringify(state, null, 2))
+      fsyncSync(fd)
+    } finally {
+      closeSync(fd)
+    }
+    renameSync(tmp, file())
+  } catch (e) {
+    rmSync(tmp, { force: true })
+    console.error('Could not save settings on quit:', (e as Error).message)
+  }
 }
 
 const samePath = (a: string, b: string) => normalize(a).toLowerCase() === normalize(b).toLowerCase()
