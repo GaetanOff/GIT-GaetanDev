@@ -57,10 +57,12 @@ export async function deleteBranch(b: Branch): Promise<void> {
     confirmLabel: 'Delete',
     danger: true,
   })
-  if (!ok) return
+  if (!ok || !app.repo) return
+  // The repo this happens in, even if another tab is in front by the time git answers.
+  const target = { path: app.repo.path, id: app.repo.id }
   try {
-    const sha = await api['git:deleteBranch'](repo(), b.name, false)
-    deleted(b.name, sha)
+    const sha = await api['git:deleteBranch'](target.path, b.name, false)
+    deleted(b.name, sha, target)
   } catch (e) {
     const err = e as { message: string; code?: string }
     if (err.code !== 'BRANCH_NOT_MERGED') return toast('error', err.message)
@@ -71,8 +73,8 @@ export async function deleteBranch(b: Branch): Promise<void> {
       danger: true,
     })
     if (force) {
-      const sha = await app.run('Deleting branch', () => api['git:deleteBranch'](repo(), b.name, true))
-      if (sha) deleted(b.name, sha)
+      const sha = await app.run('Deleting branch', () => api['git:deleteBranch'](target.path, b.name, true))
+      if (sha) deleted(b.name, sha, target)
     }
   } finally {
     await app.refreshAll()
@@ -80,18 +82,18 @@ export async function deleteBranch(b: Branch): Promise<void> {
 }
 
 /** Records a deleted branch's exact tip and offers to bring it back. */
-function deleted(name: string, sha: string): void {
-  rememberDeleted(name, sha)
-  toast('success', `Deleted ${name}.`, { label: 'Undo', run: () => restoreDeleted(name, sha) }, 10_000)
+function deleted(name: string, sha: string, target: { path: string; id: string }): void {
+  rememberDeleted(name, sha, target.id)
+  toast('success', `Deleted ${name}.`, { label: 'Undo', run: () => restoreDeleted(name, sha, target.path) }, 10_000)
 }
 
-const deletedKey = () => `deleted-branches:${app.repo?.id}`
+const deletedKey = (id = app.repo?.id) => `deleted-branches:${id}`
 
-export function rememberDeleted(name: string, sha: string): void {
+export function rememberDeleted(name: string, sha: string, repoId = app.repo?.id): void {
   try {
-    const list = JSON.parse(localStorage.getItem(deletedKey()) ?? '[]') as { name: string; sha: string; date: number }[]
+    const list = JSON.parse(localStorage.getItem(deletedKey(repoId)) ?? '[]') as { name: string; sha: string; date: number }[]
     const next = [{ name, sha, date: Math.floor(Date.now() / 1000) }, ...list.filter(x => x.name !== name)].slice(0, 100)
-    localStorage.setItem(deletedKey(), JSON.stringify(next))
+    localStorage.setItem(deletedKey(repoId), JSON.stringify(next))
   } catch { /* storage unavailable */ }
 }
 
@@ -105,8 +107,8 @@ export function recordedDeleted(): { name: string; sha: string; date: number }[]
   }
 }
 
-export async function restoreDeleted(name: string, sha: string): Promise<void> {
-  await app.run(`Restoring ${name}`, () => api['git:restoreBranch'](repo(), name, sha), { success: `Branch ${name} restored at ${sha.slice(0, 7)}.` })
+export async function restoreDeleted(name: string, sha: string, repoPath = repo()): Promise<void> {
+  await app.run(`Restoring ${name}`, () => api['git:restoreBranch'](repoPath, name, sha), { success: `Branch ${name} restored at ${sha.slice(0, 7)}.` })
 }
 
 export async function renameBranch(b: Branch): Promise<void> {

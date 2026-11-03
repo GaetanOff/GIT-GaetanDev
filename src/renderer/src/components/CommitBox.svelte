@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   import Icon from './Icon.svelte'
   import { api, asError } from '@/lib/api'
   import { undoLastCommit } from '@/lib/commands'
@@ -22,9 +23,11 @@
   $effect(() => {
     const repo = app.repo?.path
     if (!repo) return
+    const d = untrack(() => app.draft)
     api['git:commitSetup'](repo).then(s => {
+      if (app.repo?.path !== repo) return
       setup = s
-      if (s.template && !app.draft.summary.trim() && !app.draft.body.trim()) Object.assign(app.draft, splitTemplate(s.template))
+      if (s.template && !d.summary.trim() && !d.body.trim()) Object.assign(d, splitTemplate(s.template))
     }).catch(() => undefined)
   })
 
@@ -88,11 +91,12 @@
     const key = `${repo}|${app.status?.operation}|${app.status?.head}`
     if (!repo || !app.status || key === prefilledFor || draft.summary.trim()) return
     prefilledFor = key
+    const d = draft
     api['git:preparedMessage'](repo).then(msg => {
-      if (!msg || draft.summary.trim()) return
+      if (!msg || d.summary.trim()) return
       const [summary, ...rest] = msg.split('\n')
-      draft.summary = summary
-      draft.body = rest.join('\n').trim()
+      d.summary = summary
+      d.body = rest.join('\n').trim()
     }).catch(() => undefined)
   })
   const stagedCount = $derived(app.staged.length)
@@ -117,38 +121,46 @@
 
   async function toggleAmend(e: Event) {
     const on = (e.target as HTMLInputElement).checked
+    const d = draft
     if (on) {
-      amendBackup = { summary: draft.summary, body: draft.body }
-      if (!draft.summary.trim()) {
+      amendBackup = { summary: d.summary, body: d.body }
+      if (!d.summary.trim()) {
         const msg = await api['git:lastCommitMessage'](app.repo!.path).catch(() => '')
         const [summary, ...rest] = msg.split('\n')
-        draft.summary = summary
-        draft.body = rest.join('\n').trim()
+        d.summary = summary
+        d.body = rest.join('\n').trim()
       }
     } else if (amendBackup) {
-      draft.summary = amendBackup.summary
-      draft.body = amendBackup.body
+      d.summary = amendBackup.summary
+      d.body = amendBackup.body
       amendBackup = null
     }
-    draft.amend = on
+    d.amend = on
     app.saveDrafts()
   }
 
   async function commit(opts: { noVerify?: boolean } = {}) {
     if (!canCommit || !app.repo) return
+    // Everything this commit belongs to, read before the first await: hooks can
+    // run for a while, and another tab may be in front when git answers.
     const repo = app.repo.path
+    const repoId = app.repo.id
+    const d = draft
+    const target = branch
+    const template = setup.template
+    const toStage = willStageAll ? app.unstaged.map(f => f.path) : []
     const trailers = coAuthors.map(c => `Co-authored-by: ${c}`).join('\n')
-    const body = [draft.body.trim(), trailers].filter(Boolean).join('\n\n')
-    const message = body ? `${draft.summary.trim()}\n\n${body}` : draft.summary.trim()
+    const body = [d.body.trim(), trailers].filter(Boolean).join('\n\n')
+    const message = body ? `${d.summary.trim()}\n\n${body}` : d.summary.trim()
     committing = true
     const end = app.beginBusy('Committing')
     try {
-      if (willStageAll) await api['git:stage'](repo, app.unstaged.map(f => f.path))
-      const sha = await api['git:commit'](repo, message, draft.amend, opts)
-      Object.assign(draft, { ...splitTemplate(setup.template), amend: false, coAuthors: [] })
+      if (toStage.length) await api['git:stage'](repo, toStage)
+      const sha = await api['git:commit'](repo, message, d.amend, opts)
+      Object.assign(d, { ...splitTemplate(template), amend: false, coAuthors: [] })
       amendBackup = null
       app.saveDrafts()
-      toast('success', `Committed ${sha.slice(0, 7)} to ${branch}.`, { label: 'Undo', run: undoLastCommit })
+      toast('success', `Committed ${sha.slice(0, 7)} to ${target}.`, { label: 'Undo', run: () => undoLastCommit({ repoId }) })
     } catch (e) {
       const err = asError(e) as { message: string; code?: string; details?: string }
       // Hook output (linters, tests…) deserves more than a toast.
@@ -157,7 +169,7 @@
           err.code === 'HOOK_FAILED' ? 'Commit blocked by a hook' : 'Commit failed',
           err.details ?? err.message,
           err.code === 'HOOK_FAILED' ? 'A pre-commit or commit-msg hook rejected the commit. Fix what it reports, or commit without running hooks.' : undefined,
-          err.code === 'HOOK_FAILED' ? [{ label: 'Commit without hooks', variant: 'danger', run: () => commit({ noVerify: true }) }] : undefined,
+          err.code === 'HOOK_FAILED' ? [{ label: 'Commit without hooks', variant: 'danger', run: () => (app.repo?.id === repoId ? commit({ noVerify: true }) : toast('info', 'Switch back to that repository to commit.')) }] : undefined,
         )
       } else toast('error', err.message)
     } finally {
