@@ -196,7 +196,7 @@
       {/if}
       {#each groups as g}
         <div class="day label">{g.day}</div>
-        {#each g.ops as op, i (op.id)}
+        {#each g.ops as op (op.id)}
           <div class="op {op.kind}" class:latest={op === ops[0]}>
             <span class="ico"><Icon name={ICON[op.kind]} size={14} /></span>
             <div class="grow">

@@ -263,7 +263,6 @@
   {:else if empty}
     <div class="empty"><div class="empty-icon"><Icon name="check" size={24} /></div><h3>No content changes</h3><p>{diff.oldPath ? 'The file was renamed without changes.' : diff.modeChange ? 'Only the file mode changed.' : app.settings.ignoreWhitespace ? 'Only whitespace changed.' : 'The file is empty.'}</p></div>
   {:else}
-    <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="lines-wrap" style="--sx:{splitX}px" onwheel={onSplitWheel}>
     {#key sourceKey}<!-- each file opens scrolled to the top -->
     <VirtualList items={rows} rowHeight={ROW} {width} class="lines {mode}" overscan={30}>

@@ -1,7 +1,7 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { ConflictChunk, ConflictFile, TextEncoding } from '@shared/types'
+import type { ConflictFile, TextEncoding } from '@shared/types'
 import { decode, detect, encode } from './encoding'
 import { git } from './exec'
 import { gitDir, operation } from './status'

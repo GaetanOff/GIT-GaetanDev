@@ -8,10 +8,10 @@
   /** A revision field: type a branch, tag or SHA, with fuzzy suggestions. */
   let { value, label, onchange }: { value: string; label: string; onchange: (v: string) => void } = $props()
 
-  let text = $state('')
+  /** Follows `value` from outside, and what is typed meanwhile. */
+  let text = $derived(value)
   let open = $state(false)
   let active = $state(0)
-  $effect(() => { text = value })
 
   const refs = $derived([
     ...app.localBranches.map(b => ({ name: b.name, icon: 'branch' as IconName })),

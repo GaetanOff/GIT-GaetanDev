@@ -75,7 +75,8 @@
     } else if (e.ctrlKey || e.metaKey) {
       const next = new Set([...app.multi].filter(x => x.startsWith(`${area}\0`)))
       if (!next.size && app.selected?.area === area) next.add(key(area, app.selected.path))
-      next.has(k) ? next.delete(k) : next.add(k)
+      if (next.has(k)) next.delete(k)
+      else next.add(k)
       app.multi = next
       anchor = i
     } else {
