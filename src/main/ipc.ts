@@ -186,7 +186,8 @@ export function registerIpc(watcher: RepoWatcher): void {
       try {
         if (!trustedSender(e)) throw new GitError('Request refused: it does not come from the app window.')
         checkArgs(channel, args)
-        return { ok: true, value: await (fn as (...a: unknown[]) => Promise<unknown>)(...args) }
+        const run = () => (fn as (...a: unknown[]) => Promise<unknown>)(...args)
+        return { ok: true, value: await (WRITES.has(channel) ? serial(args[0] as string, run) : run()) }
       } catch (e) {
         const err = e as GitError
         return { ok: false, error: { message: err.message ?? String(e), code: err.code, details: err.details || undefined } }
@@ -205,6 +206,31 @@ function trustedSender(e: IpcMainInvokeEvent): boolean {
   const dev = !app.isPackaged && process.env.ELECTRON_RENDERER_URL
   if (dev && frame.url.startsWith(new URL(dev).origin)) return true
   return frame.url.startsWith('file:') && /\/renderer\/index\.html(?:[?#].*)?$/.test(frame.url.replace(/\\/g, '/'))
+}
+
+/**
+ * Channels that write the index, HEAD or the working tree. Two at once on the
+ * same repository fail on index.lock or interleave (staging during a pull, a
+ * discard during a stash), so they run one after another per repository;
+ * reads and network-only commands stay concurrent.
+ */
+const WRITES = new Set([
+  'git:stage', 'git:unstage', 'git:stageLines', 'git:unstageLines', 'git:discard', 'git:discardLines', 'git:ignore',
+  'git:commit', 'git:undoCommit', 'git:resolve', 'git:continue', 'git:abort', 'git:skip', 'git:resolveContent', 'git:resolveWhole',
+  'git:cherryPick', 'git:revert', 'git:reset', 'git:checkoutCommit', 'git:restore', 'git:rebaseRun', 'git:rebasePlan',
+  'git:checkout', 'git:createBranch', 'git:merge', 'git:rebase', 'git:stash', 'git:stashApply', 'git:stashDrop', 'git:pull',
+  'git:submoduleUpdate', 'git:lfsPull',
+])
+const queues = new Map<string, Promise<unknown>>()
+
+/** Runs `fn` after every earlier write on the same repository has settled. */
+function serial<T>(repo: string, fn: () => Promise<T>): Promise<T> {
+  const key = repo.replace(/\\/g, '/').toLowerCase()
+  const result = (queues.get(key) ?? Promise.resolve()).catch(() => undefined).then(fn)
+  const tail = result.catch(() => undefined)
+  queues.set(key, tail)
+  tail.then(() => { if (queues.get(key) === tail) queues.delete(key) })
+  return result
 }
 
 /** Arguments, by position, that name a revision, branch, tag or remote. */
