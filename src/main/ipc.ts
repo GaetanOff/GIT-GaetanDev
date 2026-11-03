@@ -23,7 +23,7 @@ import { openEditor, openTerminal } from './integrations'
 import { detectProvider, providerUrl } from './provider'
 import { installUpdate } from './updater'
 import { githubDesktopRepos } from './importers'
-import { addRepoEntry, getState, isRegistered, removeRepo, repoById, save, updateSettings, upsertRepo } from './store'
+import { addRepoEntry, getState, isRegistered, removeRepo, repoById, save, stateUnreadable, updateSettings, upsertRepo } from './store'
 import type { RepoWatcher } from './watcher'
 
 type Handlers = { [K in ApiChannel]: (...args: Parameters<Api[K]>) => ReturnType<Api[K]> }
@@ -53,7 +53,7 @@ export function registerIpc(watcher: RepoWatcher): void {
       const s = getState()
       const open = launchPath
       launchPath = null
-      return { repos: s.repos, lastRepo: s.lastRepo, settings: s.settings, platform: process.platform, version: app.getVersion(), home: homedir(), launchPath: open }
+      return { repos: s.repos, lastRepo: s.lastRepo, settings: s.settings, platform: process.platform, version: app.getVersion(), home: homedir(), launchPath: open, stateUnreadable: stateUnreadable() }
     },
     'app:settings': async patch => updateSettings(patch),
     'app:installUpdate': async () => installUpdate(),

@@ -190,6 +190,9 @@ class AppState {
     else if (s.lastRepo && s.repos.some(r => r.id === s.lastRepo)) await this.openRepo(s.lastRepo).catch(() => undefined)
     this.ready = true
     this.scheduleAutoFetch()
+    if (s.stateUnreadable) {
+      toast('error', 'Your repository list and settings could not be read (another program may hold the file). Nothing is saved until you restart the app.', undefined, 20_000)
+    }
   }
 
   saveDrafts(): void {
