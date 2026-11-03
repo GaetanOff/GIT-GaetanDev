@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path'
 import { startAskPass, stopAskPass } from './askpass'
 import { killRunning, setGitEnv } from './git/exec'
 import { devShot } from './devshot'
-import { askRenderer, registerIpc, send, setLaunchPath } from './ipc'
+import { askRenderer, queuesBusy, registerIpc, send, setLaunchPath, settleQueues } from './ipc'
 import { flush, getState, save } from './store'
 import { startUpdates } from './updater'
 import { RepoWatcher } from './watcher'
@@ -69,6 +69,16 @@ function start(): void {
   app.on('window-all-closed', () => {
     watcher.close()
     if (process.platform !== 'darwin') app.quit()
+  })
+
+  // Killed mid-way, a commit, checkout or rebase leaves .git/index.lock and a half-done operation, and
+  // a fetch a ref lock: quitting waits for queued git work first, ten seconds at most.
+  let waited = false
+  app.on('before-quit', e => {
+    if (waited || !queuesBusy()) return
+    e.preventDefault()
+    waited = true
+    settleQueues(10_000).then(() => app.quit())
   })
 
   app.on('will-quit', () => {

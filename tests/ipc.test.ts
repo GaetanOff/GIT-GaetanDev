@@ -4,7 +4,7 @@ vi.mock('electron', () => ({ app: {}, BrowserWindow: {}, clipboard: {}, dialog: 
 vi.mock('../src/main/store', () => ({ isRegistered: () => true, getState: () => ({ settings: {} }) }))
 vi.mock('../src/main/updater', () => ({ installUpdate: () => undefined }))
 
-const { checkArgs, schedule } = await import('../src/main/ipc')
+const { checkArgs, queuesBusy, schedule, settleQueues } = await import('../src/main/ipc')
 
 const REPO = 'C:/repos/app'
 
@@ -61,6 +61,23 @@ describe('scheduling', () => {
     release()
     await Promise.all([fetch, remove])
     expect(order).toEqual(['fetch', 'fetch done', 'remove'])
+  })
+
+  it('lets quitting wait for running git work, up to a limit', async () => {
+    let done = false
+    const commit = schedule('git:commit', REPO, () => new Promise<void>(resolve => setTimeout(() => { done = true; resolve() }, 60)))
+    expect(queuesBusy()).toBe(true)
+    await settleQueues(5_000)
+    expect(done).toBe(true)
+    await commit
+    await tick()
+    expect(queuesBusy()).toBe(false)
+    // A repository of its own: this fetch never settles.
+    const stuck = schedule('git:fetch', 'C:/repos/stuck', () => new Promise<void>(() => undefined))
+    const started = Date.now()
+    await settleQueues(50)
+    expect(Date.now() - started).toBeLessThan(1_000)
+    void stuck
   })
 
   it('makes a pull wait for writes in progress', async () => {

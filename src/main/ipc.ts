@@ -56,7 +56,11 @@ export function registerIpc(watcher: RepoWatcher): void {
       return { repos: s.repos, lastRepo: s.lastRepo, settings: s.settings, platform: process.platform, version: app.getVersion(), home: homedir(), launchPath: open, stateUnreadable: stateUnreadable() }
     },
     'app:settings': async patch => updateSettings(patch),
-    'app:installUpdate': async () => installUpdate(),
+    // "Restart now" during a commit or a checkout: the update waits for it (ten seconds at most).
+    'app:installUpdate': async () => {
+      await settleQueues(10_000)
+      installUpdate()
+    },
     'repo:list': async () => getState().repos,
     'repo:add': async path => addRepo(path),
     'repo:importGithubDesktop': async () => {
@@ -259,6 +263,16 @@ function serial<T>(queues: Map<string, Promise<unknown>>, repo: string, fn: () =
   queues.set(key, tail)
   tail.then(() => { if (queues.get(key) === tail) queues.delete(key) })
   return result
+}
+
+/** Whether queued git work (a write or a network command) is still running. */
+export const queuesBusy = (): boolean => writeQueues.size + networkQueues.size > 0
+
+/** Resolves once every queued write and network command has settled, or after `ms`. */
+export function settleQueues(ms: number): Promise<void> {
+  const pending = [...writeQueues.values(), ...networkQueues.values()]
+  if (!pending.length) return Promise.resolve()
+  return Promise.race([Promise.all(pending).then(() => undefined), new Promise<void>(resolve => setTimeout(resolve, ms))])
 }
 
 /** Runs a channel's handler on the queues it belongs to (none for reads). */
