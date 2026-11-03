@@ -358,6 +358,17 @@ describe('conflicts', () => {
     expect(readFileSync(join(repo, 'a.cs'), 'utf8')).toBe(`${bom}using C;\nclass X {}\n`)
   })
 
+  it('does not bring back a BOM that our side removed', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': '﻿line\n' })
+    sh(repo, 'checkout', '-q', '-b', 'other')
+    commit(repo, 'theirs', { 'a.txt': '﻿theirs\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'ours', { 'a.txt': 'ours\n' })
+    await git(repo, ['merge', 'other'], { okCodes: [1] })
+    expect((await conflict(repo, 'a.txt')).encoding).toBe('utf8')
+  })
+
   it('reads each side of a conflict in its own encoding', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a.txt': 'name = x\n' })

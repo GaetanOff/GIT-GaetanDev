@@ -73,14 +73,18 @@ const MARK = {
 
 const isAscii = (b: Buffer) => b.every(c => c < 0x80)
 
+const hasBom = (b: Buffer | null) => !!b && detect(b) === 'utf8-bom'
+
 /**
- * The encoding the resolved file is written back in, so it round-trips: ours
- * (Windows-1252, UTF-8 with BOM…), unless ours is plain ASCII, which any of
- * them reads the same; then the first other side whose bytes tell.
+ * The encoding the resolved file is written back in, so it round-trips.
+ * Windows-1252 when the first side whose text is not plain ASCII (ours first)
+ * is in it. The BOM is merged like any other change: theirs only when ours
+ * left it as the base had it, so a BOM ours removed does not come back.
  */
-function fileEncoding(...sides: (Buffer | null)[]): TextEncoding {
-  const telling = sides.find(b => b && (detect(b) === 'utf8-bom' || !isAscii(b)))
-  return telling ? detect(telling) : 'utf8'
+function fileEncoding(ours: Buffer, theirs: Buffer, base: Buffer | null): TextEncoding {
+  const telling = [ours, theirs, base].find(b => b && !isAscii(hasBom(b) ? b.subarray(3) : b))
+  if (telling && detect(telling) === 'windows-1252') return 'windows-1252'
+  return (hasBom(ours) === hasBom(base) ? hasBom(theirs) : hasBom(ours)) ? 'utf8-bom' : 'utf8'
 }
 
 /**
