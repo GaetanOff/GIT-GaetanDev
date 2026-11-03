@@ -43,8 +43,13 @@ async function resolveCommit(repo: string, rev: string): Promise<string> {
 /**
  * Asks git for the todo it would run with `--rebase-merges` (labels, resets,
  * merges) without running it: the sequence editor copies the list out and
- * empties it, so git stops with "nothing to do" and restores everything,
- * autostash included.
+ * empties it, so git stops with "nothing to do" before moving HEAD.
+ *
+ * Git only starts on a clean tree. Instead of stashing the user's changes
+ * (`--autostash` puts them back unstaged, and fails on "add -N" files), the
+ * dry run reads a throwaway index: HEAD's tree with every entry marked
+ * skip-worktree, which git sees as clean. The real index and the files on
+ * disk are never touched.
  */
 async function extractTodo(repo: string, base: string | null, shas: string[]): Promise<RebaseTodoItem[]> {
   const dir = join(await gitDir(repo), 'gdg-rebase')
@@ -54,11 +59,19 @@ async function extractTodo(repo: string, base: string | null, shas: string[]): P
   // No hooks for this dry run (pre-rebase could refuse or act), and full command names whatever the user's config.
   const noHooks = join(dir, 'no-hooks')
   await mkdir(noHooks, { recursive: true })
-  await git(repo, ['-c', `core.hooksPath=${posix(noHooks)}`, '-c', 'rebase.abbreviateCommands=false',
-    'rebase', '-i', '--rebase-merges', '--autostash', ...(base ? [base] : ['--root'])], {
-    env: { GIT_SEQUENCE_EDITOR: `f() { cp "$1" ${quote(out)}; : > "$1"; }; f`, GIT_EDITOR: 'true' },
-    okCodes: [1],
-  })
+  const index = { GIT_INDEX_FILE: join(dir, 'plan-index') }
+  try {
+    await git(repo, ['read-tree', 'HEAD'], { env: index })
+    const files = await git(repo, ['ls-files', '-z'], { env: index })
+    if (files.raw.length) await git(repo, ['update-index', '-z', '--skip-worktree', '--stdin'], { env: index, input: files.raw })
+    await git(repo, ['-c', `core.hooksPath=${posix(noHooks)}`, '-c', 'rebase.abbreviateCommands=false',
+      'rebase', '-i', '--rebase-merges', '--no-autostash', ...(base ? [base] : ['--root'])], {
+      env: { ...index, GIT_SEQUENCE_EDITOR: `f() { cp "$1" ${quote(out)}; : > "$1"; }; f`, GIT_EDITOR: 'true' },
+      okCodes: [1],
+    })
+  } finally {
+    await rm(index.GIT_INDEX_FILE, { force: true })
+  }
   const text = await readFile(out, 'utf8').catch(() => '')
   if (!text) throw new GitError('Git did not produce a rebase plan for this range.')
 
