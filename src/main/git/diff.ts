@@ -1,8 +1,9 @@
 import { spawn } from 'node:child_process'
-import { readFile, stat } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { extname, join } from 'node:path'
 import type { DiffHunk, DiffLine, DiffOptions, DiffSource, FileDiff, LineSelection, TextEncoding } from '@shared/types'
-import { decodeOutput, encode } from './encoding'
+import { decode, decodeOutput, detect, encode } from './encoding'
 import { git, gitOut } from './exec'
 
 /** Beyond this many diff lines the UI asks before rendering. */
@@ -15,6 +16,7 @@ const IMAGE_TYPES: Record<string, string> = {
   '.bmp': 'image/bmp', '.ico': 'image/x-icon', '.svg': 'image/svg+xml', '.avif': 'image/avif',
 }
 const MAX_IMAGE_BYTES = 8 * 1024 * 1024
+const MAX_SIDE_BYTES = 16 * 1024 * 1024
 
 function baseArgs(opts: DiffOptions): string[] {
   const args = ['--no-ext-diff', '--no-color', `-U${Math.max(0, Math.min(opts.context, 100))}`, '--find-renames']
@@ -27,7 +29,11 @@ export async function diff(repo: string, source: DiffSource, opts: DiffOptions):
   const parsed = parseDiff(text, source.path, opts.force)
   parsed.encoding = encoding
   parsed.lfs = lfsPointer(parsed)
-  if (parsed.binary) parsed.image = await imagePreview(repo, source, parsed)
+  if (!parsed.binary) return parsed
+  const both = await sides(repo, source, parsed)
+  const utf16 = await utf16Diff(repo, source.path, both, opts)
+  if (utf16) return { ...utf16, oldPath: parsed.oldPath, modeChange: parsed.modeChange }
+  parsed.image = imagePreview(source.path, both)
   return parsed
 }
 
@@ -136,15 +142,12 @@ export function parseDiff(raw: string, path: string, force = false): FileDiff {
   return result
 }
 
-async function imagePreview(repo: string, source: DiffSource, d: FileDiff): Promise<FileDiff['image']> {
-  const mime = IMAGE_TYPES[extname(source.path).toLowerCase()]
-  if (!mime) return undefined
-  const toUrl = (buf: Buffer | null) => (buf && buf.length <= MAX_IMAGE_BYTES ? `data:${mime};base64,${buf.toString('base64')}` : undefined)
-
+/** Raw bytes of both sides of a change, each capped at MAX_SIDE_BYTES (null when absent or too big). */
+async function sides(repo: string, source: DiffSource, d: FileDiff): Promise<{ before: Buffer | null; after: Buffer | null }> {
   const blob = async (spec: string): Promise<Buffer | null> => {
     try {
       const size = +(await gitOut(repo, ['cat-file', '-s', spec])).trim()
-      if (size > MAX_IMAGE_BYTES) return null
+      if (size > MAX_SIDE_BYTES) return null
       return await new Promise<Buffer>((resolve, reject) => {
         const child = spawn('git', ['cat-file', 'blob', spec], { cwd: repo, windowsHide: true })
         const parts: Buffer[] = []
@@ -159,7 +162,7 @@ async function imagePreview(repo: string, source: DiffSource, d: FileDiff): Prom
   const disk = async (p: string) => {
     try {
       const full = join(repo, p)
-      if ((await stat(full)).size > MAX_IMAGE_BYTES) return null
+      if ((await stat(full)).size > MAX_SIDE_BYTES) return null
       return await readFile(full)
     } catch {
       return null
@@ -169,26 +172,67 @@ async function imagePreview(repo: string, source: DiffSource, d: FileDiff): Prom
   const oldPath = d.oldPath ?? source.path
   switch (source.kind) {
     case 'worktree':
-      return { before: d.isNew || source.untracked ? undefined : toUrl(await blob(`:${oldPath}`)), after: toUrl(await disk(source.path)) }
+      if (source.conflicted) return { before: await blob(`HEAD:${oldPath}`), after: await disk(source.path) }
+      return { before: d.isNew || source.untracked ? null : await blob(`:${oldPath}`), after: await disk(source.path) }
     case 'index':
-      return { before: d.isNew ? undefined : toUrl(await blob(`HEAD:${oldPath}`)), after: d.isDeleted ? undefined : toUrl(await blob(`:${source.path}`)) }
+      return { before: d.isNew ? null : await blob(`HEAD:${oldPath}`), after: d.isDeleted ? null : await blob(`:${source.path}`) }
     case 'commit':
       return {
-        before: d.isNew ? undefined : toUrl(await blob(`${source.sha}^:${oldPath}`)),
-        after: d.isDeleted ? undefined : toUrl(await blob(`${source.sha}:${source.path}`)),
+        before: d.isNew ? null : await blob(`${source.sha}^:${oldPath}`),
+        after: d.isDeleted ? null : await blob(`${source.sha}:${source.path}`),
       }
     case 'stash': {
       const ref = `stash@{${source.index}}`
-      if (source.untracked) return { after: toUrl(await blob(`${ref}^3:${source.path}`)) }
-      return { before: toUrl(await blob(`${ref}^1:${source.path}`)), after: toUrl(await blob(`${ref}:${source.path}`)) }
+      if (source.untracked) return { before: null, after: await blob(`${ref}^3:${source.path}`) }
+      return { before: await blob(`${ref}^1:${source.path}`), after: await blob(`${ref}:${source.path}`) }
     }
     case 'range':
       return {
-        before: d.isNew ? undefined : toUrl(await blob(`${source.from}:${oldPath}`)),
-        after: d.isDeleted ? undefined : toUrl(await blob(`${source.to}:${source.path}`)),
+        before: d.isNew ? null : await blob(`${source.from}:${oldPath}`),
+        after: d.isDeleted ? null : await blob(`${source.to}:${source.path}`),
       }
   }
 }
+
+function imagePreview(path: string, both: { before: Buffer | null; after: Buffer | null }): FileDiff['image'] {
+  const mime = IMAGE_TYPES[extname(path).toLowerCase()]
+  if (!mime) return undefined
+  const toUrl = (buf: Buffer | null) => (buf && buf.length <= MAX_IMAGE_BYTES ? `data:${mime};base64,${buf.toString('base64')}` : undefined)
+  return { before: toUrl(both.before), after: toUrl(both.after) }
+}
+
+const isUtf16 = (b: Buffer | null) => !!b && b.length >= 2 && ((b[0] === 0xff && b[1] === 0xfe) || (b[0] === 0xfe && b[1] === 0xff))
+
+/**
+ * Git sees UTF-16 files as binary (they are full of NUL bytes). When both
+ * sides are UTF-16 (or one is absent), they are decoded, diffed as UTF-8 text
+ * in temporary files, and the result is labelled with the real path. Line
+ * staging stays off for these: patches would not match the UTF-16 bytes.
+ */
+async function utf16Diff(repo: string, path: string, both: { before: Buffer | null; after: Buffer | null }, opts: DiffOptions): Promise<FileDiff | null> {
+  const { before, after } = both
+  if (!(isUtf16(before) || isUtf16(after)) || (before && !isUtf16(before)) || (after && !isUtf16(after))) return null
+  const encoding = detect((after ?? before)!)
+  const dir = await mkdtemp(join(tmpdir(), 'gdg-utf16-'))
+  try {
+    const a = join(dir, 'a')
+    const b = join(dir, 'b')
+    await Promise.all([
+      writeFile(a, before ? decode(before, detect(before)) : '', 'utf8'),
+      writeFile(b, after ? decode(after, detect(after)) : '', 'utf8'),
+    ])
+    const r = await git(repo, ['diff', '--no-index', ...baseArgs(opts), '--', a, b], { okCodes: [1] })
+    const d = parseDiff(r.stdout, path, opts.force)
+    d.header = [`diff --git a/${path} b/${path}`]
+    d.isNew = !before
+    d.isDeleted = !after
+    d.encoding = encoding
+    return d
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => undefined)
+  }
+}
+
 
 /** Detects a Git LFS pointer diff: "version https://git-lfs…", "oid sha256:…", "size N". */
 function lfsPointer(d: FileDiff): FileDiff['lfs'] {

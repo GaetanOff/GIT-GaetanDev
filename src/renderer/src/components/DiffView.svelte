@@ -75,7 +75,9 @@
   /* ─── Line selection ──────────────────────────────────────────────────────── */
 
   const lineOps = $derived(
-    (area === 'staged' || area === 'unstaged') && !!diff && !diff.binary && !diff.tooLarge && !app.settings.ignoreWhitespace,
+    (area === 'staged' || area === 'unstaged') && !!diff && !diff.binary && !diff.tooLarge && !app.settings.ignoreWhitespace &&
+      // UTF-16 diffs are computed on decoded text: a line patch would not match the file's bytes.
+      diff.encoding !== 'utf16le' && diff.encoding !== 'utf16be',
   )
   const untracked = $derived(source.kind === 'worktree' && !!source.untracked)
 
