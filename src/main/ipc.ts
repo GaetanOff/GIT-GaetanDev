@@ -8,13 +8,15 @@ import { registerPending, respond } from './askpass'
 import { blame, fileLog } from './git/blame'
 import { compare } from './git/compare'
 import { rebasePlan, rebaseRun } from './git/rebase'
+import { lfsPull, submoduleUpdate, worktreeAdd, worktreeRemove } from './git/modules'
+import { fsmonitorInfo, setFsmonitor } from './git/perf'
 import { operations, restore } from './git/reflog'
 import { conflict, resolveContent, resolveWhole } from './git/conflict'
 import { diff } from './git/diff'
 import { git, GitError } from './git/exec'
 import { commitDetail, log, stashDetail } from './git/log'
 import * as ops from './git/ops'
-import { defaultBranch, defaultRemote, refs } from './git/refs'
+import { defaultBranch, defaultRemote, extras, refs } from './git/refs'
 import { isRepo, status, topLevel } from './git/status'
 import { openEditor, openTerminal } from './integrations'
 import { detectProvider, providerUrl } from './provider'
@@ -84,7 +86,9 @@ export function registerIpc(watcher: RepoWatcher): void {
     'git:discard': async (repo, paths) => ops.discard(repo, paths),
     'git:discardLines': async (repo, path, sel) => ops.discardLines(repo, path, sel, contextOpts()),
     'git:ignore': async (repo, pattern) => ops.ignore(repo, pattern),
-    'git:commit': async (repo, message, amend) => ops.commit(repo, message, amend),
+    'git:commit': async (repo, message, amend, opts) => ops.commit(repo, message, amend, opts),
+    'git:authors': async repo => ops.authors(repo),
+    'git:commitSetup': async repo => ops.commitSetup(repo),
     'git:lastCommitMessage': async repo => ops.lastCommitMessage(repo),
     'git:preparedMessage': async repo => ops.preparedMessage(repo),
     'git:undoCommit': async repo => ops.undoCommit(repo),
@@ -93,13 +97,13 @@ export function registerIpc(watcher: RepoWatcher): void {
     'git:abort': async repo => ops.abortOp(repo),
     'git:skip': async repo => ops.skipOp(repo),
     'git:conflict': async (repo, path) => conflict(repo, path),
-    'git:resolveContent': async (repo, path, content) => resolveContent(repo, path, content),
+    'git:resolveContent': async (repo, path, content, encoding) => resolveContent(repo, path, content, encoding),
     'git:resolveWhole': async (repo, path, choice) => resolveWhole(repo, path, choice),
 
     'git:log': async (repo, q) => log(repo, q),
     'git:commit:detail': async (repo, sha) => commitDetail(repo, sha),
-    'git:cherryPick': async (repo, sha) => ops.cherryPick(repo, sha),
-    'git:revert': async (repo, sha) => ops.revert(repo, sha),
+    'git:cherryPick': async (repo, shas) => ops.cherryPick(repo, shas),
+    'git:revert': async (repo, shas) => ops.revert(repo, shas),
     'git:reset': async (repo, sha, mode) => ops.reset(repo, sha, mode),
     'git:checkoutCommit': async (repo, sha) => ops.checkoutCommit(repo, sha),
     'git:fileLog': async (repo, path, skip, limit) => fileLog(repo, path, skip, limit),
@@ -111,6 +115,7 @@ export function registerIpc(watcher: RepoWatcher): void {
     'git:rebaseRun': async (repo, base, steps) => rebaseRun(repo, base, steps),
 
     'git:refs': async repo => refs(repo),
+    'git:extras': async repo => extras(repo),
     'git:checkout': async (repo, branch, opts) => ops.checkout(repo, branch, opts),
     'git:createBranch': async (repo, name, from, co) => ops.createBranch(repo, name, from, co),
     'git:renameBranch': async (repo, from, to) => ops.renameBranch(repo, from, to),
@@ -127,6 +132,12 @@ export function registerIpc(watcher: RepoWatcher): void {
     'git:stashFiles': async (repo, index) => stashDetail(repo, index),
     'git:addRemote': async (repo, name, url) => ops.addRemote(repo, name, url),
     'git:removeRemote': async (repo, name) => ops.removeRemote(repo, name),
+    'git:submoduleUpdate': async (repo, path) => submoduleUpdate(repo, path, progress),
+    'git:lfsPull': async repo => lfsPull(repo, progress),
+    'git:worktreeAdd': async (repo, path, branch, create, from) => worktreeAdd(repo, path, branch, create, from),
+    'git:worktreeRemove': async (repo, path, force) => worktreeRemove(repo, path, force),
+    'repo:fsmonitor': async repo => fsmonitorInfo(repo),
+    'repo:setFsmonitor': async (repo, on) => setFsmonitor(repo, on),
 
     'git:fetch': async repo => ops.fetchAll(repo, progress),
     'git:pull': async repo => ops.pull(repo, getState().settings.pullMode, progress),
@@ -163,7 +174,7 @@ export function registerIpc(watcher: RepoWatcher): void {
         return { ok: true, value: await (fn as (...a: unknown[]) => Promise<unknown>)(...args) }
       } catch (e) {
         const err = e as GitError
-        return { ok: false, error: { message: err.message ?? String(e), code: err.code } }
+        return { ok: false, error: { message: err.message ?? String(e), code: err.code, details: err.details || undefined } }
       }
     })
   }

@@ -75,6 +75,8 @@ export interface RepoStatus {
   stashCount: number
 }
 
+export type TextEncoding = 'utf8' | 'utf8-bom' | 'utf16le' | 'utf16be' | 'windows-1252'
+
 /* ─── Diffs ─────────────────────────────────────────────────────────────────── */
 
 export type DiffLineType = 'ctx' | 'add' | 'del'
@@ -113,6 +115,10 @@ export interface FileDiff {
   /** Over the line budget: hunks are dropped unless the caller forces. */
   tooLarge?: boolean
   image?: { before?: string; after?: string }
+  /** Encoding of the file content; patches are written back with it. */
+  encoding: TextEncoding
+  /** Git LFS pointer: the real content lives on the LFS server. */
+  lfs?: { oid: string; size: number; before?: { oid: string; size: number } }
   submodule?: { before?: string; after?: string }
 }
 
@@ -155,6 +161,7 @@ export interface CommitFile {
 
 export interface CommitDetail extends Commit {
   body: string
+  signature?: Signature
   committer: string
   committerEmail: string
   committerDate: number
@@ -281,6 +288,7 @@ export interface ConflictFile {
   theirsExists: boolean
   chunks: ConflictChunk[]
   eol: '\n' | '\r\n'
+  encoding: TextEncoding
   finalNewline: boolean
   /** The file on disk has no conflict markers left: it was resolved elsewhere. */
   resolvedOnDisk: boolean
@@ -326,11 +334,53 @@ export interface Stash {
   branch: string
 }
 
+export interface Submodule {
+  path: string
+  url: string
+  sha: string
+  /** uninitialized: not cloned yet; modified: checked out at another commit than recorded. */
+  state: 'ok' | 'uninitialized' | 'modified' | 'conflict'
+  describe: string
+}
+
+export interface Worktree {
+  path: string
+  head: string
+  branch: string | null
+  current: boolean
+  locked: boolean
+  prunable: boolean
+  bare: boolean
+}
+
+export interface LfsInfo {
+  /** .gitattributes routes files through LFS. */
+  used: boolean
+  /** git-lfs is installed on this machine. */
+  installed: boolean
+}
+
 export interface Refs {
   branches: Branch[]
   tags: Tag[]
   remotes: Remote[]
   stashes: Stash[]
+  submodules: Submodule[]
+  worktrees: Worktree[]
+  lfs: LfsInfo
+}
+
+export interface Author {
+  name: string
+  email: string
+  commits: number
+}
+
+/** G good, U good but untrusted key, B bad, X/Y expired, R revoked, E cannot check, N unsigned. */
+export interface Signature {
+  status: 'G' | 'U' | 'B' | 'X' | 'Y' | 'R' | 'E' | 'N'
+  signer: string
+  key: string
 }
 
 /* ─── Providers ─────────────────────────────────────────────────────────────── */

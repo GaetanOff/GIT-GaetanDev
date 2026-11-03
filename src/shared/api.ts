@@ -1,5 +1,5 @@
 import type {
-  AskPassRequest, Blame, Commit, CompareResult, ConflictFile, FileCommit, RebasePlan, RebaseStep, RepoOperationEntry, RestorePoint, CommitDetail, DiffOptions, DiffSource, FileDiff, GitIdentity, LineSelection,
+  AskPassRequest, Author, Blame, TextEncoding, Commit, CompareResult, ConflictFile, FileCommit, RebasePlan, RebaseStep, RepoOperationEntry, RestorePoint, CommitDetail, DiffOptions, DiffSource, FileDiff, GitIdentity, LineSelection,
   LogQuery, Progress, ProviderLink, Refs, RepoChangeEvent, RepoEntry, RepoStatus, ResetMode, Settings,
 } from './types'
 
@@ -31,7 +31,9 @@ export interface Api {
   'git:discard'(repo: string, paths: string[]): Promise<void>
   'git:discardLines'(repo: string, path: string, selection: LineSelection): Promise<void>
   'git:ignore'(repo: string, pattern: string): Promise<void>
-  'git:commit'(repo: string, message: string, amend: boolean): Promise<string>
+  'git:commit'(repo: string, message: string, amend: boolean, opts?: { noVerify?: boolean }): Promise<string>
+  'git:authors'(repo: string): Promise<Author[]>
+  'git:commitSetup'(repo: string): Promise<{ template: string; signing: boolean }>
   'git:lastCommitMessage'(repo: string): Promise<string>
   'git:preparedMessage'(repo: string): Promise<string>
   'git:undoCommit'(repo: string): Promise<string>
@@ -40,14 +42,14 @@ export interface Api {
   'git:abort'(repo: string): Promise<void>
   'git:skip'(repo: string): Promise<void>
   'git:conflict'(repo: string, path: string): Promise<ConflictFile>
-  'git:resolveContent'(repo: string, path: string, content: string): Promise<void>
+  'git:resolveContent'(repo: string, path: string, content: string, encoding?: TextEncoding): Promise<void>
   'git:resolveWhole'(repo: string, path: string, choice: 'ours' | 'theirs' | 'delete' | 'disk'): Promise<void>
 
   /* History */
   'git:log'(repo: string, query: LogQuery): Promise<Commit[]>
   'git:commit:detail'(repo: string, sha: string): Promise<CommitDetail>
-  'git:cherryPick'(repo: string, sha: string): Promise<void>
-  'git:revert'(repo: string, sha: string): Promise<void>
+  'git:cherryPick'(repo: string, shas: string[]): Promise<void>
+  'git:revert'(repo: string, shas: string[]): Promise<void>
   'git:reset'(repo: string, sha: string, mode: ResetMode): Promise<void>
   'git:checkoutCommit'(repo: string, sha: string): Promise<void>
   'git:fileLog'(repo: string, path: string, skip: number, limit: number): Promise<FileCommit[]>
@@ -60,6 +62,7 @@ export interface Api {
 
   /* Refs */
   'git:refs'(repo: string): Promise<Refs>
+  'git:extras'(repo: string): Promise<Pick<Refs, 'submodules' | 'worktrees' | 'lfs'>>
   'git:checkout'(repo: string, branch: string, opts?: { stash?: boolean }): Promise<void>
   'git:createBranch'(repo: string, name: string, from: string | null, checkout: boolean): Promise<void>
   'git:renameBranch'(repo: string, from: string, to: string): Promise<void>
@@ -76,6 +79,12 @@ export interface Api {
   'git:stashFiles'(repo: string, index: number): Promise<CommitDetail>
   'git:addRemote'(repo: string, name: string, url: string): Promise<void>
   'git:removeRemote'(repo: string, name: string): Promise<void>
+  'git:submoduleUpdate'(repo: string, path: string | null): Promise<void>
+  'git:lfsPull'(repo: string): Promise<void>
+  'git:worktreeAdd'(repo: string, path: string, branch: string, create: boolean, from: string | null): Promise<void>
+  'git:worktreeRemove'(repo: string, path: string, force: boolean): Promise<void>
+  'repo:setFsmonitor'(repo: string, on: boolean): Promise<boolean>
+  'repo:fsmonitor'(repo: string): Promise<{ enabled: boolean; supported: boolean; files: number }>
 
   /* Network */
   'git:fetch'(repo: string): Promise<void>
@@ -104,9 +113,9 @@ export const API_CHANNELS: ApiChannel[] = [
   'git:discardLines', 'git:ignore', 'git:commit', 'git:lastCommitMessage', 'git:preparedMessage', 'git:undoCommit', 'git:resolve',
   'git:continue', 'git:abort', 'git:skip', 'git:conflict', 'git:resolveContent', 'git:resolveWhole',
   'git:log', 'git:commit:detail', 'git:cherryPick', 'git:revert', 'git:reset', 'git:checkoutCommit', 'git:fileLog', 'git:blame', 'git:compare', 'git:operations', 'git:restore', 'git:rebasePlan', 'git:rebaseRun',
-  'git:refs', 'git:checkout', 'git:createBranch', 'git:renameBranch', 'git:deleteBranch', 'git:deleteRemoteBranch',
+  'git:refs', 'git:extras', 'git:checkout', 'git:createBranch', 'git:renameBranch', 'git:deleteBranch', 'git:deleteRemoteBranch',
   'git:merge', 'git:rebase', 'git:createTag', 'git:deleteTag', 'git:pushTag', 'git:stash', 'git:stashApply',
-  'git:stashDrop', 'git:stashFiles', 'git:addRemote', 'git:removeRemote',
+  'git:stashDrop', 'git:stashFiles', 'git:addRemote', 'git:removeRemote', 'git:submoduleUpdate', 'git:lfsPull', 'git:worktreeAdd', 'git:worktreeRemove', 'repo:setFsmonitor', 'repo:fsmonitor', 'git:authors', 'git:commitSetup',
   'git:fetch', 'git:pull', 'git:push',
   'git:identity', 'git:setIdentity', 'provider:url', 'shell:openUrl', 'shell:reveal', 'shell:editor', 'shell:terminal',
   'clipboard:write', 'askpass:respond', 'watch:set',
@@ -124,7 +133,7 @@ export interface ApiEvents {
 export interface IpcEnvelope<T> {
   ok: boolean
   value?: T
-  error?: { message: string; code?: string }
+  error?: { message: string; code?: string; details?: string }
 }
 
 /**
@@ -142,3 +151,4 @@ export type GitErrorCode =
   | 'NOT_A_REPO'
   | 'CANCELLED'
   | 'GIT_NOT_FOUND'
+  | 'HOOK_FAILED'

@@ -119,6 +119,12 @@ export const COMMANDS: Command[] = [
   { id: 'rebase', title: 'Edit history (interactive rebase)…', group: 'Branch', icon: 'edit', keys: 'mod+alt+r', when: onBranch, run: startRebase },
   { id: 'compare', title: 'Compare branches…', group: 'Branch', icon: 'split', keys: 'mod+alt+c', when: hasRepo, run: () => app.openCompare(defaultBase(), app.status?.branch ?? 'HEAD') },
   { id: 'syntax', title: 'Toggle syntax highlighting', group: 'View', icon: 'code', run: () => app.updateSettings({ syntaxHighlight: !app.settings.syntaxHighlight }) },
+  { id: 'nextTab', title: 'Next repository tab', group: 'Repository', icon: 'repo', keys: 'mod+tab', when: () => app.tabs.length > 1, run: () => app.cycleTab(1) },
+  { id: 'prevTab', title: 'Previous repository tab', group: 'Repository', icon: 'repo', keys: 'mod+shift+tab', when: () => app.tabs.length > 1, run: () => app.cycleTab(-1) },
+  { id: 'closeTab', title: 'Close repository tab', group: 'Repository', icon: 'x', keys: 'mod+w', when: hasRepo, run: () => app.closeTab(app.repo!.id) },
+  { id: 'worktree', title: 'New worktree…', group: 'Branch', icon: 'tree', when: () => hasRepo() && !!app.status?.hasCommits, run: () => openDialog({ kind: 'worktree' }) },
+  { id: 'submodules', title: 'Update submodules', group: 'Repository', icon: 'download', when: () => app.refs.submodules.length > 0, run: () => app.run('Updating submodules', () => api['git:submoduleUpdate'](app.repo!.path, null)) },
+  { id: 'lfsPull', title: 'Download Git LFS objects', group: 'Sync', icon: 'cloud', when: () => app.refs.lfs.used && app.refs.lfs.installed, run: () => app.run('Downloading LFS objects', () => api['git:lfsPull'](app.repo!.path)) },
   { id: 'settings', title: 'Settings', group: 'App', icon: 'cog', keys: 'mod+,', run: () => openDialog({ kind: 'settings' }) },
   { id: 'shortcuts', title: 'Keyboard shortcuts', group: 'App', icon: 'command', keys: 'mod+/', run: () => openDialog({ kind: 'shortcuts' }) },
 ]
