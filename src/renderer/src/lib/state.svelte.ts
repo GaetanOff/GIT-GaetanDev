@@ -199,9 +199,16 @@ class AppState {
     try { localStorage.setItem('drafts', JSON.stringify(this.drafts)) } catch { /* storage unavailable */ }
   }
 
+  /** Shown at once; put back if the main process refuses it (a command change not confirmed). */
   async updateSettings(patch: Partial<Settings>): Promise<void> {
+    const before = { ...this.settings }
     Object.assign(this.settings, patch)
-    this.settings = await api['app:settings'](patch)
+    try {
+      this.settings = await api['app:settings'](patch)
+    } catch (e) {
+      this.settings = before
+      throw e
+    }
     if ('autoFetchMinutes' in patch) this.scheduleAutoFetch()
   }
 

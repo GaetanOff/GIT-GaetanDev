@@ -55,7 +55,23 @@ export function registerIpc(watcher: RepoWatcher): void {
       launchPath = null
       return { repos: s.repos, lastRepo: s.lastRepo, settings: s.settings, platform: process.platform, version: app.getVersion(), home: homedir(), launchPath: open, stateUnreadable: stateUnreadable() }
     },
-    'app:settings': async patch => updateSettings(patch),
+    'app:settings': async patch => {
+      // Commands the app runs change only once confirmed in a dialog of the main process, which a
+      // compromised page could neither show nor answer: it cannot point the editor at any program.
+      const current = getState().settings
+      const commands = (['editorCommand', 'terminalCommand'] as const).filter(k => patch[k] && patch[k] !== current[k])
+      if (commands.length) {
+        const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+        const opts = {
+          type: 'question' as const, buttons: ['Use them', 'Cancel'], defaultId: 0, cancelId: 1,
+          message: 'GaetanDev Git will run these commands to open your editor or terminal.',
+          detail: commands.map(k => `${k === 'editorCommand' ? 'Editor' : 'Terminal'}: ${patch[k]}`).join('\n'),
+        }
+        const { response } = win ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts)
+        if (response !== 0) throw new GitError('Integrations were not changed.', 'CANCELLED')
+      }
+      return updateSettings(patch)
+    },
     // "Restart now" during a commit or a checkout: the update waits for it (ten seconds at most).
     'app:installUpdate': async () => {
       await settleQueues(10_000)
@@ -315,9 +331,10 @@ const OPENS_FOLDER = new Set(['shell:reveal', 'shell:editor', 'shell:terminal'])
 
 /**
  * Git and integration channels act on a repository the user added, never on
- * an arbitrary path; settings take known keys with the expected types. A
- * compromised page could otherwise run git in any folder or point the
- * editor command at any program.
+ * an arbitrary path, and on files inside it; settings take known keys with
+ * the expected types. Defence in depth against a compromised page, which
+ * could otherwise run git in any folder or write outside the repository.
+ * (Adding a repository takes any folder: the user picks or drops it.)
  */
 export function checkArgs(channel: string, args: unknown[]): void {
   const repoFirst = channel.startsWith('git:') || OPENS_FOLDER.has(channel) ||

@@ -41,9 +41,16 @@
     }
   }
 
-  function saveIntegrations() {
-    app.updateSettings({ editorCommand: editor.trim(), terminalCommand: terminal.trim() })
-    toast('success', 'Integrations saved.')
+  async function saveIntegrations() {
+    try {
+      await app.updateSettings({ editorCommand: editor.trim(), terminalCommand: terminal.trim() })
+      toast('success', 'Integrations saved.')
+    } catch (e) {
+      // Not confirmed in the dialog the app showed: the fields go back to what is in use.
+      editor = app.settings.editorCommand
+      terminal = app.settings.terminalCommand
+      toast(asError(e).code === 'CANCELLED' ? 'info' : 'error', asError(e).message)
+    }
   }
 
   const tabs = [
