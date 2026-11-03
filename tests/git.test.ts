@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { selectionFingerprint } from '@shared/types'
@@ -199,6 +199,22 @@ describe('edit history', () => {
     expect(sh(repo, 'show', ':a.txt')).toBe('2')
     expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('3\n')
     expect(sh(repo, 'stash', 'list')).toBe('')
+  })
+
+  it('reads the plan of a sparse checkout with a change inside its cone', async () => {
+    const repo = makeRepo()
+    for (const dir of ['in', 'out']) mkdirSync(join(repo, dir))
+    commit(repo, 'base', { 'in/a.txt': '1\n', 'out/b.txt': '1\n' })
+    sh(repo, 'checkout', '-q', '-b', 'side')
+    commit(repo, 'side', { 'in/s.txt': 's\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'main', { 'in/m.txt': 'm\n' })
+    sh(repo, 'merge', '-q', '--no-edit', 'side')
+    sh(repo, 'sparse-checkout', 'set', 'in')
+    write(repo, 'in/a.txt', '2\n')
+    const plan = await rebasePlan(repo, 'HEAD~2')
+    expect(plan.structure?.some(s => s.kind === 'line' && s.text.startsWith('merge '))).toBe(true)
+    expect(sh(repo, 'status', '--porcelain')).toBe('M in/a.txt')
   })
 
   it('lists "fixup!" commits as picks even with rebase.autoSquash', async () => {

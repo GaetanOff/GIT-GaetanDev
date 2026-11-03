@@ -62,20 +62,26 @@ async function extractTodo(repo: string, base: string | null, shas: string[]): P
   const noHooks = join(dir, 'no-hooks')
   await mkdir(noHooks, { recursive: true })
   const index = { GIT_INDEX_FILE: join(dir, 'plan-index') }
+  // In a sparse checkout git clears skip-worktree from files present on disk, and the throwaway
+  // index would read as changed: for these commands the checkout is not sparse.
+  const notSparse = ['-c', 'core.sparseCheckout=false']
+  let refusal: string
   try {
-    await git(repo, ['read-tree', 'HEAD'], { env: index })
-    const files = await git(repo, ['ls-files', '-z'], { env: index })
-    if (files.raw.length) await git(repo, ['update-index', '-z', '--skip-worktree', '--stdin'], { env: index, input: files.raw })
-    await git(repo, ['-c', `core.hooksPath=${posix(noHooks)}`, '-c', 'rebase.abbreviateCommands=false',
+    await git(repo, [...notSparse, 'read-tree', 'HEAD'], { env: index })
+    const files = await git(repo, [...notSparse, 'ls-files', '-z'], { env: index })
+    if (files.raw.length) await git(repo, [...notSparse, 'update-index', '-z', '--skip-worktree', '--stdin'], { env: index, input: files.raw })
+    const r = await git(repo, [...notSparse, '-c', `core.hooksPath=${posix(noHooks)}`, '-c', 'rebase.abbreviateCommands=false',
       'rebase', '-i', '--rebase-merges', '--no-autostash', '--no-autosquash', ...(base ? [base] : ['--root'])], {
       env: { ...index, GIT_SEQUENCE_EDITOR: `f() { cp "$1" ${quote(out)}; : > "$1"; }; f`, GIT_EDITOR: 'true' },
       okCodes: [1],
     })
+    refusal = r.stderr.split(/\r?\n/).filter(l => /^(error|fatal): /.test(l) && !/nothing to do/.test(l)).join('\n')
   } finally {
     await rm(index.GIT_INDEX_FILE, { force: true })
   }
   const text = await readFile(out, 'utf8').catch(() => '')
-  if (!text) throw new GitError('Git did not produce a rebase plan for this range.')
+  // Exit code 1 is the expected "nothing to do": anything git said besides it is why there is no plan.
+  if (!text) throw new GitError(`Git did not produce a rebase plan for this range.${refusal ? `\n${refusal}` : ''}`)
 
   const items: RebaseTodoItem[] = []
   for (const raw of text.split(/\r?\n/)) {
