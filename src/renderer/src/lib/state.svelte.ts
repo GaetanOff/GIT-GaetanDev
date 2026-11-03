@@ -50,8 +50,6 @@ class AppState {
   tabs = $state<string[]>([])
   view = $state<View>('changes')
   progress = $state<Progress | null>(null)
-  /** Label of the foreground operation, which disables conflicting actions. */
-  busy = $state<string | null>(null)
   lastFetched = $state<number | null>(null)
 
   /* Changes view */
@@ -112,6 +110,22 @@ class AppState {
     const origin = this.refs.remotes.find(r => r.name === 'origin') ?? this.refs.remotes[0]
     return origin?.provider ?? null
   }
+  /** Label of the newest running foreground operation, which disables conflicting actions. */
+  get busy(): string | null {
+    return this.busyLabels.at(-1)?.label ?? null
+  }
+
+  /**
+   * Marks an operation as running until the returned function is called
+   * (calling it again is harmless). Overlapping operations each end their
+   * own entry, so none can leave the app stuck busy.
+   */
+  beginBusy(label: string): () => void {
+    const id = ++this.busyId
+    this.busyLabels = [...this.busyLabels, { id, label }]
+    return () => (this.busyLabels = this.busyLabels.filter(b => b.id !== id))
+  }
+
   get draft() {
     return this.drafts[this.repo?.id ?? '_'] ?? { summary: '', body: '', amend: false }
   }
@@ -422,8 +436,7 @@ class AppState {
    * get a helpful follow-up instead of a raw error.
    */
   async run<T>(label: string, fn: () => Promise<T>, opts: { refresh?: boolean; quiet?: boolean; success?: string } = {}): Promise<T | undefined> {
-    const prev = this.busy
-    this.busy = label
+    const end = this.beginBusy(label)
     try {
       const r = await fn()
       if (opts.success) toast('success', opts.success)
@@ -433,7 +446,7 @@ class AppState {
       if (!opts.quiet) this.reportError(err)
       return undefined
     } finally {
-      this.busy = prev
+      end()
       if (opts.refresh !== false) await this.refreshAll()
     }
   }
@@ -483,8 +496,8 @@ class AppState {
     if (!this.repo) return
     const repo = this.repo.path
     const publishing = !this.status?.upstream
+    const end = this.beginBusy(publishing ? 'Publishing' : 'Pushing')
     try {
-      this.busy = publishing ? 'Publishing' : 'Pushing'
       await api['git:push'](repo, { force })
       toast('success', publishing ? `Published ${this.status?.branch} to the remote.` : 'Pushed.', publishing ? {
         label: 'Create pull request', run: () => this.openProvider({ type: 'pr', branch: this.status?.branch ?? '' }),
@@ -492,7 +505,7 @@ class AppState {
     } catch (e) {
       const err = asError(e)
       if (err.code === 'NON_FAST_FORWARD' && !force) {
-        this.busy = null
+        end()
         const choice = await choose({
           title: 'Push rejected',
           message: 'The remote branch has commits you do not have. Pull them first, or overwrite the remote with a force push (refused if it would drop commits you have not seen).',
@@ -514,7 +527,7 @@ class AppState {
       }
       this.reportError(err)
     } finally {
-      this.busy = null
+      end()
       await this.refreshAll()
     }
   }
@@ -532,13 +545,13 @@ class AppState {
   async checkout(branch: string): Promise<void> {
     if (!this.repo) return
     const repo = this.repo.path
+    const end = this.beginBusy(`Switching to ${branch}`)
     try {
-      this.busy = `Switching to ${branch}`
       await api['git:checkout'](repo, branch)
     } catch (e) {
       const err = asError(e)
       if (err.code === 'LOCAL_CHANGES_OVERWRITTEN') {
-        this.busy = null
+        end()
         const choice = await choose({
           title: 'You have uncommitted changes',
           message: `Switching to “${branch}” would overwrite local changes. Stash them first? You can bring them back from the Stashes section.`,
@@ -553,7 +566,7 @@ class AppState {
       }
       this.reportError(err)
     } finally {
-      this.busy = null
+      end()
       this.selected = null
       await this.refreshAll()
     }

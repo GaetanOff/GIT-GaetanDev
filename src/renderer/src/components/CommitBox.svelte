@@ -141,7 +141,7 @@
     const body = [draft.body.trim(), trailers].filter(Boolean).join('\n\n')
     const message = body ? `${draft.summary.trim()}\n\n${body}` : draft.summary.trim()
     committing = true
-    app.busy = 'Committing'
+    const end = app.beginBusy('Committing')
     try {
       if (willStageAll) await api['git:stage'](repo, app.unstaged.map(f => f.path))
       const sha = await api['git:commit'](repo, message, draft.amend, opts)
@@ -162,7 +162,7 @@
       } else toast('error', err.message)
     } finally {
       committing = false
-      app.busy = null
+      end()
       await app.refreshAll()
     }
   }

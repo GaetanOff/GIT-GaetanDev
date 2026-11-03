@@ -60,7 +60,7 @@
     if (!valid || cloning) return
     cloning = true
     error = null
-    app.busy = 'Cloning'
+    const end = app.beginBusy('Cloning')
     try {
       try { localStorage.setItem('clone-parent', parent) } catch { /* ignore */ }
       const entry = await api['repo:clone'](url.trim(), parent.trim(), name.trim())
@@ -72,7 +72,7 @@
       error = asError(e).message
     } finally {
       cloning = false
-      app.busy = null
+      end()
     }
   }
 
