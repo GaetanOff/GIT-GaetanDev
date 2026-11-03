@@ -13,6 +13,28 @@ export type Area = 'staged' | 'unstaged' | 'conflicted'
 
 const PAGE = 400
 
+const emptyRefs = (): Refs => ({
+  branches: [], tags: [], remotes: [], stashes: [], submodules: [], worktrees: [], lfs: { used: false, installed: true },
+})
+
+/** What a tab remembers while another repository is in front, so switching back is instant. */
+interface TabMemory {
+  status: RepoStatus | null
+  refs: Refs
+  commits: Commit[]
+  graph: GraphRow[]
+  historyDone: boolean
+  view: View
+  selected: AppState['selected']
+  selectedCommit: string | null
+  historySearch: string
+  historySearchMode: SearchMode
+  lastFetched: number | null
+  fileTarget: FileTarget | null
+  rebaseTarget: RebaseTarget | null
+  compareTarget: CompareTarget | null
+}
+
 class AppState {
   ready = $state(false)
   repos = $state<RepoEntry[]>([])
@@ -23,7 +45,9 @@ class AppState {
   home = $state('')
 
   status = $state<RepoStatus | null>(null)
-  refs = $state<Refs>({ branches: [], tags: [], remotes: [], stashes: [] })
+  refs = $state<Refs>(emptyRefs())
+  /** Open repositories, as tabs, in order. */
+  tabs = $state<string[]>([])
   view = $state<View>('changes')
   progress = $state<Progress | null>(null)
   /** Label of the foreground operation, which disables conflicting actions. */
@@ -50,13 +74,15 @@ class AppState {
   compareTarget = $state<CompareTarget | null>(null)
 
   /* Commit drafts survive repo switches */
-  drafts = $state<Record<string, { summary: string; body: string; amend: boolean }>>({})
+  drafts = $state<Record<string, { summary: string; body: string; amend: boolean; coAuthors?: string[] }>>({})
 
   private graphBuilder = new GraphBuilder()
   private statusRun: Promise<void> | null = null
   private statusAgain = false
   private fetchTimer: ReturnType<typeof setInterval> | null = null
   private historyToken = 0
+  private memory = new Map<string, TabMemory>()
+  private fsmonitorAsked = new Set<string>()
 
   /* ─── Derived ─────────────────────────────────────────────────────────────── */
 
@@ -118,6 +144,10 @@ class AppState {
       if (m === 'focus' && this.repo) this.refreshAll()
     })
 
+    try {
+      const saved = JSON.parse(localStorage.getItem('tabs') ?? '[]') as string[]
+      this.tabs = saved.filter(id => s.repos.some(r => r.id === id))
+    } catch { /* no tabs yet */ }
     if (s.lastRepo && s.repos.some(r => r.id === s.lastRepo)) await this.openRepo(s.lastRepo).catch(() => undefined)
     this.ready = true
     this.scheduleAutoFetch()
@@ -146,28 +176,96 @@ class AppState {
 
   async openRepo(id: string): Promise<void> {
     const entry = await api['repo:open'](id)
+    if (this.repo && this.repo.id !== entry.id) this.memory.set(this.repo.id, this.snapshot())
     this.drafts[entry.id] ??= { summary: '', body: '', amend: false }
     this.repo = entry
+    if (!this.tabs.includes(entry.id)) this.tabs = [...this.tabs, entry.id]
+    this.saveTabs()
     this.repos = await api['repo:list']()
-    this.status = null
-    this.refs = { branches: [], tags: [], remotes: [], stashes: [] }
-    this.selected = null
     this.multi = new Set()
-    this.selectedCommit = null
     this.selectedStash = null
-    this.historySearch = ''
-    this.lastFetched = null
-    if (this.view !== 'changes' && this.view !== 'history') this.view = 'changes'
-    this.fileTarget = null
-    this.rebaseTarget = null
-    this.compareTarget = null
-    this.commits = []
-    this.graph = []
+    const mem = this.memory.get(entry.id)
+    if (mem) {
+      // Show the tab as it was at once; fresh data follows.
+      Object.assign(this, mem)
+    } else {
+      this.status = null
+      this.refs = emptyRefs()
+      this.selected = null
+      this.selectedCommit = null
+      this.historySearch = ''
+      this.lastFetched = null
+      if (this.view !== 'changes' && this.view !== 'history') this.view = 'changes'
+      this.fileTarget = null
+      this.rebaseTarget = null
+      this.compareTarget = null
+      this.commits = []
+      this.graph = []
+    }
     await api['watch:set'](entry.path)
     await Promise.all([this.refreshStatus(), this.refreshRefs()])
-    this.reloadHistory()
+    this.reloadHistory(!!mem)
     // A quick background fetch keeps ahead/behind honest when opening a repo.
     if (this.refs.remotes.length && this.settings.autoFetchMinutes) this.fetch(true)
+    this.suggestFsmonitor(entry)
+  }
+
+  private snapshot(): TabMemory {
+    return {
+      status: this.status, refs: this.refs, commits: this.commits, graph: this.graph, historyDone: this.historyDone,
+      view: this.view, selected: this.selected, selectedCommit: this.selectedCommit, historySearch: this.historySearch,
+      historySearchMode: this.historySearchMode, lastFetched: this.lastFetched,
+      fileTarget: this.fileTarget, rebaseTarget: this.rebaseTarget, compareTarget: this.compareTarget,
+    }
+  }
+
+  private saveTabs(): void {
+    try { localStorage.setItem('tabs', JSON.stringify(this.tabs)) } catch { /* storage unavailable */ }
+  }
+
+  async closeTab(id: string): Promise<void> {
+    const i = this.tabs.indexOf(id)
+    if (i < 0) return
+    this.tabs = this.tabs.filter(t => t !== id)
+    this.memory.delete(id)
+    this.saveTabs()
+    if (this.repo?.id !== id) return
+    const next = this.tabs[Math.min(i, this.tabs.length - 1)]
+    if (next) await this.openRepo(next).catch(e => toast('error', asError(e).message))
+    else {
+      this.repo = null
+      this.status = null
+      this.refs = emptyRefs()
+      await api['watch:set'](null)
+    }
+  }
+
+  cycleTab(dir: 1 | -1): void {
+    if (this.tabs.length < 2 || !this.repo) return
+    const i = this.tabs.indexOf(this.repo.id)
+    const next = this.tabs[(i + dir + this.tabs.length) % this.tabs.length]
+    this.openRepo(next).catch(e => toast('error', asError(e).message))
+  }
+
+  moveTab(id: string, to: number): void {
+    const tabs = this.tabs.filter(t => t !== id)
+    tabs.splice(Math.max(0, Math.min(to, tabs.length)), 0, id)
+    this.tabs = tabs
+    this.saveTabs()
+  }
+
+  /** Large repositories get one suggestion to turn on Git's file system monitor. */
+  private async suggestFsmonitor(entry: RepoEntry): Promise<void> {
+    let asked: string[] = []
+    try { asked = JSON.parse(localStorage.getItem('fsmonitor-asked') ?? '[]') } catch { /* ignore */ }
+    if (asked.includes(entry.id) || this.fsmonitorAsked.has(entry.id)) return
+    this.fsmonitorAsked.add(entry.id)
+    const info = await api['repo:fsmonitor'](entry.path).catch(() => null)
+    if (!info || info.enabled || !info.supported || info.files < 20_000) return
+    try { localStorage.setItem('fsmonitor-asked', JSON.stringify([...asked, entry.id])) } catch { /* ignore */ }
+    toast('info', `${entry.name} tracks ${info.files.toLocaleString('en')} files. Git's file system monitor makes status much faster here.`, {
+      label: 'Turn it on', run: () => api['repo:setFsmonitor'](entry.path, true).then(() => toast('success', 'File system monitor on for this repository.')),
+    }, 15_000)
   }
 
   async addRepo(path: string): Promise<void> {
@@ -196,6 +294,7 @@ class AppState {
 
   async removeRepo(id: string): Promise<void> {
     this.repos = await api['repo:remove'](id)
+    if (this.tabs.includes(id)) return this.closeTab(id)
     if (this.repo?.id === id) {
       this.repo = null
       this.status = null
@@ -235,7 +334,12 @@ class AppState {
     if (!repo) return
     try {
       const r = await api['git:refs'](repo.path)
-      if (this.repo?.id === repo.id) this.refs = r
+      if (this.repo?.id !== repo.id) return
+      // Keep the previous extras until fresh ones arrive, so sections do not flicker.
+      this.refs = { ...r, submodules: this.refs.submodules, worktrees: this.refs.worktrees, lfs: this.refs.lfs }
+      api['git:extras'](repo.path).then(x => {
+        if (this.repo?.id === repo.id) this.refs = { ...this.refs, ...x }
+      }).catch(() => undefined)
     } catch { /* status reports the error */ }
   }
 

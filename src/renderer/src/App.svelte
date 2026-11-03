@@ -4,6 +4,7 @@
   import { app } from '@/lib/state.svelte'
   import { dialogs, menu, overlays } from '@/lib/ui.svelte'
   import TitleBar from '@/components/TitleBar.svelte'
+  import TabBar from '@/components/TabBar.svelte'
   import Sidebar from '@/components/Sidebar.svelte'
   import StatusBar from '@/components/StatusBar.svelte'
   import Palette from '@/components/Palette.svelte'
@@ -57,6 +58,7 @@
   ondrop={onDrop}
 >
   <TitleBar />
+  {#if app.ready}<TabBar />{/if}
   {#if !app.ready}
     <div class="boot"><span class="spinner"></span></div>
   {:else if app.repo}
