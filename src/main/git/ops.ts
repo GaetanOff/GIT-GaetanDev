@@ -8,6 +8,7 @@ import { applyPatch, buildPartialPatch, diff } from './diff'
 import { git, gitOut, GitError } from './exec'
 import { currentBranch, defaultRemote, upstreamOf } from './refs'
 import { gitDir, status } from './status'
+import { withPruneJournal } from './recovery'
 
 /* ─── Staging ───────────────────────────────────────────────────────────────── */
 
@@ -294,7 +295,7 @@ function progressHandler(op: string, title: string, report: Reporter) {
 
 export async function fetchAll(repo: string, report: Reporter): Promise<void> {
   try {
-    await git(repo, ['fetch', '--all', '--prune', '--progress'], { onStderrLine: progressHandler('fetch', 'Fetching', report) })
+    await withPruneJournal(repo, () => git(repo, ['fetch', '--all', '--prune', '--progress'], { onStderrLine: progressHandler('fetch', 'Fetching', report) }))
   } finally {
     report(null)
   }
@@ -306,7 +307,7 @@ export async function pull(repo: string, mode: PullMode, report: Reporter): Prom
   if (!(await upstreamOf(repo, branch))) throw new GitError(`Branch "${branch}" has no upstream to pull from. Push it first.`, 'NO_UPSTREAM')
   const flag = mode === 'rebase' ? '--rebase' : mode === 'ff-only' ? '--ff-only' : '--no-rebase'
   try {
-    await git(repo, ['pull', flag, '--autostash', '--progress'], { ...NO_EDITOR, onStderrLine: progressHandler('pull', 'Pulling', report) })
+    await withPruneJournal(repo, () => git(repo, ['pull', flag, '--autostash', '--progress'], { ...NO_EDITOR, onStderrLine: progressHandler('pull', 'Pulling', report) }))
   } finally {
     report(null)
   }
@@ -340,7 +341,7 @@ export async function pushTag(repo: string, remote: string, name: string, report
 
 export async function deleteRemoteBranch(repo: string, remote: string, branch: string, report: Reporter): Promise<void> {
   try {
-    await git(repo, ['push', '--progress', remote, '--delete', branch], { onStderrLine: progressHandler('push', `Deleting ${remote}/${branch}`, report) })
+    await withPruneJournal(repo, () => git(repo, ['push', '--progress', remote, '--delete', branch], { onStderrLine: progressHandler('push', `Deleting ${remote}/${branch}`, report) }))
   } finally {
     report(null)
   }

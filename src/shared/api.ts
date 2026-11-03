@@ -70,6 +70,7 @@ export interface Api {
   'git:deletedBranches'(repo: string): Promise<DeletedBranch[]>
   'git:restoreBranch'(repo: string, name: string, sha: string): Promise<void>
   'git:newerTips'(repo: string, branches: { name: string; sha: string }[]): Promise<NewerTip[]>
+  'git:remoteSearch'(repo: string, branches: { name: string; sha: string }[]): Promise<NewerTip[]>
   'git:deleteRemoteBranch'(repo: string, remote: string, branch: string): Promise<void>
   'git:merge'(repo: string, ref: string, opts?: { squash?: boolean; noFf?: boolean }): Promise<void>
   'git:rebase'(repo: string, onto: string): Promise<void>
@@ -116,7 +117,7 @@ export const API_CHANNELS: ApiChannel[] = [
   'git:discardLines', 'git:ignore', 'git:commit', 'git:lastCommitMessage', 'git:preparedMessage', 'git:undoCommit', 'git:resolve',
   'git:continue', 'git:abort', 'git:skip', 'git:conflict', 'git:resolveContent', 'git:resolveWhole',
   'git:log', 'git:commit:detail', 'git:cherryPick', 'git:revert', 'git:reset', 'git:checkoutCommit', 'git:fileLog', 'git:blame', 'git:compare', 'git:operations', 'git:restore', 'git:rebasePlan', 'git:rebaseRun',
-  'git:refs', 'git:extras', 'git:checkout', 'git:createBranch', 'git:renameBranch', 'git:deleteBranch', 'git:deletedBranches', 'git:restoreBranch', 'git:newerTips', 'git:deleteRemoteBranch',
+  'git:refs', 'git:extras', 'git:checkout', 'git:createBranch', 'git:renameBranch', 'git:deleteBranch', 'git:deletedBranches', 'git:restoreBranch', 'git:newerTips', 'git:remoteSearch', 'git:deleteRemoteBranch',
   'git:merge', 'git:rebase', 'git:createTag', 'git:deleteTag', 'git:pushTag', 'git:stash', 'git:stashApply',
   'git:stashDrop', 'git:stashFiles', 'git:addRemote', 'git:removeRemote', 'git:submoduleUpdate', 'git:lfsPull', 'git:worktreeAdd', 'git:worktreeRemove', 'repo:setFsmonitor', 'repo:fsmonitor', 'git:authors', 'git:commitSetup',
   'git:fetch', 'git:pull', 'git:push',

@@ -1,4 +1,4 @@
-import type { DeletedBranch, NewerTip, OperationKind, RepoOperationEntry, RestorePoint } from '@shared/types'
+import type { DeletedBranch, OperationKind, RepoOperationEntry, RestorePoint } from '@shared/types'
 import { git, gitOut, GitError } from './exec'
 import { currentBranch } from './refs'
 import { status } from './status'
@@ -29,11 +29,15 @@ const GROUP_START = /\(start\)/
  * and branch it started from, so it can be undone.
  */
 export async function operations(repo: string, limit = 150): Promise<RepoOperationEntry[]> {
-  const [list, branch, locals] = await Promise.all([
+  const [list, branch, locals, remotes] = await Promise.all([
     entries(repo, limit * 4),
     currentBranch(repo),
     gitOut(repo, ['for-each-ref', '--format=%(refname:short)', 'refs/heads']).then(s => new Set(s.split('\n').filter(Boolean))),
+    gitOut(repo, ['remote']).then(s => s.split('\n').filter(Boolean)),
   ])
+  // A name that is neither a hash nor a remote branch was a local branch, even if deleted since.
+  const wasBranch = (n: string) =>
+    locals.has(n) || (!/^[0-9a-f]{7,40}$/.test(n) && n !== 'HEAD' && !remotes.some(r => n.startsWith(`${r}/`)))
   const ops: RepoOperationEntry[] = []
   let after = branch
 
@@ -78,7 +82,7 @@ export async function operations(repo: string, limit = 150): Promise<RepoOperati
       kind = 'checkout'
       const m = /^moving from (.+) to (.+)$/.exec(message)
       if (m) {
-        branchBefore = locals.has(m[1]) ? m[1] : null
+        branchBefore = wasBranch(m[1]) ? m[1] : null
         title = `Switched from ${m[1]} to ${m[2]}`
       }
     } else if (action === 'reset') { kind = 'reset'; title = `Reset ${message.replace('moving to ', 'to ')}` }
@@ -138,49 +142,6 @@ export async function deletedBranches(repo: string): Promise<DeletedBranch[]> {
     if (r.code === 0) out.push({ name, sha: tip.sha, date: tip.date, subject: r.stdout.trim(), source: 'reflog' })
   }
   return out.sort((a, b) => b.date - a.date)
-}
-
-/**
- * A deleted branch may have moved on after the last commit we know: pushed
- * from another machine (its remote-tracking branch is newer) or committed
- * then orphaned (the commits are only in the object store). Both are searched:
- * remote-tracking refs with the same name, and commits nothing references any
- * more (`git fsck --unreachable --no-reflogs`). The newest descendant of the
- * known tip wins.
- */
-export async function newerTips(repo: string, branches: { name: string; sha: string }[]): Promise<NewerTip[]> {
-  if (!branches.length) return []
-  const [remoteOut, fsck] = await Promise.all([
-    gitOut(repo, ['for-each-ref', '--format=%(refname:short) %(objectname)', 'refs/remotes']),
-    git(repo, ['fsck', '--unreachable', '--no-reflogs', '--no-progress'], { okCodes: [1, 2, 4, 8] }).then(r => r.stdout, () => ''),
-  ])
-  const remotes = remoteOut.split('\n').filter(Boolean).map(l => l.split(' ')).filter(([ref]) => !ref.endsWith('/HEAD'))
-  const dangling = fsck.split('\n').map(l => /^unreachable commit ([0-9a-f]{40})$/.exec(l)?.[1]).filter((s): s is string => !!s).slice(0, 3000)
-
-  const out: NewerTip[] = []
-  for (const b of branches) {
-    const sameName = remotes.filter(([ref]) => ref.endsWith(`/${b.name}`))
-    const candidates = [...sameName.map(([, sha]) => sha), ...dangling]
-    if (!candidates.length) continue
-    // Newest commit that descends from the known tip and leads to one of the candidates.
-    const r = await git(repo, ['rev-list', '--ancestry-path', '--date-order', '-n1', '--stdin'], {
-      input: [`^${b.sha}`, ...candidates].join('\n') + '\n', okCodes: [128],
-    })
-    const newest = r.stdout.trim()
-    if (r.code !== 0 || !newest) continue
-    const [count, meta] = await Promise.all([
-      gitOut(repo, ['rev-list', '--count', `${b.sha}..${newest}`]),
-      gitOut(repo, ['log', '-1', '--format=%s%x1f%ct', newest]),
-    ])
-    const [subject, date] = meta.trim().split('\x1f')
-    let ref: string | undefined
-    for (const [name, sha] of sameName) {
-      const anc = await git(repo, ['merge-base', '--is-ancestor', newest, sha], { okCodes: [1] })
-      if (anc.code === 0) { ref = name; break }
-    }
-    out.push({ name: b.name, sha: newest, ahead: +count.trim(), subject, date: +date, via: ref ? 'remote' : 'unreferenced', ref })
-  }
-  return out
 }
 
 export async function restoreBranch(repo: string, name: string, sha: string): Promise<void> {

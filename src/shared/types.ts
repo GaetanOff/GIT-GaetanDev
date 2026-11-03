@@ -231,8 +231,12 @@ export interface NewerTip {
   ahead: number
   subject: string
   date: number
-  /** remote: still on a remote-tracking branch (pushed from elsewhere); unreferenced: only in git's object store. */
-  via: 'remote' | 'unreferenced'
+  /**
+   * remote: on a remote-tracking branch (pushed from elsewhere); pruned: on a remote branch deleted
+   * on the server, remembered when a fetch removed it; pull-request: kept by the provider in a PR/MR ref;
+   * unreferenced: only in git's object store.
+   */
+  via: 'remote' | 'pruned' | 'pull-request' | 'unreferenced'
   ref?: string
 }
 

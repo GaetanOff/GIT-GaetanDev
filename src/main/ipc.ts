@@ -10,7 +10,8 @@ import { compare } from './git/compare'
 import { rebasePlan, rebaseRun } from './git/rebase'
 import { lfsPull, submoduleUpdate, worktreeAdd, worktreeRemove } from './git/modules'
 import { fsmonitorInfo, setFsmonitor } from './git/perf'
-import { deletedBranches, newerTips, operations, restore, restoreBranch } from './git/reflog'
+import { deletedBranches, operations, restore, restoreBranch } from './git/reflog'
+import { newerTips, remoteSearch } from './git/recovery'
 import { conflict, resolveContent, resolveWhole } from './git/conflict'
 import { diff } from './git/diff'
 import { git, GitError } from './git/exec'
@@ -113,6 +114,7 @@ export function registerIpc(watcher: RepoWatcher): void {
     'git:deletedBranches': async repo => deletedBranches(repo),
     'git:restoreBranch': async (repo, name, sha) => restoreBranch(repo, name, sha),
     'git:newerTips': async (repo, branches) => newerTips(repo, branches),
+    'git:remoteSearch': async (repo, branches) => remoteSearch(repo, branches, progress),
     'git:restore': async (repo, target) => restore(repo, target),
     'git:rebasePlan': async (repo, base) => rebasePlan(repo, base),
     'git:rebaseRun': async (repo, base, steps) => rebaseRun(repo, base, steps),

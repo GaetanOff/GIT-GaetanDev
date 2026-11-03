@@ -6,15 +6,50 @@
   import { api, asError } from '@/lib/api'
   import { fullDate, relativeTime, shortSha } from '@/lib/format'
   import { app } from '@/lib/state.svelte'
-  import { confirm } from '@/lib/ui.svelte'
+  import { confirm, toast } from '@/lib/ui.svelte'
 
   let ops = $state.raw<RepoOperationEntry[]>([])
   let error = $state<string | null>(null)
   let loading = $state(true)
   let gone = $state.raw<DeletedBranch[]>([])
   /** Newer commits found for a deleted branch (pushed elsewhere, or orphaned), by name. */
-  let newer = $state.raw<Record<string, NewerTip>>({})
+  let localNewer = $state.raw<Record<string, NewerTip>>({})
+  /**
+   * Results of the network search, kept apart: a refresh re-runs the local
+   * search, which would see the same commits as merely "unreferenced" once
+   * the temporary PR refs are gone, and lose where they came from.
+   */
+  let remoteNewer = $state.raw<Record<string, NewerTip>>({})
+  const named = (t: NewerTip) => t.via === 'remote' || t.via === 'pruned'
+  const newer = $derived.by(() => {
+    const out: Record<string, NewerTip> = { ...localNewer }
+    for (const [name, r] of Object.entries(remoteNewer)) {
+      const l = out[name]
+      // Same commit: keep the more telling source; else the named source, then the newest.
+      if (!l || l.sha === r.sha ? !l || !named(l) : (named(r) && !named(l)) || (named(r) === named(l) && r.date > l.date)) out[name] = r
+    }
+    return out
+  })
   let searching = $state(false)
+  let remoteSearched = $state(false)
+
+  const VIA: Record<NewerTip['via'], (n: NewerTip) => string> = {
+    remote: n => `on ${n.ref}`,
+    pruned: n => `on ${n.ref}, deleted on the server`,
+    'pull-request': n => `in ${n.ref}`,
+    unreferenced: () => 'found unreferenced',
+  }
+
+  /** Network search: fetch without pruning, then the providers' pull/merge request refs. */
+  async function searchRemotes() {
+    if (!app.repo || !gone.length) return
+    const repo = app.repo.path
+    const found = await app.run('Searching remotes', () => api['git:remoteSearch'](repo, gone.map(g => ({ name: g.name, sha: g.sha }))), { refresh: false })
+    if (!found) return
+    remoteSearched = true
+    remoteNewer = Object.fromEntries(found.map(n => [n.name, n]))
+    toast(found.length ? 'success' : 'info', found.length ? `Newer commits found for ${found.length} branch${found.length > 1 ? 'es' : ''}.` : 'Nothing newer on the remotes.')
+  }
 
   // Reload whenever HEAD or a branch moves, so the list is always current.
   $effect(() => {
@@ -36,8 +71,8 @@
       // Slower search (remote branches, unreferenced commits): fills in when ready.
       searching = true
       api['git:newerTips'](repo, gone.map(g => ({ name: g.name, sha: g.sha })))
-        .then(list => (newer = Object.fromEntries(list.map(n => [n.name, n]))))
-        .catch(() => (newer = {}))
+        .then(list => (localNewer = Object.fromEntries(list.map(n => [n.name, n]))))
+        .catch(() => (localNewer = {}))
         .finally(() => (searching = false))
     }).catch(() => (gone = []))
   })
@@ -48,7 +83,7 @@
     const ok = await confirm({
       title: `Restore branch ${b.name}?`,
       message: n
-        ? `It is recreated at ${shortSha(sha)}, ${n.ahead} commit${n.ahead > 1 ? 's' : ''} after the last one known here, found ${n.via === 'remote' ? `on ${n.ref}` : 'among commits nothing references any more'}: “${n.subject}”.`
+        ? `It is recreated at ${shortSha(sha)}, ${n.ahead} commit${n.ahead > 1 ? 's' : ''} after the last one known here, found ${VIA[n.via](n)}: “${n.subject}”.${n.via === 'pull-request' || n.via === 'unreferenced' ? ' This source does not carry the branch name: it is the newest commit built on top of the last known one, which another branch started from it could also be.' : ''}`
         : b.source === 'app'
           ? `It is recreated at ${shortSha(sha)}, exactly where it was when it was deleted.`
           : `It is recreated at ${shortSha(sha)}, the last commit you had checked out on it. No newer commit was found on a remote branch or in the object store.`,
@@ -106,7 +141,13 @@
   {:else}
     <div class="list">
       {#if gone.length}
-        <div class="day label">Deleted branches</div>
+        <div class="day label gone-head">
+          <span>Deleted branches</span>
+          <button class="btn btn-ghost sm" disabled={!!app.busy || !app.refs.remotes.length} onclick={searchRemotes}
+            title="Fetch every remote without pruning, then the pull/merge request refs GitHub, GitLab and Azure DevOps keep after a branch is deleted">
+            <Icon name="cloud" size={12} />{remoteSearched ? 'Search remotes again' : 'Search remotes'}
+          </button>
+        </div>
         {#each gone as b (b.name)}
           <div class="op gone">
             <span class="ico"><Icon name="branch" size={14} /></span>
@@ -114,7 +155,7 @@
               <div class="t truncate">{b.name}</div>
               {#if newer[b.name]}
                 {@const n = newer[b.name]}
-                <div class="d truncate newer"><Icon name="push" size={10} />{n.ahead} newer commit{n.ahead > 1 ? 's' : ''} {n.via === 'remote' ? `on ${n.ref}` : 'found unreferenced'} · <span class="mono">{shortSha(n.sha)}</span> {n.subject}</div>
+                <div class="d truncate newer"><Icon name="push" size={10} />{n.ahead} newer commit{n.ahead > 1 ? 's' : ''} {VIA[n.via](n)} · <span class="mono">{shortSha(n.sha)}</span> {n.subject}</div>
               {:else}
                 <div class="d truncate"><span class="mono">{shortSha(b.sha)}</span>{#if b.subject} · {b.subject}{/if}{#if searching} · <span class="dim">looking for newer commits…</span>{/if}</div>
               {/if}
@@ -159,6 +200,7 @@
   .day { padding: 14px 4px 6px; }
   .gone .ico { color: var(--red); background: var(--red-soft); }
   .op.gone .btn { opacity: 1; }
+  .gone-head { display: flex; align-items: center; justify-content: space-between; }
   .newer { color: #86efac; display: flex; align-items: center; gap: 4px; }
   .dim { color: var(--text-dim); }
   .src { font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.05em; color: var(--text-dim); }
