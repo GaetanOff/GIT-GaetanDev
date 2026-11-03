@@ -8,7 +8,9 @@
   import { commitMenu } from '@/lib/actions'
   import { initials, relativeTime, shortSha, tone } from '@/lib/format'
   import { app } from '@/lib/state.svelte'
-  import { contextMenu } from '@/lib/ui.svelte'
+  import { contextMenu, menuAt } from '@/lib/ui.svelte'
+  import type { SearchMode } from '@shared/types'
+  import type { IconName } from '@/lib/icons'
 
   let list = $state<ReturnType<typeof VirtualList<Commit>>>()
   let width = $state(loadWidth())
@@ -28,6 +30,13 @@
   $effect(() => {
     if (selectedIndex >= 0) list?.reveal(selectedIndex)
   })
+
+  const MODES: { id: SearchMode; label: string; icon: IconName; hint: string; placeholder: string }[] = [
+    { id: 'message', label: 'Commit messages', icon: 'search', hint: 'grep', placeholder: 'Search messages, or @author' },
+    { id: 'author', label: 'Author', icon: 'user', hint: '@', placeholder: 'Author name or email' },
+    { id: 'content', label: 'Code: added or removed text', icon: 'code', hint: '-S', placeholder: 'Text added or removed in a commit' },
+    { id: 'regex', label: 'Code: diff matches a regex', icon: 'code', hint: '-G', placeholder: 'Regex matched by a changed line' },
+  ]
 
   function onSearch(e: Event) {
     app.historySearch = (e.target as HTMLInputElement).value
@@ -78,8 +87,13 @@
   <section class="left" style="width:{width}px">
     <div class="head">
       <div class="search">
-        <Icon name="search" size={13} />
-        <input bind:this={searchInput} value={app.historySearch} oninput={onSearch} placeholder="Search messages, or @author" spellcheck="false" />
+        <button class="mode" title="Search in…" onclick={e => menuAt(e.currentTarget as HTMLElement, MODES.map(m => ({
+          label: m.label, icon: m.icon, hint: m.hint, run: () => { app.historySearchMode = m.id; if (app.historySearch) app.reloadHistory() },
+        })))}>
+          <Icon name={MODES.find(m => m.id === app.historySearchMode)!.icon} size={13} />
+          <Icon name="chevronDown" size={10} />
+        </button>
+        <input bind:this={searchInput} value={app.historySearch} oninput={onSearch} placeholder={MODES.find(m => m.id === app.historySearchMode)!.placeholder} spellcheck="false" />
         {#if app.historySearch}
           <button class="icon-btn sm" onclick={() => { app.historySearch = ''; app.reloadHistory() }}><Icon name="x" size={12} /></button>
         {/if}
@@ -151,6 +165,8 @@
     background: var(--surface-1); border: 1px solid var(--border); color: var(--text-faint);
   }
   .search:focus-within { border-color: var(--green-ring); }
+  .mode { display: flex; align-items: center; gap: 2px; height: 20px; padding: 0 3px; margin-left: -4px; border: none; border-radius: 4px; background: none; color: var(--text-faint); }
+  .mode:hover { background: var(--surface-3); color: #fff; }
   .search input { flex: 1; min-width: 0; border: none; outline: none; background: transparent; color: #fff; font-size: 12px; }
   .search input::placeholder { color: var(--text-dim); }
 

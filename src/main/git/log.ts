@@ -3,14 +3,18 @@ import { git, gitOut } from './exec'
 
 const RS = '\x1e'
 const US = '\x1f'
-const LOG_FORMAT = ['%H', '%P', '%an', '%ae', '%at', '%s', '%D'].join('%x1f') + '%x1e'
+export const LOG_FORMAT = ['%H', '%P', '%an', '%ae', '%at', '%s', '%D'].join('%x1f') + '%x1e'
 
 export async function log(repo: string, q: LogQuery): Promise<Commit[]> {
   const args = ['log', `--format=${LOG_FORMAT}`, '--topo-order', `--skip=${q.skip}`, `-n${q.limit}`, '--decorate=full']
   if (q.search?.trim()) {
     const s = q.search.trim()
     const author = /^@(.+)$/.exec(s)
-    if (author) args.push(`--author=${author[1]}`, '-i')
+    const mode = author ? 'author' : q.searchMode ?? 'message'
+    // -S finds commits that add or remove the string; -G those whose diff matches the regex.
+    if (mode === 'author') args.push(`--author=${author?.[1] ?? s}`, '-i')
+    else if (mode === 'content') args.push(`-S${s}`)
+    else if (mode === 'regex') args.push(`-G${s}`)
     else args.push(`--grep=${s}`, '-i', '-F')
   }
   if (q.scope === 'all') args.push('--branches', '--remotes', '--tags', 'HEAD')
@@ -29,7 +33,7 @@ export async function log(repo: string, q: LogQuery): Promise<Commit[]> {
   return commits
 }
 
-function parseLog(out: string): Commit[] {
+export function parseLog(out: string): Commit[] {
   const commits: Commit[] = []
   for (const rec of out.split(RS)) {
     const r = rec.replace(/^\n/, '')
