@@ -1,6 +1,6 @@
 import { app } from 'electron'
 import { randomUUID } from 'node:crypto'
-import { closeSync, fsyncSync, openSync, readFileSync, renameSync, rmSync, writeSync } from 'node:fs'
+import { closeSync, fsyncSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeSync } from 'node:fs'
 import { open, rename, rm } from 'node:fs/promises'
 import { basename, join, normalize } from 'node:path'
 import { DEFAULT_SETTINGS, type RepoEntry, type Settings } from '@shared/types'
@@ -116,6 +116,19 @@ export function flush(): void {
 }
 
 const samePath = (a: string, b: string) => normalize(a).toLowerCase() === normalize(b).toLowerCase()
+
+/** The real path, so "C:\Users\GAE~1.FAU\x" and "C:/Users/gae.faucher/x" compare equal. */
+function real(path: string): string {
+  try { return realpathSync.native(path) } catch { return path }
+}
+
+/** Whether a path is one of the repositories the user added. */
+export function isRegistered(path: string): boolean {
+  const repos = getState().repos
+  if (repos.some(r => samePath(r.path, path))) return true
+  const target = real(path)
+  return repos.some(r => samePath(real(r.path), target))
+}
 
 export function upsertRepo(path: string): RepoEntry {
   const s = getState()

@@ -1,9 +1,9 @@
-import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
-import { existsSync, mkdirSync } from 'node:fs'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
+import { existsSync, mkdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { Api, ApiChannel, ApiEvents, IpcEnvelope } from '@shared/api'
-import type { Progress } from '@shared/types'
+import { DEFAULT_SETTINGS, type Progress, type Settings } from '@shared/types'
 import { registerPending, respond } from './askpass'
 import { blame, fileLog } from './git/blame'
 import { compare } from './git/compare'
@@ -21,7 +21,7 @@ import { defaultBranch, defaultRemote, extras, refs } from './git/refs'
 import { isRepo, status, topLevel } from './git/status'
 import { openEditor, openTerminal } from './integrations'
 import { detectProvider, providerUrl } from './provider'
-import { getState, removeRepo, repoById, save, updateSettings, upsertRepo } from './store'
+import { getState, isRegistered, removeRepo, repoById, save, updateSettings, upsertRepo } from './store'
 import type { RepoWatcher } from './watcher'
 
 type Handlers = { [K in ApiChannel]: (...args: Parameters<Api[K]>) => ReturnType<Api[K]> }
@@ -182,14 +182,64 @@ export function registerIpc(watcher: RepoWatcher): void {
   }
 
   for (const [channel, fn] of Object.entries(h)) {
-    ipcMain.handle(channel, async (_e, ...args): Promise<IpcEnvelope<unknown>> => {
+    ipcMain.handle(channel, async (e, ...args): Promise<IpcEnvelope<unknown>> => {
       try {
+        if (!trustedSender(e)) throw new GitError('Request refused: it does not come from the app window.')
+        checkArgs(channel, args)
         return { ok: true, value: await (fn as (...a: unknown[]) => Promise<unknown>)(...args) }
       } catch (e) {
         const err = e as GitError
         return { ok: false, error: { message: err.message ?? String(e), code: err.code, details: err.details || undefined } }
       }
     })
+  }
+}
+
+/**
+ * Only the app's own page, in the window's main frame, may call the bridge:
+ * the built index.html, or the dev server while developing.
+ */
+function trustedSender(e: IpcMainInvokeEvent): boolean {
+  const frame = e.senderFrame
+  if (!frame || frame !== e.sender.mainFrame) return false
+  const dev = !app.isPackaged && process.env.ELECTRON_RENDERER_URL
+  if (dev && frame.url.startsWith(new URL(dev).origin)) return true
+  return frame.url.startsWith('file:') && /\/renderer\/index\.html(?:[?#].*)?$/.test(frame.url.replace(/\\/g, '/'))
+}
+
+/** Channels whose first argument may be null (the global identity, no repo to watch). */
+const NULL_REPO_OK = new Set(['git:identity', 'git:setIdentity', 'watch:set'])
+/** Channels that open a folder in another program: worktrees and submodules count, executables do not. */
+const OPENS_FOLDER = new Set(['shell:reveal', 'shell:editor', 'shell:terminal'])
+
+/**
+ * Git and integration channels act on a repository the user added, never on
+ * an arbitrary path; settings take known keys with the expected types. A
+ * compromised page could otherwise run git in any folder or point the
+ * editor command at any program.
+ */
+function checkArgs(channel: string, args: unknown[]): void {
+  const repoFirst = channel.startsWith('git:') || OPENS_FOLDER.has(channel) ||
+    ['watch:set', 'provider:url', 'repo:fsmonitor', 'repo:setFsmonitor'].includes(channel)
+  if (repoFirst) {
+    const repo = args[0]
+    if (repo === null && NULL_REPO_OK.has(channel)) return
+    if (typeof repo !== 'string') throw new GitError('A repository path is required.')
+    if (OPENS_FOLDER.has(channel)) {
+      let isDir = false
+      try { isDir = statSync(repo).isDirectory() } catch { /* missing */ }
+      if (!isDir) throw new GitError(`"${repo}" is not a folder.`)
+    } else if (!isRegistered(repo)) {
+      throw new GitError(`"${repo}" is not one of your repositories. Add it first.`)
+    }
+  }
+  if (channel === 'app:settings') {
+    const patch = args[0]
+    if (!patch || typeof patch !== 'object') throw new GitError('Invalid settings.')
+    for (const [key, value] of Object.entries(patch)) {
+      if (!(key in DEFAULT_SETTINGS)) throw new GitError(`Unknown setting "${key}".`)
+      if (typeof value !== typeof DEFAULT_SETTINGS[key as keyof Settings]) throw new GitError(`Setting "${key}" has the wrong type.`)
+    }
   }
 }
 
