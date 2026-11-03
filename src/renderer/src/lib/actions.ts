@@ -59,8 +59,8 @@ export async function deleteBranch(b: Branch): Promise<void> {
   })
   if (!ok) return
   try {
-    await api['git:deleteBranch'](repo(), b.name, false)
-    toast('success', `Deleted ${b.name}.`)
+    const sha = await api['git:deleteBranch'](repo(), b.name, false)
+    deleted(b.name, sha)
   } catch (e) {
     const err = e as { message: string; code?: string }
     if (err.code !== 'BRANCH_NOT_MERGED') return toast('error', err.message)
@@ -70,10 +70,43 @@ export async function deleteBranch(b: Branch): Promise<void> {
       confirmLabel: 'Delete anyway',
       danger: true,
     })
-    if (force) await app.run('Deleting branch', () => api['git:deleteBranch'](repo(), b.name, true))
+    if (force) {
+      const sha = await app.run('Deleting branch', () => api['git:deleteBranch'](repo(), b.name, true))
+      if (sha) deleted(b.name, sha)
+    }
   } finally {
     await app.refreshAll()
   }
+}
+
+/** Records a deleted branch's exact tip and offers to bring it back. */
+function deleted(name: string, sha: string): void {
+  rememberDeleted(name, sha)
+  toast('success', `Deleted ${name}.`, { label: 'Undo', run: () => restoreDeleted(name, sha) }, 10_000)
+}
+
+const deletedKey = () => `deleted-branches:${app.repo?.id}`
+
+export function rememberDeleted(name: string, sha: string): void {
+  try {
+    const list = JSON.parse(localStorage.getItem(deletedKey()) ?? '[]') as { name: string; sha: string; date: number }[]
+    const next = [{ name, sha, date: Math.floor(Date.now() / 1000) }, ...list.filter(x => x.name !== name)].slice(0, 100)
+    localStorage.setItem(deletedKey(), JSON.stringify(next))
+  } catch { /* storage unavailable */ }
+}
+
+/** Branches the app deleted, exact tips; restored ones drop out once the branch exists again. */
+export function recordedDeleted(): { name: string; sha: string; date: number }[] {
+  try {
+    const names = new Set(app.localBranches.map(b => b.name))
+    return (JSON.parse(localStorage.getItem(deletedKey()) ?? '[]') as { name: string; sha: string; date: number }[]).filter(x => !names.has(x.name))
+  } catch {
+    return []
+  }
+}
+
+export async function restoreDeleted(name: string, sha: string): Promise<void> {
+  await app.run(`Restoring ${name}`, () => api['git:restoreBranch'](repo(), name, sha), { success: `Branch ${name} restored at ${sha.slice(0, 7)}.` })
 }
 
 export async function renameBranch(b: Branch): Promise<void> {

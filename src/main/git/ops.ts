@@ -229,8 +229,11 @@ export async function renameBranch(repo: string, from: string, to: string): Prom
   await git(repo, ['branch', '-m', from, to])
 }
 
-export async function deleteBranch(repo: string, name: string, force: boolean): Promise<void> {
+/** Deletes a local branch and returns the commit it pointed to, so it can be restored. */
+export async function deleteBranch(repo: string, name: string, force: boolean): Promise<string> {
+  const sha = (await gitOut(repo, ['rev-parse', `refs/heads/${name}`])).trim()
   await git(repo, ['branch', force ? '-D' : '-d', name])
+  return sha
 }
 
 export async function merge(repo: string, ref: string, opts: { squash?: boolean; noFf?: boolean } = {}): Promise<void> {
