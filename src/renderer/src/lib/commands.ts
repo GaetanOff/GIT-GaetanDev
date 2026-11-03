@@ -41,8 +41,17 @@ export async function discardAll(): Promise<void> {
   if (ok) await app.run('Discarding', () => api['git:discard'](app.repo!.path, paths))
 }
 
-export async function undoLastCommit(): Promise<void> {
+/**
+ * Soft-resets the last commit. `ask` confirms first (the keyboard shortcut,
+ * which is easy to press by accident); `repoId` ties the call to the repo a
+ * toast was shown for, so it never undoes a commit in another tab.
+ */
+export async function undoLastCommit(opts: { ask?: boolean; repoId?: string } = {}): Promise<void> {
   if (!app.repo || !app.status?.hasCommits) return
+  if (opts.repoId && opts.repoId !== app.repo.id) {
+    toast('info', 'That commit was made in another tab. Switch back to it to undo it.')
+    return
+  }
   const ahead = app.status.upstream ? app.status.ahead : 1
   if (!ahead) {
     const ok = await confirm({
@@ -52,15 +61,30 @@ export async function undoLastCommit(): Promise<void> {
       danger: true,
     })
     if (!ok) return
+  } else if (opts.ask) {
+    const last = await api['git:lastCommitMessage'](app.repo.path).catch(() => '')
+    const ok = await confirm({
+      title: 'Undo the last commit?',
+      message: `“${last.split('\n')[0]}” is removed from the branch. Its changes stay staged.`,
+      confirmLabel: 'Undo commit',
+    })
+    if (!ok || !app.repo) return
   }
   const repo = app.repo.path
+  // This repo's draft, even if another tab is in front when git answers.
+  const draft = app.draft
   const message = await app.run('Undoing commit', () => api['git:undoCommit'](repo))
-  if (message !== undefined) {
+  if (message === undefined) return
+  // Never replace a message being written; otherwise bring the commit's back.
+  const writing = !!(draft.summary.trim() || draft.body.trim())
+  if (!writing) {
     const [summary, ...rest] = message.split('\n')
-    Object.assign(app.draft, { summary, body: rest.join('\n').trim(), amend: false })
-    app.view = 'changes'
-    toast('info', 'Last commit undone. Its changes are staged and its message is back in the commit box.')
+    Object.assign(draft, { summary, body: rest.join('\n').trim(), amend: false })
   }
+  if (app.repo?.path === repo) app.view = 'changes'
+  toast('info', writing
+    ? 'Last commit undone. Its changes are staged; the message you were writing was kept.'
+    : 'Last commit undone. Its changes are staged and its message is back in the commit box.')
 }
 
 export async function renameCurrentBranch(): Promise<void> {
@@ -108,7 +132,7 @@ export const COMMANDS: Command[] = [
   { id: 'blame', title: 'Blame the selected file', group: 'Changes', icon: 'user', keys: 'mod+shift+b', when: () => !!app.selected && !!app.status?.hasCommits, run: () => app.openFile(app.selected!.path, 'blame') },
   { id: 'stash', title: 'Stash all changes…', group: 'Changes', icon: 'stash', keys: 'mod+shift+s', when: () => app.files.length > 0, run: () => openDialog({ kind: 'stash' }) },
   { id: 'discardAll', title: 'Discard all changes…', group: 'Changes', icon: 'trash', keys: 'mod+shift+backspace', when: () => app.files.length > 0, run: discardAll },
-  { id: 'undo', title: 'Undo last commit', group: 'Changes', icon: 'undo', keys: 'mod+z', when: () => !!app.status?.hasCommits && app.view !== 'history' && !isTyping(), run: undoLastCommit },
+  { id: 'undo', title: 'Undo last commit', group: 'Changes', icon: 'undo', keys: 'mod+z', when: () => !!app.status?.hasCommits && app.view !== 'history' && !isTyping(), run: () => undoLastCommit({ ask: true }) },
   { id: 'explorer', title: 'Show in Explorer', group: 'Repository', icon: 'folder', keys: 'mod+shift+e', when: hasRepo, run: () => api['shell:reveal'](app.repo!.path) },
   { id: 'editor', title: 'Open in editor', group: 'Repository', icon: 'code', keys: 'mod+shift+a', when: hasRepo, run: () => api['shell:editor'](app.repo!.path).catch(e => toast('error', e.message)) },
   { id: 'terminal', title: 'Open in terminal', group: 'Repository', icon: 'terminal', keys: 'mod+`', when: hasRepo, run: () => api['shell:terminal'](app.repo!.path) },
