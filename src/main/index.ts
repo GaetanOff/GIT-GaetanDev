@@ -1,10 +1,10 @@
 import { existsSync, statSync } from 'node:fs'
-import { app, BrowserWindow, Menu, screen, session, shell } from 'electron'
+import { app, BrowserWindow, dialog, Menu, screen, session, shell } from 'electron'
 import { join, resolve } from 'node:path'
 import { startAskPass, stopAskPass } from './askpass'
 import { killRunning, setGitEnv } from './git/exec'
 import { devShot } from './devshot'
-import { askRenderer, queuesBusy, registerIpc, send, setLaunchPath, settleQueues } from './ipc'
+import { askRenderer, openFolder, queuesBusy, registerIpc, send, setLaunchPath, settleQueues } from './ipc'
 import { flush, getState, save } from './store'
 import { startUpdates } from './updater'
 import { RepoWatcher } from './watcher'
@@ -40,30 +40,50 @@ function start(): void {
   const watcher = new RepoWatcher(e => send('repo:changed', e))
   setLaunchPath(folderArg(process.argv))
 
+  /** Credential prompts in the app; without them (the helper could not be written) git still runs. */
+  const askpass = () => {
+    try {
+      setGitEnv(startAskPass(askRenderer))
+    } catch (e) {
+      console.error('Credential prompts unavailable:', (e as Error).message)
+    }
+  }
+
   app.whenReady().then(() => {
     Menu.setApplicationMenu(null)
     // The app needs no camera, microphone, location or notifications: refuse every request.
     session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
     session.defaultSession.setPermissionCheckHandler(() => false)
-    setGitEnv(startAskPass(askRenderer))
+    askpass()
     registerIpc(watcher)
     createWindow()
     startUpdates(version => send('update:ready', version))
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
-        setGitEnv(startAskPass(askRenderer))
+        askpass()
         createWindow()
       }
     })
+  }).catch(e => {
+    // Without a window the process would hold the single-instance lock, and every later launch
+    // would exit at once: the app would look dead until killed. Say why, and let go.
+    dialog.showErrorBox('GaetanDev Git could not start', (e as Error).stack ?? String(e))
+    app.exit(1)
   })
 
   app.on('second-instance', (_e, argv, cwd) => {
+    const folder = folderArg(argv, cwd)
     const win = BrowserWindow.getAllWindows()[0]
+    // Every window was closed (macOS keeps the app running): open one for this launch.
+    if (!win && app.isReady()) {
+      if (folder) setLaunchPath(folder)
+      createWindow()
+      return
+    }
     if (!win) return
     if (win.isMinimized()) win.restore()
     win.focus()
-    const folder = folderArg(argv, cwd)
-    if (folder) send('open:path', folder)
+    if (folder) openFolder(folder)
   })
 
   app.on('window-all-closed', () => {
@@ -144,6 +164,15 @@ function createWindow(): BrowserWindow {
     if (url !== win.webContents.getURL()) e.preventDefault()
   })
   win.on('focus', () => win.webContents.send('menu', 'focus'))
+  // A crashed or killed page leaves a blank window: load it again, unless it keeps crashing.
+  const crashes: number[] = []
+  win.webContents.on('render-process-gone', (_e, details) => {
+    console.error('Renderer gone:', details.reason)
+    if (details.reason === 'clean-exit' || win.isDestroyed()) return
+    const now = Date.now()
+    crashes.push(now)
+    if (crashes.filter(t => now - t < 60_000).length <= 3) win.webContents.reload()
+  })
 
   if (dev) devShot(win)
   if (dev && process.env.ELECTRON_RENDERER_URL) win.loadURL(process.env.ELECTRON_RENDERER_URL)

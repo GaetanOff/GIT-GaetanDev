@@ -47,12 +47,22 @@ export function setLaunchPath(path: string | null): void {
   launchPath = path
 }
 
+/** Whether the page has read its start state (and so listens for open:path). */
+let stateRead = false
+
+/** A folder from a second launch: sent to the page, or kept for it while it is still starting. */
+export function openFolder(path: string): void {
+  if (stateRead) send('open:path', path)
+  else launchPath = path
+}
+
 export function registerIpc(watcher: RepoWatcher): void {
   const h: Handlers = {
     'app:state': async () => {
       const s = getState()
       const open = launchPath
       launchPath = null
+      stateRead = true
       return { repos: s.repos, lastRepo: s.lastRepo, settings: s.settings, platform: process.platform, version: app.getVersion(), home: homedir(), launchPath: open, stateUnreadable: stateUnreadable() }
     },
     'app:settings': async patch => {
