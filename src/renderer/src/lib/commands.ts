@@ -34,7 +34,7 @@ export async function discardAll(): Promise<void> {
   if (!paths.length) return
   const ok = await confirm({
     title: 'Discard all changes?',
-    message: `This drops every staged and unstaged change in ${paths.length} file(s). New files go to the recycle bin.`,
+    message: `This drops every staged and unstaged change in ${paths.length} file(s). The current version of each file goes to the recycle bin.`,
     confirmLabel: 'Discard all',
     danger: true,
   })

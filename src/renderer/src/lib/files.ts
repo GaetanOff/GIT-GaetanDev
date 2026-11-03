@@ -19,7 +19,7 @@ export async function discardPaths(paths: string[]): Promise<void> {
   if (app.settings.confirmDiscard) {
     const ok = await confirm({
       title: paths.length === 1 ? `Discard changes to ${basename(paths[0])}?` : `Discard changes to ${paths.length} files?`,
-      message: 'Staged and unstaged changes are dropped. New files are moved to the recycle bin.',
+      message: 'Staged and unstaged changes are dropped. The current version of each file goes to the recycle bin.',
       details: paths.length > 1 ? paths.slice(0, 12) : undefined,
       confirmLabel: 'Discard',
       danger: true,

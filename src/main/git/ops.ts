@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
-import { appendFile, readFile } from 'node:fs/promises'
-import { homedir } from 'node:os'
-import { isAbsolute, join } from 'node:path'
+import { appendFile, copyFile, lstat, mkdir, readFile } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
+import { basename, isAbsolute, join } from 'node:path'
 import { shell } from 'electron'
 import type { Author, DiffOptions, LineSelection, Progress, PullMode, ResetMode, RepoStatus } from '@shared/types'
 import { applyPatch, buildPartialPatch, diff } from './diff'
@@ -31,9 +31,16 @@ const FULL_CONTEXT: DiffOptions = { context: 3, ignoreWhitespace: false, force: 
 
 export async function stageLines(repo: string, path: string, selection: LineSelection, untracked: boolean, opts = FULL_CONTEXT): Promise<void> {
   if (untracked) await git(repo, ['add', '--intent-to-add', '--', path])
-  const d = await diff(repo, { kind: 'worktree', path }, { ...opts, ignoreWhitespace: false, force: true })
-  const patch = buildPartialPatch(d, selection, 'forward')
-  if (patch) await applyPatch(repo, patch, ['--cached'], d.encoding)
+  try {
+    const d = await diff(repo, { kind: 'worktree', path }, { ...opts, ignoreWhitespace: false, force: true })
+    const patch = buildPartialPatch(d, selection, 'forward')
+    if (patch) await applyPatch(repo, patch, ['--cached'], d.encoding)
+    else if (untracked) await git(repo, ['rm', '--cached', '-q', '--', path])
+  } catch (e) {
+    // Leave no intent-to-add entry behind: the file is untracked again, as before.
+    if (untracked) await git(repo, ['rm', '--cached', '-q', '--', path]).catch(() => undefined)
+    throw e
+  }
 }
 
 export async function unstageLines(repo: string, path: string, selection: LineSelection, opts = FULL_CONTEXT): Promise<void> {
@@ -45,13 +52,19 @@ export async function unstageLines(repo: string, path: string, selection: LineSe
 export async function discardLines(repo: string, path: string, selection: LineSelection, opts = FULL_CONTEXT): Promise<void> {
   const d = await diff(repo, { kind: 'worktree', path }, { ...opts, ignoreWhitespace: false, force: true })
   const patch = buildPartialPatch(d, selection, 'reverse')
-  if (patch) await applyPatch(repo, patch, ['--reverse'], d.encoding)
+  if (!patch) return
+  // The file stays in place, so a copy of it goes to the recycle bin.
+  const dir = join(tmpdir(), 'GaetanDev discarded lines', String(Date.now()))
+  await mkdir(dir, { recursive: true })
+  const copy = join(dir, basename(path))
+  await copyFile(join(repo, path), copy)
+  await shell.trashItem(copy)
+  await applyPatch(repo, patch, ['--reverse'], d.encoding)
 }
 
 /**
- * Drops every local change (staged and unstaged) to the given files. Files
- * that HEAD does not know go to the recycle bin rather than being deleted, so
- * a misclick is always recoverable.
+ * Drops every local change (staged and unstaged) to the given files. Nothing
+ * is lost for good: the current version of each file goes to the recycle bin.
  */
 export async function discard(repo: string, paths: string[]): Promise<void> {
   const st = await status(repo)
@@ -61,17 +74,26 @@ export async function discard(repo: string, paths: string[]): Promise<void> {
   for (const p of paths) {
     const f = byPath.get(p)
     if (!f) continue
-    if (f.untracked || f.index === 'A' || f.index === 'R' || f.index === 'C' || !st.hasCommits) created.push(p)
+    // "git add -N" entries (worktree "A") have no committed content either.
+    if (f.untracked || f.index === 'A' || f.index === 'R' || f.index === 'C' || f.worktree === 'A' || !st.hasCommits) created.push(p)
     else tracked.push(p)
     // A rename is undone by restoring the original file as well.
     if (f.oldPath && f.index === 'R') tracked.push(f.oldPath)
   }
-  if (tracked.length) {
-    await git(repo, ['restore', '--source=HEAD', '--staged', '--worktree', '--pathspec-from-file=-', '--pathspec-file-nul'], viaStdin(tracked))
+  // The changed file goes to the recycle bin first (the GitHub Desktop way), then HEAD's version comes back.
+  const restore: string[] = []
+  const failed: string[] = []
+  for (const p of tracked) {
+    // Only regular files: a deleted file has nothing to keep, a submodule is a whole checkout.
+    const isFile = await lstat(join(repo, p)).then(s => s.isFile(), () => false)
+    if (!isFile) restore.push(p)
+    else await shell.trashItem(join(repo, p)).then(() => restore.push(p), () => failed.push(p))
   }
+  if (restore.length) await git(repo, ['restore', '--source=HEAD', '--staged', '--worktree', '--pathspec-from-file=-', '--pathspec-file-nul'], viaStdin(restore))
   const staged = created.filter(p => !byPath.get(p)?.untracked)
   if (staged.length) await git(repo, ['rm', '--cached', '-q', '-r', '--pathspec-from-file=-', '--pathspec-file-nul'], viaStdin(staged))
   for (const p of created) await shell.trashItem(join(repo, p)).catch(() => undefined)
+  if (failed.length) throw new GitError(`Could not move ${failed.length === 1 ? failed[0] : `${failed.length} files`} to the recycle bin, so ${failed.length === 1 ? 'it was' : 'they were'} left as is.`)
 }
 
 export async function ignore(repo: string, pattern: string): Promise<void> {

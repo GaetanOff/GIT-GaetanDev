@@ -120,7 +120,7 @@
     if (!repo || !diff) return
     const sel = toSelection(keys)
     if (kind === 'discard') {
-      const ok = await confirm({ title: 'Discard selected lines?', message: 'These changes are removed from the file on disk. This cannot be undone.', confirmLabel: 'Discard', danger: true })
+      const ok = await confirm({ title: 'Discard selected lines?', message: 'These changes are removed from the file on disk. A copy of the file as it is now goes to the recycle bin.', confirmLabel: 'Discard', danger: true })
       if (!ok) return
     }
     const path = diff.path
