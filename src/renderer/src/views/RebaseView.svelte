@@ -13,6 +13,8 @@
     body: string
     author: string
     date: number
+    /** A merge commit: recreated as is, never edited. */
+    merge: boolean
     /** Edited message: for a reword, or for a commit absorbing squashes. */
     message?: string
   }
@@ -39,11 +41,14 @@
       .catch(e => (base === 'HEAD~10' ? api['git:rebasePlan'](repo, null) : Promise.reject(e)))
       .then(p => {
         plan = p
-        rows = p.commits.map(c => ({ sha: c.sha, action: 'pick', subject: c.subject, body: c.body, author: c.author, date: c.date }))
+        rows = p.commits.map(c => ({ sha: c.sha, action: 'pick', subject: c.subject, body: c.body, author: c.author, date: c.date, merge: c.parents.length > 1 }))
         selected = Math.max(0, rows.length - 1)
       })
       .catch(e => (error = asError(e).message))
   })
+
+  /** With merges in range git keeps its own order: no reordering, no squashing. */
+  const mergeMode = $derived(!!plan?.hasMerges)
 
   const fullMessage = (r: Row) => (r.body ? `${r.subject}\n\n${r.body}` : r.subject)
 
@@ -80,6 +85,7 @@
   }
 
   function setAction(i: number, action: RebaseAction) {
+    if (rows[i].merge || (mergeMode && (action === 'squash' || action === 'fixup'))) return
     rows[i].action = action
     if (action === 'reword' && rows[i].message === undefined) rows[i].message = fullMessage(rows[i])
     if (action === 'pick' && !members(i).some(m => m.action === 'squash')) rows[i].message = undefined
@@ -91,6 +97,7 @@
   }
 
   function move(from: number, to: number) {
+    if (mergeMode) return
     if (to < 0 || to >= rows.length || from === to) return
     const [r] = rows.splice(from, 1)
     rows.splice(to, 0, r)
@@ -108,6 +115,7 @@
   }
 
   function onDragStart(e: DragEvent, i: number) {
+    if (mergeMode) return e.preventDefault()
     dragFrom = i
     e.dataTransfer!.effectAllowed = 'move'
     e.dataTransfer!.setData('text/plain', String(i))
@@ -186,28 +194,31 @@
     <div class="empty"><span class="spinner"></span></div>
   {:else if !plan.commits.length}
     <div class="empty"><div class="empty-icon"><Icon name="check" size={24} /></div><h3>Nothing to rewrite</h3><p>There are no commits after this point on the current branch.</p></div>
-  {:else if plan.hasMerges}
-    <div class="empty"><div class="empty-icon" style="background:var(--amber-soft);color:var(--amber)"><Icon name="merge" size={24} /></div><h3>Merge commits in range</h3><p>Rewriting history across merge commits is not supported yet. Start from a commit after the last merge.</p></div>
   {:else}
     <div class="body">
       <div class="list" bind:this={listEl} role="listbox" tabindex="0" aria-label="Commits to rewrite" onkeydown={onKey}>
         <div class="legend label">Oldest first · replayed top to bottom on {plan.base ? shortSha(plan.base) : 'the root'}</div>
+        {#if mergeMode}<div class="mnote"><Icon name="merge" size={13} />Merge commits are kept and recreated. Reorder, squash and fixup are off in this mode; pick, reword and drop still work.</div>{/if}
         {#each rows as r, i (r.sha)}
           {@const t = tone(r.author)}
           {@const squashed = r.action === 'squash' || r.action === 'fixup'}
           {#if dropAt === i}<div class="drop-line"></div>{/if}
           <div
             class="row {r.action}" class:sel={i === selected} class:squashed class:dragging={dragFrom === i}
-            draggable="true" role="option" aria-selected={i === selected} tabindex="-1"
+            draggable={!mergeMode} role="option" aria-selected={i === selected} tabindex="-1"
             ondragstart={e => onDragStart(e, i)} ondragover={e => onDragOver(e, i)} ondrop={onDrop} ondragend={() => { dragFrom = null; dropAt = null }}
             onclick={() => { selected = i; listEl?.focus() }} onkeydown={() => undefined}
           >
             <span class="grip" title="Drag to reorder"><Icon name="list" size={13} /></span>
+            {#if r.merge}
+              <span class="mergebadge"><Icon name="merge" size={12} />Merge · kept</span>
+            {:else}
             <div class="actions">
-              {#each ACTIONS as a}
+              {#each ACTIONS.filter(a => !mergeMode || (a.a !== 'squash' && a.a !== 'fixup')) as a}
                 <button class="act {a.a}" class:on={r.action === a.a} title="{a.hint} ({a.key})" onclick={e => { e.stopPropagation(); selected = i; setAction(i, a.a) }}>{a.label}</button>
               {/each}
             </div>
+            {/if}
             <span class="subject truncate">
               {#if squashed}<Icon name="merge" size={12} class="into" />{/if}
               {r.action === 'reword' || (r.message !== undefined && !squashed) ? (r.message ?? r.subject).split('\n')[0] : r.subject}
@@ -271,6 +282,8 @@
   .row.drop { background: rgba(239, 68, 68, 0.04); }
   .drop-line { height: 2px; margin: -2px 0 1px; border-radius: 1px; background: var(--green); }
   .grip { color: var(--text-dim); cursor: grab; display: flex; }
+  .mnote { display: flex; align-items: center; gap: 8px; margin: 0 2px 8px; padding: 8px 10px; border-radius: var(--radius); background: var(--purple-soft); color: #e9d5ff; font-size: 12px; }
+  .mergebadge { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px; border-radius: var(--radius-sm); background: var(--purple-soft); color: #d8b4fe; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; flex-shrink: 0; }
   .actions { display: flex; gap: 1px; padding: 2px; border-radius: var(--radius-sm); background: var(--surface-2); flex-shrink: 0; }
   .act { height: 22px; padding: 0 7px; border: none; border-radius: 4px; background: transparent; color: var(--text-faint); font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; }
   .act:hover { color: #fff; }
