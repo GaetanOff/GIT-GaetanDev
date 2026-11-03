@@ -184,16 +184,22 @@ export function isTyping(): boolean {
   return !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)
 }
 
+const PUNCTUATION = new Set([',', '/', '`', '.', ';'])
+
 export function eventKeys(e: KeyboardEvent): string {
   const parts: string[] = []
   if (e.ctrlKey || e.metaKey) parts.push('mod')
   if (e.altKey) parts.push('alt')
   if (e.shiftKey) parts.push('shift')
+  // Matched by the character typed, so "Ctrl+," is the key that types a comma on any layout
+  // (on AZERTY, not the key that sits where QWERTY has its comma).
   let k = e.key.toLowerCase()
+  // Digits by position: the top row, whether the layout needs Shift for them (AZERTY) or not.
   if (e.code.startsWith('Digit')) k = e.code.slice(5)
-  if (e.code === 'Backquote') k = '`'
-  if (e.code === 'Comma') k = ','
-  if (e.code === 'Slash') k = '/'
+  // A dead key (` on many layouts) types nothing by itself: fall back to its position.
+  else if (k === 'dead' && e.code === 'Backquote') k = '`'
+  // Punctuation some layouts only reach with Shift ("/" on AZERTY) still matches without it.
+  if (PUNCTUATION.has(k) && parts.at(-1) === 'shift') parts.pop()
   parts.push(k)
   return parts.join('+')
 }
