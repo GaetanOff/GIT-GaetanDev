@@ -2,7 +2,7 @@
   import Icon from './Icon.svelte'
   import Code from './Code.svelte'
   import VirtualList from './VirtualList.svelte'
-  import { langFor } from '@/lib/syntax'
+  import { langFor, type LexState } from '@/lib/syntax'
   import type { DiffLine, DiffSource, FileDiff, LineSelection } from '@shared/types'
   import { api, asError } from '@/lib/api'
   import { longestLine, splitRows, unifiedRows, type DiffRow } from '@/lib/diffrows'
@@ -14,6 +14,8 @@
   let { source, area }: { source: DiffSource; area: 'staged' | 'unstaged' | 'conflicted' | 'commit' } = $props()
 
   const ROW = 20
+  const ENCODING: Record<string, string> = { 'utf8-bom': 'UTF-8 BOM', utf16le: 'UTF-16 LE', utf16be: 'UTF-16 BE', 'windows-1252': 'Windows-1252' }
+  const formatBytes = (n: number) => (n < 1024 ? `${n} B` : n < 1048576 ? `${(n / 1024).toFixed(1)} KB` : `${(n / 1048576).toFixed(1)} MB`)
   const lang = $derived(langFor(source.path))
 
   let diff = $state.raw<FileDiff | null>(null)
@@ -65,7 +67,8 @@
     }
   }
 
-  const rows = $derived(diff ? (mode === 'split' ? splitRows(diff) : unifiedRows(diff)) : [])
+  const syntaxLang = $derived(app.settings.syntaxHighlight ? lang : null)
+  const rows = $derived(diff ? (mode === 'split' ? splitRows(diff, syntaxLang) : unifiedRows(diff, syntaxLang)) : [])
   // Unified scrolls sideways for long lines; split keeps two equal halves that clip.
   const width = $derived(diff && mode === 'unified' ? `calc(${longestLine(diff)}ch + 120px)` : undefined)
 
@@ -134,20 +137,40 @@
     app.updateSettings({ diffContext: v })
   }
 
+  /* Split view: a shared horizontal offset, driven by one scrollbar and shift+wheel. */
+  let splitX = $state(0)
+  let hbar = $state<HTMLDivElement>()
+  let viewWidth = $state(1000)
+  const splitOverflow = $derived(diff && mode === 'split' ? Math.max(0, longestLine(diff) * 7.3 + 80 - viewWidth / 2) : 0)
+  $effect(() => {
+    void sourceKey
+    void mode
+    splitX = 0
+  })
+  function onSplitWheel(e: WheelEvent) {
+    if (mode !== 'split' || !hbar) return
+    const dx = e.shiftKey ? e.deltaY : e.deltaX
+    if (!dx) return
+    e.preventDefault()
+    hbar.scrollLeft += dx
+  }
+
   const isImage = $derived(!!diff?.image && (!!diff.image.before || !!diff.image.after))
   const empty = $derived(!!diff && !diff.binary && !diff.tooLarge && !diff.hunks.length)
 </script>
 
 <svelte:window onpointerup={() => (drag = null)} />
 
-{#snippet code(segs: Segment[] | undefined, text: string)}<Code {text} {lang} {segs} />{/snippet}
+{#snippet code(segs: Segment[] | undefined, text: string, state?: LexState)}<Code {text} {lang} {segs} {state} />{/snippet}
 
-<div class="diff">
+<div class="diff" bind:clientWidth={viewWidth}>
   <div class="toolbar">
     <span class="path truncate" title={diff?.oldPath ? `${diff.oldPath} → ${source.path}` : source.path}>
       {#if dirname(source.path)}<span class="dir">{dirname(source.path)}/</span>{/if}<b>{basename(source.path)}</b>
       {#if diff?.oldPath}<span class="badge blue">renamed</span>{/if}
       {#if diff?.modeChange}<span class="badge purple" title="File mode">{diff.modeChange}</span>{/if}
+      {#if diff && diff.encoding !== 'utf8'}<span class="badge amber" title="File encoding, kept when staging lines">{ENCODING[diff.encoding]}</span>{/if}
+      {#if diff?.lfs}<span class="badge cyan" title="Stored with Git LFS">LFS</span>{/if}
     </span>
     {#if diff && !diff.binary}
       <span class="stats"><span class="a">+{diff.additions}</span><span class="d">−{diff.deletions}</span></span>
@@ -194,6 +217,13 @@
     <div class="empty"><div class="empty-icon" style="background:var(--red-soft);color:var(--red)"><Icon name="alert" size={24} /></div><h3>Could not load the diff</h3><p>{error}</p></div>
   {:else if !diff}
     <div class="empty"><span class="spinner"></span></div>
+  {:else if diff.lfs}
+    <div class="empty">
+      <div class="empty-icon" style="background:rgba(103,232,249,0.12);color:var(--cyan)"><Icon name="cloud" size={24} /></div>
+      <h3>Git LFS file</h3>
+      <p>The content is stored on the LFS server; git only tracks a pointer.</p>
+      <p class="mono">{#if diff.lfs.before}{formatBytes(diff.lfs.before.size)} → {/if}{formatBytes(diff.lfs.size)} · {diff.lfs.oid.slice(0, 12)}</p>
+    </div>
   {:else if diff.submodule}
     <div class="empty">
       <div class="empty-icon"><Icon name="repo" size={24} /></div>
@@ -221,6 +251,8 @@
   {:else if empty}
     <div class="empty"><div class="empty-icon"><Icon name="check" size={24} /></div><h3>No content changes</h3><p>{diff.oldPath ? 'The file was renamed without changes.' : diff.modeChange ? 'Only the file mode changed.' : app.settings.ignoreWhitespace ? 'Only whitespace changed.' : 'The file is empty.'}</p></div>
   {:else}
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <div class="lines-wrap" style="--sx:{splitX}px" onwheel={onSplitWheel}>
     <VirtualList items={rows} rowHeight={ROW} {width} class="lines {mode}" overscan={30}>
       {#snippet row(r: DiffRow)}
         {#if r.kind === 'hunk'}
@@ -246,7 +278,7 @@
               onpointerdown={e => gutterDown(e, r.hi, r.li, r.line)} onpointerenter={() => gutterEnter(r.hi, r.li, r.line)}
             ><span class="no">{r.line.oldNo ?? ''}</span><span class="no">{r.line.newNo ?? ''}</span></span>
             <span class="sign">{r.line.type === 'add' ? '+' : r.line.type === 'del' ? '−' : ''}</span>
-            <span class="code">{@render code(r.segs, r.line.text)}{#if r.line.noEol}<span class="eol" title="No newline at end of file">⏎̸</span>{/if}</span>
+            <span class="code">{@render code(r.segs, r.line.text, r.st)}{#if r.line.noEol}<span class="eol" title="No newline at end of file">⏎̸</span>{/if}</span>
           </div>
         {:else}
           <div class="pair">
@@ -258,7 +290,7 @@
                     class="gut one" class:pick={lineOps && side.line.type !== 'ctx'} role="presentation"
                     onpointerdown={e => gutterDown(e, r.hi, side.li, side.line)} onpointerenter={() => gutterEnter(r.hi, side.li, side.line)}
                   ><span class="no">{s === 0 ? side.line.oldNo ?? '' : side.line.newNo ?? ''}</span></span>
-                  <span class="code">{@render code(side.segs, side.line.text)}</span>
+                  <span class="code">{@render code(side.segs, side.line.text, side.st)}</span>
                 </div>
               {:else}
                 <div class="half filler"></div>
@@ -268,6 +300,10 @@
         {/if}
       {/snippet}
     </VirtualList>
+    {#if mode === 'split' && splitOverflow > 0}
+      <div class="hbar" bind:this={hbar} onscroll={() => (splitX = hbar!.scrollLeft)}><div style="width:calc(50% + {splitOverflow}px)"></div></div>
+    {/if}
+    </div>
     {#if lineOps && !selected.size}
       <div class="tip">Click or drag in the gutter to select lines</div>
     {/if}
@@ -338,7 +374,12 @@
   .pair { display: grid; grid-template-columns: 1fr 1fr; height: 20px; }
   .half { min-width: 0; overflow: hidden; }
   .half + .half { border-left: 1px solid var(--border); }
-  .half .code { padding-left: 10px; }
+  .half .code { padding-left: 10px; display: inline-block; transform: translateX(calc(-1 * var(--sx, 0px))); }
+  .half .gut { position: relative; z-index: 1; }
+  .lines-wrap { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
+  .lines-wrap :global(.lines) { flex: 1; }
+  .hbar { height: 12px; flex-shrink: 0; overflow-x: auto; overflow-y: hidden; margin-left: 50%; border-top: 1px solid var(--border); }
+  .hbar > div { height: 1px; }
   .filler { background: repeating-linear-gradient(135deg, transparent 0 6px, rgba(255, 255, 255, 0.025) 6px 12px); }
 
   .tip {

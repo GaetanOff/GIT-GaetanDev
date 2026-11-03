@@ -4,7 +4,7 @@
   import Resizer from '@/components/Resizer.svelte'
   import DiffView from '@/components/DiffView.svelte'
   import Code from '@/components/Code.svelte'
-  import { langFor } from '@/lib/syntax'
+  import { langFor, lineStates } from '@/lib/syntax'
   import type { Blame, BlameCommit, FileCommit } from '@shared/types'
   import { api, asError } from '@/lib/api'
   import { basename, dirname, fullDate, initials, relativeTime, shortSha, statusStyle, tone } from '@/lib/format'
@@ -89,6 +89,8 @@
       .then(b => { if (t === token) blame = b })
       .catch(e => { if (t === token) blameError = asError(e).message })
   })
+
+  const blameStates = $derived(blame && app.settings.syntaxHighlight ? lineStates(blame.lines.map(l => l.text), lang) : [])
 
   /** One annotation per run of consecutive lines from the same commit. */
   const runStart = $derived(blame ? blame.lines.map((l, i) => i === 0 || blame!.lines[i - 1].sha !== l.sha) : [])
@@ -224,7 +226,7 @@
             {/if}
           </button>
           <span class="no">{i + 1}</span>
-          <span class="code"><Code text={l.text} {lang} /></span>
+          <span class="code"><Code text={l.text} {lang} state={blameStates[i]} /></span>
         </div>
       {/snippet}
     </VirtualList>

@@ -3,8 +3,11 @@ import type { Segment } from './intraline'
 /**
  * A small line tokenizer for syntax colouring. It works one line at a time —
  * diffs, blame and conflicts only ever render a window of lines — so it is
- * fast and needs no grammar files. Multi-line constructs are approximated:
- * a line that starts inside a block comment is recognised by its leading `*`.
+ * fast and needs no grammar files. Multi-line constructs (block comments,
+ * template strings, Python triple quotes, HTML comments) carry a state from
+ * one line to the next; callers that render a sequence pass it along with
+ * `lineStates`. Without a state, a line starting with `*` is taken for the
+ * inside of a block comment.
  */
 
 export type Token = 'kw' | 'str' | 'num' | 'com' | 'fn' | 'type' | 'tag' | 'attr' | 'prop' | 'lit' | 'meta'
@@ -37,7 +40,8 @@ const clike: Rule[] = [
 
 const hashy = (kw: string): Rule[] => [
   [/#.*/y, 'com'],
-  [/"""|'''/y, 'str'],
+  [/"""(?:(?!""")[\s\S])*(?:"""|$)/y, 'str'],
+  [/'''(?:(?!''')[\s\S])*(?:'''|$)/y, 'str'],
   STR_DQ, STR_SQ, NUM,
   [/@[A-Za-z_][\w.]*/y, 'meta'],
   [/\$\{?[A-Za-z_][\w]*\}?/y, 'prop'],
@@ -140,19 +144,60 @@ export function langFor(path: string): string | null {
 
 interface Span { s: number; e: number; c: Token }
 
-const cache = new Map<string, Span[]>()
+/** What a line ends inside of, so the next line starts there. */
+export type LexState = null | 'block' | 'tpl' | 'tq2' | 'tq1' | 'xml'
 
-function tokenize(text: string, lang: string): Span[] {
-  const key = `${lang}\0${text}`
+/** How each open construct closes, and the colour of its inside. */
+const CLOSERS: Record<Exclude<LexState, null>, { re: RegExp; len: number; cls: Token }> = {
+  block: { re: /\*\//, len: 2, cls: 'com' },
+  xml: { re: /-->/, len: 3, cls: 'com' },
+  tpl: { re: /(?<!\\)`/, len: 1, cls: 'str' },
+  tq2: { re: /"""/, len: 3, cls: 'str' },
+  tq1: { re: /'''/, len: 3, cls: 'str' },
+}
+
+/** The state a token leaves open when it runs to the end of the line unclosed. */
+function openState(tok: string): LexState {
+  if (tok.startsWith('/*') && (tok.length < 4 || !tok.endsWith('*/'))) return 'block'
+  if (tok.startsWith('<!--') && !tok.endsWith('-->')) return 'xml'
+  if (tok.startsWith('"""') && (tok.length < 6 || !tok.endsWith('"""'))) return 'tq2'
+  if (tok.startsWith("'''") && (tok.length < 6 || !tok.endsWith("'''"))) return 'tq1'
+  if (tok.startsWith('`') && (tok.length < 2 || !tok.endsWith('`') || tok.endsWith('\\`'))) return 'tpl'
+  return null
+}
+
+interface Lexed { spans: Span[]; end: LexState }
+
+const cache = new Map<string, Lexed>()
+
+/**
+ * `start` undefined means "unknown": fall back to the leading-`*` heuristic.
+ * `null` means "known to start in plain code".
+ */
+function tokenize(text: string, lang: string, start?: LexState): Lexed {
+  const key = `${lang}\0${start ?? '?'}\0${text}`
   const hit = cache.get(key)
   if (hit) return hit
   const rules = LANGS[lang]
   const spans: Span[] = []
-  // Continuation lines of a /* … */ block.
-  if ((lang === 'clike' || lang === 'css') && /^\s*\*(?!\*?\/\S)/.test(text) && !/^\s*\*\s*[\w$]+\s*[=(]/.test(text)) {
+  let end: LexState = null
+  let i = 0
+
+  if (start) {
+    const c = CLOSERS[start]
+    const m = c.re.exec(text)
+    if (!m) {
+      spans.push({ s: 0, e: text.length, c: c.cls })
+      return remember(key, { spans, end: start })
+    }
+    spans.push({ s: 0, e: m.index + c.len, c: c.cls })
+    i = m.index + c.len
+  } else if (start === undefined && (lang === 'clike' || lang === 'css') && /^\s*\*(?!\*?\/\S)/.test(text) && !/^\s*\*\s*[\w$]+\s*[=(]/.test(text)) {
     spans.push({ s: 0, e: text.length, c: 'com' })
-  } else if (text.length <= 2000) {
-    let i = 0
+    return remember(key, { spans, end: null })
+  }
+
+  if (text.length <= 2000) {
     outer: while (i < text.length) {
       for (const [re, cls] of rules) {
         re.lastIndex = i
@@ -160,15 +205,36 @@ function tokenize(text: string, lang: string): Span[] {
         if (m && m[0].length) {
           if (cls) spans.push({ s: i, e: i + m[0].length, c: cls })
           i += m[0].length
+          if (i >= text.length && (cls === 'com' || cls === 'str')) end = openState(m[0])
           continue outer
         }
       }
       i++
     }
   }
-  if (cache.size > 20_000) cache.clear()
-  cache.set(key, spans)
-  return spans
+  return remember(key, { spans, end })
+}
+
+function remember(key: string, lexed: Lexed): Lexed {
+  if (cache.size > 30_000) cache.clear()
+  cache.set(key, lexed)
+  return lexed
+}
+
+/** The state each line starts in, for lines rendered as one continuous sequence. */
+export function lineStates(lines: string[], lang: string | null): LexState[] {
+  const out: LexState[] = []
+  let st: LexState = null
+  for (const line of lines) {
+    out.push(st)
+    st = lang ? tokenize(line, lang, st).end : null
+  }
+  return out
+}
+
+/** The state after one line, to thread a sequence by hand. */
+export function nextState(line: string, lang: string | null, st: LexState): LexState {
+  return lang ? tokenize(line, lang, st).end : null
 }
 
 export interface Piece {
@@ -179,8 +245,8 @@ export interface Piece {
 }
 
 /** Splits a line into coloured pieces, also cut at word-diff boundaries so both can be shown. */
-export function pieces(text: string, lang: string | null, segs?: Segment[]): Piece[] {
-  const spans = lang ? tokenize(text, lang) : []
+export function pieces(text: string, lang: string | null, segs?: Segment[], state?: LexState): Piece[] {
+  const spans = lang ? tokenize(text, lang, state).spans : []
   if (!spans.length && !segs) return [{ t: text }]
 
   const marks: [number, number][] = []
