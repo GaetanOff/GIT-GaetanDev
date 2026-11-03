@@ -6,14 +6,21 @@ interface ParsedUrl {
   path: string
 }
 
-/** Parses https://, ssh:// and scp-like (`git@host:owner/repo`) remote URLs. */
+/**
+ * Parses https://, ssh:// and scp-like (`git@host:owner/repo`) remote URLs.
+ * Local paths (`C:\repos\x.git`, `/srv/x.git`) have no web page. An https
+ * URL keeps its port (a self-hosted server on :8443); an ssh port is not the
+ * web server's, so it is dropped.
+ */
 export function parseRemoteUrl(url: string): ParsedUrl | null {
+  if (/^[a-z]:[\\/]/i.test(url) || url.startsWith('/') || url.startsWith('\\\\')) return null
   const scp = /^(?:[^@/]+@)?([^:/]+):(?!\/)(.+)$/.exec(url)
   if (scp && !/^[a-z]+:\/\//i.test(url)) return { host: scp[1].toLowerCase(), path: clean(scp[2]) }
   try {
     const u = new URL(url)
     if (!u.hostname) return null
-    return { host: u.hostname.toLowerCase(), path: clean(decodeURIComponent(u.pathname)) }
+    const host = /^https?:$/.test(u.protocol) ? u.host : u.hostname
+    return { host: host.toLowerCase(), path: clean(decodeURIComponent(u.pathname)) }
   } catch {
     return null
   }
