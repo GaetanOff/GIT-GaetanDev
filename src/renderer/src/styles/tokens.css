@@ -1,0 +1,69 @@
+/* ─── Design tokens ─────────────────────────────────────────────────────────────
+ * The GaetanDev design system (SSH Console) in a dense, all-day variant:
+ * same palette, green-400 accent, purple for special actions, Inter + JetBrains
+ * Mono, uppercase bold labels — over near-opaque surfaces so diffs stay legible.
+ */
+:root {
+  color-scheme: dark;
+
+  --font-sans: 'Inter Variable', 'Inter', ui-sans-serif, system-ui, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono Variable', 'JetBrains Mono', 'Cascadia Code', Consolas, monospace;
+
+  /* Background: the SSH gradient (gray-900 → cyan-800 → green-700), toned down. */
+  --bg: #0b1117;
+  --bg-gradient: linear-gradient(135deg, #0c131b 0%, #0b171d 48%, #0c1913 100%);
+  --panel: rgba(9, 13, 19, 0.72);
+  --panel-solid: #0e151d;
+  --raised: #131c26;
+  --overlay: rgba(14, 20, 28, 0.97);
+
+  --surface-1: rgba(255, 255, 255, 0.03);
+  --surface-2: rgba(255, 255, 255, 0.06);
+  --surface-3: rgba(255, 255, 255, 0.1);
+  --surface-4: rgba(255, 255, 255, 0.15);
+
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.14);
+
+  --text: #e5e7eb;
+  --text-strong: #ffffff;
+  --text-muted: #9ca3af;
+  --text-faint: #6b7280;
+  --text-dim: #4b5563;
+
+  --green: #4ade80;
+  --green-soft: rgba(74, 222, 128, 0.16);
+  --green-ring: rgba(74, 222, 128, 0.55);
+  --teal: #2dd4bf;
+  --cyan: #67e8f9;
+  --blue: #60a5fa;
+  --purple: #c084fc;
+  --purple-soft: rgba(168, 85, 247, 0.16);
+  --pink: #f472b6;
+  --amber: #fcd34d;
+  --amber-soft: rgba(252, 211, 77, 0.14);
+  --red: #f87171;
+  --red-soft: rgba(239, 68, 68, 0.16);
+
+  /* Diffs */
+  --add-bg: rgba(74, 222, 128, 0.09);
+  --add-gutter: rgba(74, 222, 128, 0.16);
+  --add-word: rgba(74, 222, 128, 0.32);
+  --del-bg: rgba(248, 113, 113, 0.09);
+  --del-gutter: rgba(248, 113, 113, 0.16);
+  --del-word: rgba(248, 113, 113, 0.32);
+  --hunk-bg: rgba(96, 165, 250, 0.07);
+  --sel-line: rgba(74, 222, 128, 0.55);
+
+  --radius-sm: 6px;
+  --radius: 8px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  --shadow-pop: 0 18px 48px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(255, 255, 255, 0.06);
+  --ease-pop: cubic-bezier(0.2, 0.9, 0.3, 1.2);
+
+  --titlebar-h: 44px;
+  --statusbar-h: 26px;
+  --row-h: 28px;
+}
