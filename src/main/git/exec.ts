@@ -86,11 +86,38 @@ function subcommand(args: string[]): string | undefined {
   return undefined
 }
 
+/** Commands that talk to a remote. */
+const NETWORK_COMMANDS = new Set(['fetch', 'pull', 'push', 'clone', 'ls-remote', 'submodule', 'lfs'])
+
+/**
+ * A dead connection fails instead of holding its queue until the app restarts:
+ * HTTPS below 1 byte/s for five minutes, SSH after two minutes of unanswered
+ * keepalives. A server preparing a pack or running a push hook still sends
+ * progress, so only a silent connection trips them. Settings of the user's own
+ * (git config or environment) are left alone.
+ */
+export async function stallGuards(cwd: string): Promise<NodeJS.ProcessEnv> {
+  const r = await run(cwd, ['config', '--get-regexp', '^(http\\.lowspeed(limit|time)|core\\.sshcommand)$'], { okCodes: [1] })
+  const set = new Set(r.stdout.split('\n').map(l => l.split(' ')[0].toLowerCase()).filter(Boolean))
+  const env: NodeJS.ProcessEnv = {}
+  const http = ['http.lowspeedlimit', 'http.lowspeedtime'].some(k => set.has(k)) || process.env.GIT_HTTP_LOW_SPEED_LIMIT || process.env.GIT_HTTP_LOW_SPEED_TIME
+  if (!http) Object.assign(env, { GIT_HTTP_LOW_SPEED_LIMIT: '1', GIT_HTTP_LOW_SPEED_TIME: '300' })
+  if (!set.has('core.sshcommand') && !process.env.GIT_SSH_COMMAND && !process.env.GIT_SSH) {
+    env.GIT_SSH_COMMAND = 'ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=8'
+  }
+  return env
+}
+
 /**
  * Runs git and resolves with its output. Rejects with a GitError whose message
  * is the last meaningful stderr line, and whose code classifies the failure.
  */
-export function git(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecResult> {
+export async function git(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecResult> {
+  if (!NETWORK_COMMANDS.has(subcommand(args) ?? '')) return run(cwd, args, opts)
+  return run(cwd, args, { ...opts, env: { ...(await stallGuards(cwd)), ...opts.env } })
+}
+
+function run(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
     gitPath ??= findOnPath('git')
     if (!gitPath) return reject(new GitError(NOT_FOUND, 'GIT_NOT_FOUND'))
@@ -109,10 +136,6 @@ export function git(cwd: string, args: string[], opts: ExecOptions = {}): Promis
         // Except for stash, whose own pathspec magic (":/" to clear stashed untracked files)
         // breaks in literal mode: callers give it ":(literal)" paths instead.
         GIT_LITERAL_PATHSPECS: subcommand(args) === 'stash' ? '0' : '1',
-        // A stalled HTTPS transfer (under 1 KB/s for a minute) fails instead of holding its queue
-        // until the app restarts; sign-in prompts come before the transfer and are not timed.
-        GIT_HTTP_LOW_SPEED_LIMIT: process.env.GIT_HTTP_LOW_SPEED_LIMIT ?? '1000',
-        GIT_HTTP_LOW_SPEED_TIME: process.env.GIT_HTTP_LOW_SPEED_TIME ?? '60',
         ...opts.env,
       },
     })

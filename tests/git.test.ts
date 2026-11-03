@@ -22,7 +22,7 @@ const { diff } = await import('../src/main/git/diff')
 const { conflict, resolveContent } = await import('../src/main/git/conflict')
 const { refs } = await import('../src/main/git/refs')
 const { rebasePlan, rebaseRun } = await import('../src/main/git/rebase')
-const { git, assertRefName } = await import('../src/main/git/exec')
+const { git, assertRefName, stallGuards } = await import('../src/main/git/exec')
 
 afterAll(cleanup)
 
@@ -363,6 +363,14 @@ describe('history', () => {
     } finally {
       if (saved !== undefined) process.env.NoDefaultCurrentDirectoryInExePath = saved
     }
+  })
+
+  it('guards network commands against dead connections only, and not over the user\'s own limits', async () => {
+    const repo = makeRepo()
+    expect(await stallGuards(repo)).toMatchObject({ GIT_HTTP_LOW_SPEED_LIMIT: '1', GIT_HTTP_LOW_SPEED_TIME: '300' })
+    sh(repo, 'config', 'http.lowSpeedTime', '30')
+    sh(repo, 'config', 'core.sshCommand', 'plink -batch')
+    expect(await stallGuards(repo)).toEqual({})
   })
 
   it('survives git exiting before it reads its input', async () => {
