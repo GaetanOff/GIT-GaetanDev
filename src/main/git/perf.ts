@@ -42,6 +42,11 @@ export class IgnoreCache {
     this.dirs.clear()
   }
 
+  /** Synchronous answer from the cache alone: true when a parent folder is known to be ignored. */
+  knownIgnored(path: string): boolean {
+    return dirPrefixes(path).some(d => this.dirs.get(d) === true)
+  }
+
   /** Paths (relative, forward slashes) that are not ignored. */
   async filter(paths: string[]): Promise<string[]> {
     const unknown = new Set<string>()
