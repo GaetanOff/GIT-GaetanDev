@@ -1,5 +1,5 @@
 import { app } from 'electron'
-import { randomUUID } from 'node:crypto'
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { writeFileSync, chmodSync } from 'node:fs'
 import { createServer, type Server } from 'node:net'
 import { join } from 'node:path'
@@ -11,11 +11,15 @@ import type { AskPassRequest } from '@shared/types'
  * runs this executable as Node and asks the main process over a named pipe.
  * HTTPS credentials for GitHub, GitLab, Azure DevOps and Bitbucket are usually
  * handled first by Git Credential Manager, which has its own sign-in window.
+ *
+ * The pipe has a random name and every request must carry a secret that only
+ * the git processes this app starts receive, so another local program can
+ * neither make the app show a credential prompt nor answer one in its place.
  */
 const CLIENT = `
 const net = require('net')
 const prompt = process.argv.slice(2).join(' ')
-const sock = net.connect(process.env.GDG_ASKPASS_PIPE, () => sock.write(JSON.stringify({ prompt }) + '\\n'))
+const sock = net.connect(process.env.GDG_ASKPASS_PIPE, () => sock.write(JSON.stringify({ prompt, token: process.env.GDG_ASKPASS_TOKEN }) + '\\n'))
 let buf = ''
 sock.on('data', d => { buf += d })
 sock.on('end', () => {
@@ -32,9 +36,12 @@ sock.on('error', () => process.exit(1))
 type Ask = (req: AskPassRequest) => Promise<string | null>
 
 let server: Server | null = null
+let env: NodeJS.ProcessEnv | null = null
 const pending = new Map<string, (value: string | null) => void>()
 
+/** Starts the prompt server once; later calls return the same environment. */
 export function startAskPass(ask: Ask): NodeJS.ProcessEnv {
+  if (env) return env
   const dir = app.getPath('userData')
   const client = join(dir, 'askpass.js')
   writeFileSync(client, CLIENT, 'utf8')
@@ -50,30 +57,43 @@ export function startAskPass(ask: Ask): NodeJS.ProcessEnv {
   }
 
   const pipe = process.platform === 'win32'
-    ? `\\\\.\\pipe\\gaetandev-git-askpass-${process.pid}`
-    : join(app.getPath('temp'), `gaetandev-git-askpass-${process.pid}.sock`)
+    ? `\\\\.\\pipe\\gaetandev-git-askpass-${randomUUID()}`
+    : join(app.getPath('temp'), `gaetandev-git-askpass-${randomUUID()}.sock`)
+  const secret = randomBytes(32).toString('hex')
+  const valid = (token: unknown) =>
+    typeof token === 'string' && token.length === secret.length && timingSafeEqual(Buffer.from(token), Buffer.from(secret))
 
   server = createServer(sock => {
     let buf = ''
+    let handled = false
     sock.on('data', async d => {
+      if (handled) return
       buf += d.toString()
       if (!buf.includes('\n')) return
-      let prompt = ''
-      try { prompt = JSON.parse(buf.split('\n')[0]).prompt ?? '' } catch { /* malformed */ }
+      // One request per connection: anything after the first line is ignored.
+      handled = true
+      let req: { prompt?: unknown; token?: unknown } = {}
+      try { req = JSON.parse(buf.split('\n')[0]) } catch { /* malformed */ }
+      if (!valid(req.token)) return void sock.end(JSON.stringify({ value: null }))
+      const prompt = typeof req.prompt === 'string' ? req.prompt : ''
       const value = await ask({ id: randomUUID(), prompt, kind: classify(prompt) }).catch(() => null)
       sock.end(JSON.stringify({ value }))
     })
     sock.on('error', () => undefined)
   })
+  // Prompts then fail like a declined one; nothing else depends on the server.
+  server.on('error', e => console.error('askpass server:', e.message))
   server.listen(pipe)
 
-  return {
+  env = {
     GIT_ASKPASS: script,
     SSH_ASKPASS: script,
     SSH_ASKPASS_REQUIRE: 'force',
     DISPLAY: process.env.DISPLAY ?? ':0',
     GDG_ASKPASS_PIPE: pipe,
+    GDG_ASKPASS_TOKEN: secret,
   }
+  return env
 }
 
 function classify(prompt: string): AskPassRequest['kind'] {
@@ -93,6 +113,8 @@ export function respond(id: string, value: string | null): void {
 
 export function stopAskPass(): void {
   server?.close()
+  server = null
+  env = null
   for (const resolve of pending.values()) resolve(null)
   pending.clear()
 }
