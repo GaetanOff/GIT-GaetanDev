@@ -77,8 +77,9 @@ class AppState {
   drafts = $state<Record<string, { summary: string; body: string; amend: boolean; coAuthors?: string[] }>>({})
 
   private graphBuilder = new GraphBuilder()
-  private statusRun: Promise<void> | null = null
-  private statusAgain = false
+  private statusRuns = new Map<string, { again: boolean; done: Promise<void> }>()
+  private busyLabels = $state<{ id: number; label: string }[]>([])
+  private busyId = 0
   private fetchTimer: ReturnType<typeof setInterval> | null = null
   private historyToken = 0
   private memory = new Map<string, TabMemory>()
@@ -304,17 +305,24 @@ class AppState {
 
   /* ─── Refresh ─────────────────────────────────────────────────────────────── */
 
-  /** Coalesced: calls during a refresh trigger exactly one more. */
+  /**
+   * Coalesced per repository: calls during a refresh of the same repo trigger
+   * exactly one more, and a tab switch starts its own refresh at once rather
+   * than waiting on the previous repo's, whose result it would then discard.
+   */
   refreshStatus(): Promise<void> {
-    if (this.statusRun) {
-      this.statusAgain = true
-      return this.statusRun
-    }
     const repo = this.repo
     if (!repo) return Promise.resolve()
-    this.statusRun = (async () => {
+    const running = this.statusRuns.get(repo.id)
+    if (running) {
+      running.again = true
+      return running.done
+    }
+    const run = { again: false, done: Promise.resolve() }
+    this.statusRuns.set(repo.id, run)
+    run.done = (async () => {
       do {
-        this.statusAgain = false
+        run.again = false
         try {
           const st = await api['git:status'](repo.path)
           if (this.repo?.id !== repo.id) return
@@ -324,9 +332,9 @@ class AppState {
           if (this.repo?.id === repo.id) toast('error', asError(e).message)
           return
         }
-      } while (this.statusAgain)
-    })().finally(() => (this.statusRun = null))
-    return this.statusRun
+      } while (run.again)
+    })().finally(() => this.statusRuns.delete(repo.id))
+    return run.done
   }
 
   async refreshRefs(): Promise<void> {
