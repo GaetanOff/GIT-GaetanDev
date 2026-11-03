@@ -5,6 +5,13 @@
   const memory = new Map<string, Record<number, Resolution>>()
   /** Unsaved Result editor text, by repo and path, so moving to another file loses nothing. */
   const results = new Map<string, string>()
+
+  /** Keeps a value, most recent last, and forgets the oldest past 200: files resolved elsewhere never come back. */
+  function keep<V>(map: Map<string, V>, key: string, value: V): void {
+    map.delete(key)
+    map.set(key, value)
+    while (map.size > 200) map.delete(map.keys().next().value!)
+  }
 </script>
 
 <script lang="ts">
@@ -34,7 +41,7 @@
   /** The whole result file, edited freely; null until the Result tab is opened. */
   let resultText = $state<string | null>(results.get(resultKey) ?? null)
   $effect(() => {
-    if (resultText !== null) results.set(resultKey, resultText)
+    if (resultText !== null) keep(results, resultKey, resultText)
   })
   let gutter = $state<HTMLDivElement>()
   let saving = $state(false)
@@ -64,7 +71,10 @@
   })
 
   $effect(() => {
-    if (app.repo) memory.set(`${app.repo.path}\0${path}`, $state.snapshot(picks))
+    if (!app.repo) return
+    // A file with no choice made yet has nothing worth remembering.
+    if (Object.keys(picks).length) keep(memory, `${app.repo.path}\0${path}`, $state.snapshot(picks))
+    else memory.delete(`${app.repo.path}\0${path}`)
   })
 
   /** Lexer state at the start of every rendered line, keyed "chunk:side:line". */
@@ -259,6 +269,7 @@
     try {
       await api['git:resolveContent'](app.repo.path, path, content(), file.encoding)
       memory.delete(`${app.repo.path}\0${path}`)
+      results.delete(resultKey)
       toast('success', `${basename(path)} resolved and staged.`)
     } catch (e) {
       toast('error', asError(e).message)

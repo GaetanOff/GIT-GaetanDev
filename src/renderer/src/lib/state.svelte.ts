@@ -235,9 +235,15 @@ class AppState {
     this.suggestFsmonitor(entry)
   }
 
+  /**
+   * What a tab keeps while in the background. Only the first page of history:
+   * coming back reloads it anyway, and a scrolled-through history can hold
+   * tens of thousands of commits and graph rows per tab.
+   */
   private snapshot(): TabMemory {
     return {
-      status: this.status, refs: this.refs, commits: this.commits, graph: this.graph, historyDone: this.historyDone,
+      status: this.status, refs: this.refs, commits: this.commits.slice(0, PAGE), graph: this.graph.slice(0, PAGE),
+      historyDone: this.historyDone && this.commits.length <= PAGE,
       view: this.view, selected: this.selected, selectedCommit: this.selectedCommit, historySearch: this.historySearch,
       historySearchMode: this.historySearchMode, lastFetched: this.lastFetched,
       fileTarget: this.fileTarget, rebaseTarget: this.rebaseTarget, compareTarget: this.compareTarget,
@@ -319,6 +325,10 @@ class AppState {
 
   async removeRepo(id: string): Promise<void> {
     this.repos = await api['repo:remove'](id)
+    // Nothing of a removed repository lingers in storage: its draft and recorded deleted branches.
+    delete this.drafts[id]
+    this.saveDrafts()
+    try { localStorage.removeItem(`deleted-branches:${id}`) } catch { /* storage unavailable */ }
     if (this.tabs.includes(id)) return this.closeTab(id)
     if (this.repo?.id === id) {
       this.repo = null
