@@ -110,6 +110,8 @@ export interface Api {
   'shell:editor'(repo: string, path?: string): Promise<void>
   'shell:terminal'(repo: string): Promise<void>
   'clipboard:write'(text: string): Promise<void>
+  /** Read here rather than with navigator.clipboard: the window refuses every permission request. */
+  'clipboard:read'(): Promise<string>
   'askpass:respond'(id: string, value: string | null): Promise<void>
   'watch:set'(repo: string | null): Promise<void>
 }
@@ -128,7 +130,7 @@ export const API_CHANNELS: ApiChannel[] = [
   'git:stashDrop', 'git:stashFiles', 'git:addRemote', 'git:removeRemote', 'git:submoduleUpdate', 'git:lfsPull', 'git:worktreeAdd', 'git:worktreeRemove', 'repo:setFsmonitor', 'repo:fsmonitor', 'git:authors', 'git:commitSetup',
   'git:fetch', 'git:pull', 'git:push',
   'git:identity', 'git:setIdentity', 'provider:url', 'shell:openUrl', 'shell:reveal', 'shell:editor', 'shell:terminal',
-  'clipboard:write', 'askpass:respond', 'watch:set',
+  'clipboard:write', 'clipboard:read', 'askpass:respond', 'watch:set',
 ]
 
 /** Events pushed from main to renderer. */

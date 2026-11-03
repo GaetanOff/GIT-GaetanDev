@@ -223,6 +223,7 @@ export function registerIpc(watcher: RepoWatcher): void {
     'shell:editor': async (repo, path) => openEditor(getState().settings.editorCommand, repo, path ? join(repo, path) : repo),
     'shell:terminal': async repo => openTerminal(getState().settings.terminalCommand, repo),
     'clipboard:write': async text => clipboard.writeText(text),
+    'clipboard:read': async () => clipboard.readText(),
     'askpass:respond': async (id, value) => respond(id, value),
     'watch:set': async repo => watcher.set(repo),
   }
