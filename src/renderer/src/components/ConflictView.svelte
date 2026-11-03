@@ -165,6 +165,47 @@
   const markersLeft = $derived(resultText !== null && /^(<<<<<<<|=======$|>>>>>>>)/m.test(resultText))
   const resultLines = $derived(resultText === null ? 0 : resultText.split('\n').length)
 
+  /* The Result editor is a transparent textarea over a coloured copy of its text. */
+  let hl = $state<HTMLPreElement>()
+  const HL_MAX_LINES = 4000
+  const resultArr = $derived(resultText === null ? [] : resultText.split('\n'))
+  /** The overlay also shows conflict markers and regions, so it stays on even without a language. */
+  const highlightResult = $derived(resultArr.length <= HL_MAX_LINES)
+  const codeLang = $derived(app.settings.syntaxHighlight ? lang : null)
+
+  type Marker = 'start' | 'base' | 'mid' | 'end'
+  const markerOf = (l: string): Marker | null =>
+    /^<{7}( |$)/.test(l) ? 'start' : /^\|{7}( |$)/.test(l) ? 'base' : /^={7}$/.test(l) ? 'mid' : /^>{7}( |$)/.test(l) ? 'end' : null
+
+  /**
+   * Per line: conflict marker kind, the side it belongs to, and the lexer
+   * state. Markers are not code: they neither get coloured as code nor feed
+   * the lexer, so a comment opened before a conflict still closes after it.
+   */
+  const resultInfo = $derived.by(() => {
+    const markers: (Marker | null)[] = []
+    const regions: ('' | 'ours' | 'base' | 'theirs')[] = []
+    const states: LexState[] = []
+    let region: '' | 'ours' | 'base' | 'theirs' = ''
+    let st: LexState = null
+    for (const l of highlightResult ? resultArr : []) {
+      const m = markerOf(l)
+      markers.push(m)
+      if (m === 'start') region = 'ours'
+      else if (m === 'base' && region) region = 'base'
+      else if (m === 'mid' && region) region = 'theirs'
+      regions.push(m ? '' : region)
+      states.push(st)
+      if (m === 'end') region = ''
+      if (!m && codeLang) st = nextState(l, codeLang, st)
+    }
+    return { markers, regions, states }
+  })
+  function syncScroll(t: HTMLTextAreaElement) {
+    if (gutter) gutter.scrollTop = t.scrollTop
+    if (hl) { hl.scrollTop = t.scrollTop; hl.scrollLeft = t.scrollLeft }
+  }
+
   async function saveResult() {
     if (!file || resultText === null || !app.repo) return
     if (markersLeft) {
@@ -268,8 +309,13 @@
     </div>
     <div class="editor">
       <div class="gutter mono" bind:this={gutter} aria-hidden="true">{#each { length: resultLines } as _, n}<div>{n + 1}</div>{/each}</div>
-      <textarea class="mono" bind:value={resultText} spellcheck="false" wrap="off"
-        onscroll={e => { if (gutter) gutter.scrollTop = (e.target as HTMLTextAreaElement).scrollTop }}
+      <div class="code-wrap">
+      {#if highlightResult}
+        <pre class="hl mono" bind:this={hl} aria-hidden="true">{#each resultArr as l, i}{@const mk = resultInfo.markers[i]}{#if mk}<div class="ln mk {mk}">{l}</div>{:else}<div class="ln {resultInfo.regions[i]}">{#if l}<Code text={l} lang={codeLang} state={resultInfo.states[i]} />{:else}{' '}{/if}</div>{/if}{/each}<div class="ln"> </div></pre>
+      {/if}
+      <textarea class="mono" class:overlay={highlightResult} bind:value={resultText} spellcheck="false" wrap="off"
+        onscroll={e => syncScroll(e.target as HTMLTextAreaElement)}
+        oninput={e => syncScroll(e.target as HTMLTextAreaElement)}
         onkeydown={e => {
           if (e.key === 'Tab') {
             e.preventDefault()
@@ -278,6 +324,7 @@
             resultText = t.value
           } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveResult() }
         }}></textarea>
+      </div>
     </div>
   {:else if error}
     <div class="empty"><h3>Could not read the conflict</h3><p>{error}</p></div>
@@ -399,7 +446,20 @@
   .resbar .dim { color: var(--text-faint); }
   .editor { flex: 1; min-height: 0; display: flex; }
   .gutter { width: 54px; flex-shrink: 0; overflow: hidden; padding: 8px 10px 8px 0; text-align: right; color: var(--text-dim); font-size: 12px; line-height: 19px; border-right: 1px solid var(--border); background: var(--panel-solid); }
-  .editor textarea { flex: 1; min-width: 0; resize: none; border: none; outline: none; padding: 8px 12px; background: transparent; color: #e5e7eb; font-size: 12px; line-height: 19px; tab-size: 4; white-space: pre; overflow: auto; }
+  .code-wrap { flex: 1; min-width: 0; position: relative; }
+  .editor textarea { position: absolute; inset: 0; width: 100%; height: 100%; resize: none; border: none; outline: none; padding: 8px 12px; margin: 0; background: transparent; color: #e5e7eb; font-size: 12px; line-height: 19px; tab-size: 4; white-space: pre; overflow: auto; }
+  .editor textarea.overlay { color: transparent; caret-color: #fff; }
+  .editor textarea.overlay::selection { background: rgba(74, 222, 128, 0.3); color: transparent; }
+  .hl { position: absolute; inset: 0; margin: 0; padding: 8px 12px; overflow: hidden; pointer-events: none; color: #e5e7eb; font-size: 12px; line-height: 19px; tab-size: 4; white-space: pre; }
+  .hl .ln { min-height: 19px; margin: 0 -12px; padding: 0 12px; }
+  .hl .ln.ours { background: rgba(96, 165, 250, 0.08); }
+  .hl .ln.base { background: rgba(156, 163, 175, 0.07); }
+  .hl .ln.theirs { background: rgba(192, 132, 252, 0.08); }
+  .hl .mk { font-weight: 700; }
+  .hl .mk.start { color: var(--blue); background: rgba(96, 165, 250, 0.18); }
+  .hl .mk.base { color: var(--text-muted); background: rgba(156, 163, 175, 0.15); }
+  .hl .mk.mid { color: var(--amber); background: rgba(252, 211, 77, 0.12); }
+  .hl .mk.end { color: var(--purple); background: rgba(192, 132, 252, 0.18); }
 
   .disk { display: flex; align-items: center; gap: 10px; margin: 10px 12px 0; padding: 9px 12px; border-radius: var(--radius-lg); background: rgba(96, 165, 250, 0.1); border: 1px solid rgba(96, 165, 250, 0.25); color: #bfdbfe; font-size: 12px; }
 
