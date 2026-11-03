@@ -243,9 +243,11 @@ const WRITES = new Set([
  * fail on ref locks ("cannot lock ref 'refs/remotes/origin/main'"), as when
  * the background fetch meets a pull. They run one at a time per repository on
  * a queue of their own, so a slow fetch or push never holds up staging or a
- * commit. A pull is on both: the network first, then the writes.
+ * commit. A pull is on both: the network first, then the writes. So is
+ * removing a remote, which deletes its remote-tracking refs (a fetch running
+ * meanwhile would fail on them, or write them back).
  */
-const NETWORK = new Set(['git:fetch', 'git:pull', 'git:push', 'git:pushTag', 'git:deleteRemoteBranch', 'git:remoteSearch'])
+const NETWORK = new Set(['git:fetch', 'git:pull', 'git:push', 'git:pushTag', 'git:deleteRemoteBranch', 'git:remoteSearch', 'git:removeRemote'])
 const writeQueues = new Map<string, Promise<unknown>>()
 const networkQueues = new Map<string, Promise<unknown>>()
 

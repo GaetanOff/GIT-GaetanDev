@@ -45,6 +45,21 @@ describe('scheduling', () => {
     expect(order).toEqual(['fetch', 'stage', 'fetch done', 'pull'])
   })
 
+  it('makes removing a remote wait for a fetch in progress', async () => {
+    const order: string[] = []
+    let release!: () => void
+    const fetch = schedule('git:fetch', REPO, () => new Promise<void>(resolve => {
+      order.push('fetch')
+      release = () => { order.push('fetch done'); resolve() }
+    }))
+    const remove = schedule('git:removeRemote', REPO, async () => { order.push('remove') })
+    await tick()
+    expect(order).toEqual(['fetch'])
+    release()
+    await Promise.all([fetch, remove])
+    expect(order).toEqual(['fetch', 'fetch done', 'remove'])
+  })
+
   it('makes a pull wait for writes in progress', async () => {
     const order: string[] = []
     let release!: () => void
