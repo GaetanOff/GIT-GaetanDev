@@ -80,6 +80,7 @@ class AppState {
   private busyId = 0
   private fetchTimer: ReturnType<typeof setInterval> | null = null
   private historyToken = 0
+  private openToken = 0
   private memory = new Map<string, TabMemory>()
   private fsmonitorAsked = new Set<string>()
 
@@ -190,13 +191,16 @@ class AppState {
   /* ─── Repositories ────────────────────────────────────────────────────────── */
 
   async openRepo(id: string): Promise<void> {
+    // Clicking through tabs quickly: only the last one asked for is opened.
+    const t = ++this.openToken
     const entry = await api['repo:open'](id)
+    if (t !== this.openToken) return
     if (this.repo && this.repo.id !== entry.id) this.memory.set(this.repo.id, this.snapshot())
     this.drafts[entry.id] ??= { summary: '', body: '', amend: false }
     this.repo = entry
     if (!this.tabs.includes(entry.id)) this.tabs = [...this.tabs, entry.id]
     this.saveTabs()
-    this.repos = await api['repo:list']()
+    api['repo:list']().then(list => (this.repos = list)).catch(() => undefined)
     this.multi = new Set()
     this.selectedStash = null
     const mem = this.memory.get(entry.id)
@@ -218,7 +222,11 @@ class AppState {
       this.graph = []
     }
     await api['watch:set'](entry.path)
+    if (t !== this.openToken) return
     await Promise.all([this.refreshStatus(), this.refreshRefs()])
+    if (t !== this.openToken) return
+    // History reloads here; the next refresh must not reload it again for the same HEAD.
+    this.lastHead = this.headKey()
     this.reloadHistory(!!mem)
     // A quick background fetch keeps ahead/behind honest when opening a repo.
     if (this.refs.remotes.length && this.settings.autoFetchMinutes) this.fetch(true)
@@ -366,9 +374,13 @@ class AppState {
   }
 
   private lastHead = ''
+  private headKey(): string {
+    return `${this.repo?.id}|${this.status?.head}|${this.refs.branches.map(b => b.sha).join(',')}`
+  }
+
   async refreshAll(): Promise<void> {
     await Promise.all([this.refreshStatus(), this.refreshRefs()])
-    const head = `${this.status?.head}|${this.refs.branches.map(b => b.sha).join(',')}`
+    const head = this.headKey()
     if (head !== this.lastHead) {
       this.lastHead = head
       this.reloadHistory(true)
@@ -424,6 +436,9 @@ class AppState {
       this.commits = [...this.commits, ...more]
       this.graph = [...this.graph, ...this.graphBuilder.add(more)]
       this.historyDone = more.length < PAGE
+    } catch (e) {
+      // Paging runs from a scroll handler that nobody awaits: report the failure here.
+      if (token === this.historyToken) toast('error', asError(e).message)
     } finally {
       if (token === this.historyToken) this.historyLoading = false
     }
