@@ -83,6 +83,8 @@ class AppState {
   private openToken = 0
   private memory = new Map<string, TabMemory>()
   private fsmonitorAsked = new Set<string>()
+  /** Repositories with a background fetch running. */
+  private backgroundFetches = new Set<string>()
 
   /* ─── Derived ─────────────────────────────────────────────────────────────── */
 
@@ -549,7 +551,11 @@ class AppState {
     // The time of the last fetch belongs to the repository fetched, whichever is in front by then.
     const fetched = () => { if (this.repo?.path === repo) this.lastFetched = Date.now() }
     if (background) {
-      try { await api['git:fetch'](repo) } catch { return }
+      // Each tab switch asks for one, and fetches of a repository run one at a time: unchecked,
+      // they would queue up in front of the user's own push or pull. One at a time, none right after another.
+      if (this.backgroundFetches.has(repo) || (this.lastFetched && Date.now() - this.lastFetched < 60_000)) return
+      this.backgroundFetches.add(repo)
+      try { await api['git:fetch'](repo) } catch { return } finally { this.backgroundFetches.delete(repo) }
       fetched()
       await this.refreshAll()
       return
