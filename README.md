@@ -6,7 +6,7 @@ Built with Electron, Svelte 5 and TypeScript. All Git work goes through your ins
 
 ## Features
 
-- **Changes**: staged, unstaged and conflict sections. Stage or unstage whole files, hunks, or single lines (click or drag in the diff gutter). Discard files or lines (new files go to the recycle bin). Ignore a file, extension or folder.
+- **Changes**: staged, unstaged and conflict sections. Stage or unstage whole files, hunks, or single lines (click or drag in the diff gutter). Discard files or lines: the version being discarded always goes to the recycle bin first. Ignore a file, extension or folder.
 - **Commit**: summary with a 72-character guide, description, amend (loads the last message), "commit all" when nothing is staged, undo the last commit (changes and message come back). Drafts are kept per repository.
 - **Diff viewer**: unified or split, word-level highlights, context lines, ignore whitespace, image previews, large-diff guard. Virtualised, so huge files stay smooth.
 - **History**: virtualised log with a branch graph, current branch or all branches, search by message or `@author`, commit details with per-file diffs. Cherry-pick, revert, reset (soft/mixed/hard), checkout, branch or tag from any commit.
@@ -24,7 +24,7 @@ Built with Electron, Svelte 5 and TypeScript. All Git work goes through your ins
 - **Encodings**: Windows-1252, UTF-8 with BOM and UTF-16 files are decoded properly and written back byte for byte, line staging included (UTF-16 diffs are shown as text; line staging is off for them).
 - **Large repositories**: changes in `.gitignore`d folders (node_modules, build output) never trigger a refresh, and Git's file system monitor can be turned on per repository (suggested automatically above 20,000 files).
 - **Branches**: fuzzy switcher (`Ctrl+B`), create from anything, rename, delete (local or remote), merge (merge or squash), rebase, checkout of remote branches with tracking. Switching with local changes offers "stash and switch".
-- **Sync**: one smart button (publish, pull, push or fetch) with ahead/behind counts and live progress. Force push uses `--force-with-lease`. Auto-fetch on a timer.
+- **Sync**: one smart button (publish, pull, push or fetch) with ahead/behind counts and live progress. Force push uses `--force-with-lease --force-if-includes`, so commits fetched in the background but never seen are not overwritten. Auto-fetch on a timer.
 - **Stashes, tags, remotes**: browse stash contents, apply, pop, drop; create, push and delete tags; add and remove remotes.
 - **Providers**: detected from the remote URL to open the repository, a commit, a file, or a new pull/merge request in the browser.
 - **Authentication**: HTTPS goes through Git Credential Manager (bundled with Git for Windows). SSH passphrases, host-key confirmations and any other git prompt are shown in the app.
@@ -39,9 +39,21 @@ Requires Node 22+ and Git.
 npm install
 npm run dev        # Electron with hot reload
 npm run check      # svelte-check + tsc
+npm run lint       # ESLint
+npm test           # Vitest: unit tests, and git tests in temporary repositories
 npm run build      # production bundles in out/
 npm run dist       # Windows installer in release/
 ```
+
+CI (`.github/workflows/ci.yml`) runs lint, check, tests and build on Windows and Linux for every push and pull request.
+
+## Releases
+
+Push a tag such as `v0.2.0` (after bumping `version` in package.json): `.github/workflows/release.yml` builds the Windows installer and publishes it as a GitHub release. Installed copies check for a newer release at startup and every six hours, download it in the background and install it on quit (or at once from the "Restart now" toast). Auto-update reads the releases of `GaetanOff/GIT-GaetanDev`, so the repository must be public (or the update feed hosted elsewhere).
+
+- **Code signing**: set the `WIN_CSC_LINK` (base64 or URL of a .pfx) and `WIN_CSC_KEY_PASSWORD` repository secrets. Without them the installer is unsigned and SmartScreen warns on first launch.
+- **Hardening**: Electron fuses turn off `NODE_OPTIONS` and `--inspect`, validate the asar archive and load the app only from it. `runAsNode` stays on: the credential prompt helper (askpass) runs the app's executable as Node.
+- **Explorer**: the installer adds "Open in GaetanDev Git" to the context menu of folders; a folder given on the command line opens as a repository.
 
 `scripts/make-icon.cjs` regenerates `build/icon.png` (`npx electron scripts/make-icon.cjs`).
 

@@ -6,6 +6,7 @@ import { killRunning, setGitEnv } from './git/exec'
 import { devShot } from './devshot'
 import { askRenderer, registerIpc, send, setLaunchPath } from './ipc'
 import { flush, getState, save } from './store'
+import { startUpdates } from './updater'
 import { RepoWatcher } from './watcher'
 
 app.setAppUserModelId('fr.gaetandev.git')
@@ -45,6 +46,7 @@ function start(): void {
     setGitEnv(startAskPass(askRenderer))
     registerIpc(watcher)
     createWindow()
+    startUpdates(version => send('update:ready', version))
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
         setGitEnv(startAskPass(askRenderer))

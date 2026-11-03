@@ -10,6 +10,8 @@ import type {
  */
 export interface Api {
   /* App & repositories */
+  /** Quits and installs a downloaded update. */
+  'app:installUpdate'(): Promise<void>
   'app:state'(): Promise<{ repos: RepoEntry[]; lastRepo: string | null; settings: Settings; platform: string; version: string; home: string; launchPath: string | null }>
   'app:settings'(patch: Partial<Settings>): Promise<Settings>
   'repo:list'(): Promise<RepoEntry[]>
@@ -111,7 +113,7 @@ export interface Api {
 export type ApiChannel = keyof Api
 
 export const API_CHANNELS: ApiChannel[] = [
-  'app:state', 'app:settings', 'repo:list', 'repo:add', 'repo:init', 'repo:clone', 'repo:remove', 'repo:open', 'repo:pin',
+  'app:state', 'app:installUpdate', 'app:settings', 'repo:list', 'repo:add', 'repo:init', 'repo:clone', 'repo:remove', 'repo:open', 'repo:pin',
   'dialog:pickFolder',
   'git:status', 'git:diff', 'git:stage', 'git:unstage', 'git:stageLines', 'git:unstageLines', 'git:discard',
   'git:discardLines', 'git:ignore', 'git:commit', 'git:lastCommitMessage', 'git:preparedMessage', 'git:undoCommit', 'git:resolve',
@@ -133,6 +135,8 @@ export interface ApiEvents {
   'menu': string
   /** A folder passed to a second launch of the app ("Open with"). */
   'open:path': string
+  /** A newer version was downloaded; it installs on quit. */
+  'update:ready': string
 }
 
 /** Errors cross IPC as plain data so the renderer gets a clean message. */

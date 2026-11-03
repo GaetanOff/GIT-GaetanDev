@@ -21,6 +21,7 @@ import { defaultBranch, defaultRemote, extras, refs } from './git/refs'
 import { isRepo, status, topLevel } from './git/status'
 import { openEditor, openTerminal } from './integrations'
 import { detectProvider, providerUrl } from './provider'
+import { installUpdate } from './updater'
 import { getState, isRegistered, removeRepo, repoById, save, updateSettings, upsertRepo } from './store'
 import type { RepoWatcher } from './watcher'
 
@@ -54,6 +55,7 @@ export function registerIpc(watcher: RepoWatcher): void {
       return { repos: s.repos, lastRepo: s.lastRepo, settings: s.settings, platform: process.platform, version: app.getVersion(), home: homedir(), launchPath: open }
     },
     'app:settings': async patch => updateSettings(patch),
+    'app:installUpdate': async () => installUpdate(),
     'repo:list': async () => getState().repos,
     'repo:add': async path => addRepo(path),
     'repo:init': async path => {
