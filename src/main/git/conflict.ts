@@ -2,7 +2,8 @@ import { spawn } from 'node:child_process'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { ConflictChunk, ConflictFile } from '@shared/types'
+import type { ConflictChunk, ConflictFile, TextEncoding } from '@shared/types'
+import { decode, detect, encode } from './encoding'
 import { git } from './exec'
 import { gitDir, operation } from './status'
 
@@ -77,7 +78,7 @@ export async function conflict(repo: string, path: string): Promise<ConflictFile
 
   const result: ConflictFile = {
     path, mode: 'text', oursLabel: lbl.ours, theirsLabel: lbl.theirs, hasBase: !!base,
-    oursExists: !!ours, theirsExists: !!theirs, chunks: [], eol: '\n', finalNewline: true, resolvedOnDisk,
+    oursExists: !!ours, theirsExists: !!theirs, chunks: [], eol: '\n', finalNewline: true, resolvedOnDisk, encoding: 'utf8',
   }
   if (!ours || !theirs || isBinary(ours) || isBinary(theirs) || isBinary(base)) {
     result.mode = 'whole'
@@ -85,7 +86,7 @@ export async function conflict(repo: string, path: string): Promise<ConflictFile
   }
 
   const dir = await mkdtemp(join(tmpdir(), 'gdg-merge-'))
-  let merged: string
+  let mergedRaw: Buffer
   try {
     const files = { ours: join(dir, 'ours'), base: join(dir, 'base'), theirs: join(dir, 'theirs') }
     await Promise.all([writeFile(files.ours, ours), writeFile(files.base, base ?? Buffer.alloc(0)), writeFile(files.theirs, theirs)])
@@ -93,13 +94,16 @@ export async function conflict(repo: string, path: string): Promise<ConflictFile
     const r = await git(repo, ['merge-file', '-p', '--diff3', '-L', 'ours', '-L', 'base', '-L', 'theirs', files.ours, files.base, files.theirs], {
       okCodes: Array.from({ length: 127 }, (_, i) => i + 1),
     })
-    merged = r.stdout
+    mergedRaw = r.raw
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => undefined)
   }
 
+  // Decode with the encoding the file really has (Windows-1252, UTF-8 with BOM…), so it round-trips.
+  result.encoding = detect(ours)
+  const merged = decode(mergedRaw, result.encoding)
   // Keep the line endings the file has on disk (autocrlf checkouts), else those of the merge.
-  const sample = disk && !isBinary(disk) ? disk.toString('utf8') : merged
+  const sample = disk && !isBinary(disk) ? decode(disk, detect(disk)) : merged
   const crlf = (sample.match(/\r\n/g)?.length ?? 0) > (sample.match(/(?<!\r)\n/g)?.length ?? 0)
   result.eol = crlf ? '\r\n' : '\n'
   result.finalNewline = merged.endsWith('\n')
@@ -129,8 +133,8 @@ export async function conflict(repo: string, path: string): Promise<ConflictFile
 }
 
 /** Writes the resolved content and marks the file resolved. */
-export async function resolveContent(repo: string, path: string, content: string): Promise<void> {
-  await writeFile(join(repo, path), content, 'utf8')
+export async function resolveContent(repo: string, path: string, content: string, encoding: TextEncoding = 'utf8'): Promise<void> {
+  await writeFile(join(repo, path), encode(content, encoding))
   await git(repo, ['add', '--', path])
 }
 

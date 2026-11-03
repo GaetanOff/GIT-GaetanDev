@@ -1,5 +1,6 @@
 import type { Blame, BlameCommit, FileCommit } from '@shared/types'
-import { git, gitOut } from './exec'
+import { decode, decodeOutput } from './encoding'
+import { git } from './exec'
 import { cleanRef } from './log'
 
 const RS = '\x1e'
@@ -33,15 +34,32 @@ export async function fileLog(repo: string, path: string, skip: number, limit: n
   return out
 }
 
+function splitLines(buf: Buffer): Buffer[] {
+  const lines: Buffer[] = []
+  let start = 0
+  for (let i = 0; i < buf.length; i++) {
+    if (buf[i] === 0x0a) {
+      lines.push(buf.subarray(start, i))
+      start = i + 1
+    }
+  }
+  if (start < buf.length) lines.push(buf.subarray(start))
+  return lines
+}
+
 /** Line-by-line authorship. `rev` null blames the working tree, uncommitted lines included. */
 export async function blame(repo: string, path: string, rev: string | null): Promise<Blame> {
-  const out = await gitOut(repo, ['blame', '--porcelain', ...(rev ? [rev] : []), '--', path], { maxBytes: 64 * 1024 * 1024 })
+  const raw = (await git(repo, ['blame', '--porcelain', ...(rev ? [rev] : []), '--', path], { maxBytes: 64 * 1024 * 1024 })).raw
   const result: Blame = { path, rev, lines: [], commits: {} }
+  // Metadata is UTF-8; content lines (tab-prefixed) keep the file's own encoding, e.g. Windows-1252.
+  const lines = splitLines(raw)
+  const content = decodeOutput(Buffer.concat(lines.filter(l => l[0] === 0x09))).encoding
+  const out = lines.map(l => (l[0] === 0x09 ? decode(l, content) : l.toString('utf8')))
   let sha = ''
   let origLine = 0
   let current: BlameCommit | null = null
 
-  for (const line of out.split('\n')) {
+  for (const line of out) {
     if (line.startsWith('\t')) {
       result.lines.push({ sha, origLine, text: line.slice(1).replace(/\r$/, '') })
       continue

@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process'
 import { readFile, stat } from 'node:fs/promises'
 import { extname, join } from 'node:path'
-import type { DiffHunk, DiffLine, DiffOptions, DiffSource, FileDiff, LineSelection } from '@shared/types'
+import type { DiffHunk, DiffLine, DiffOptions, DiffSource, FileDiff, LineSelection, TextEncoding } from '@shared/types'
+import { decodeOutput, encode } from './encoding'
 import { git, gitOut } from './exec'
 
 /** Beyond this many diff lines the UI asks before rendering. */
@@ -22,17 +23,19 @@ function baseArgs(opts: DiffOptions): string[] {
 }
 
 export async function diff(repo: string, source: DiffSource, opts: DiffOptions): Promise<FileDiff> {
-  const raw = await rawDiff(repo, source, opts)
-  const parsed = parseDiff(raw, source.path, opts.force)
+  const { text, encoding } = decodeOutput(await rawDiff(repo, source, opts))
+  const parsed = parseDiff(text, source.path, opts.force)
+  parsed.encoding = encoding
+  parsed.lfs = lfsPointer(parsed)
   if (parsed.binary) parsed.image = await imagePreview(repo, source, parsed)
   return parsed
 }
 
-async function rawDiff(repo: string, source: DiffSource, opts: DiffOptions): Promise<string> {
+async function rawDiff(repo: string, source: DiffSource, opts: DiffOptions): Promise<Buffer> {
   const args = baseArgs(opts)
   const paths = (p: string, old?: string) => (old && old !== p ? ['--', old, p] : ['--', p])
   const run = (a: string[], okCodes?: number[]) =>
-    git(repo, a, { maxBytes: MAX_DIFF_BYTES, okCodes }).then(r => r.stdout)
+    git(repo, a, { maxBytes: MAX_DIFF_BYTES, okCodes }).then(r => r.raw)
 
   switch (source.kind) {
     case 'worktree':
@@ -63,7 +66,7 @@ const HUNK_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$/
 
 export function parseDiff(raw: string, path: string, force = false): FileDiff {
   const result: FileDiff = {
-    path, header: [], hunks: [], binary: false, isNew: false, isDeleted: false, additions: 0, deletions: 0,
+    path, header: [], hunks: [], binary: false, isNew: false, isDeleted: false, additions: 0, deletions: 0, encoding: 'utf8',
   }
   const lines = raw.split('\n')
   if (lines[lines.length - 1] === '') lines.pop()
@@ -187,6 +190,22 @@ async function imagePreview(repo: string, source: DiffSource, d: FileDiff): Prom
   }
 }
 
+/** Detects a Git LFS pointer diff: "version https://git-lfs…", "oid sha256:…", "size N". */
+function lfsPointer(d: FileDiff): FileDiff['lfs'] {
+  const lines = d.hunks.flatMap(h => h.lines)
+  if (!lines.some(l => l.text.startsWith('version https://git-lfs'))) return undefined
+  const read = (type: 'add' | 'del' | 'ctx') => {
+    const side = lines.filter(l => l.type === type || l.type === 'ctx')
+    const oid = side.find(l => l.text.startsWith('oid sha256:'))?.text.slice(11)
+    const size = side.find(l => l.text.startsWith('size '))?.text.slice(5)
+    return oid && size ? { oid, size: +size } : undefined
+  }
+  const after = read('add')
+  const before = read('del')
+  if (!after && !before) return undefined
+  return { ...(after ?? before!), before: after && before && before.oid !== after.oid ? before : undefined }
+}
+
 /* ─── Partial patches ───────────────────────────────────────────────────────── */
 
 /**
@@ -248,6 +267,8 @@ export function buildPartialPatch(d: FileDiff, selection: LineSelection, directi
   return [...header, ...out, ''].join('\n')
 }
 
-export async function applyPatch(repo: string, patch: string, args: string[]): Promise<void> {
-  await git(repo, ['apply', '--recount', '--whitespace=nowarn', '--unidiff-zero', ...args, '-'], { input: patch })
+export async function applyPatch(repo: string, patch: string, args: string[], encoding: TextEncoding = 'utf8'): Promise<void> {
+  // Content lines must reach git with the bytes the file really has.
+  const input = encoding === 'windows-1252' ? encode(patch, encoding) : patch
+  await git(repo, ['apply', '--recount', '--whitespace=nowarn', '--unidiff-zero', ...args, '-'], { input })
 }

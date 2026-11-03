@@ -2,6 +2,9 @@ import { spawn } from 'node:child_process'
 import type { GitErrorCode } from '@shared/api'
 
 export class GitError extends Error {
+  /** Full output of the failed command (hook logs and the like), ANSI codes removed. */
+  details = ''
+
   constructor(message: string, public code?: GitErrorCode, public stderr = '', public exitCode = 1) {
     super(message)
     this.name = 'GitError'
@@ -9,7 +12,7 @@ export class GitError extends Error {
 }
 
 export interface ExecOptions {
-  input?: string
+  input?: string | Buffer
   /** Exit codes treated as success (git diff --no-index exits 1 on differences). */
   okCodes?: number[]
   env?: NodeJS.ProcessEnv
@@ -22,6 +25,8 @@ export interface ExecResult {
   stdout: string
   stderr: string
   code: number
+  /** stdout as bytes, for content that may not be UTF-8. */
+  raw: Buffer
 }
 
 /** Extra environment for every git call: askpass wiring, set once at startup. */
@@ -83,15 +88,17 @@ export function git(cwd: string, args: string[], opts: ExecOptions = {}): Promis
     })
 
     child.on('close', code => {
-      const stdout = Buffer.concat(out).toString('utf8')
+      const raw = Buffer.concat(out)
+      const stdout = raw.toString('utf8')
       const stderr = Buffer.concat(err).toString('utf8')
-      if (truncated) return resolve({ stdout, stderr, code: -1 })
+      if (truncated) return resolve({ stdout, stderr, code: -1, raw })
       const exit = code ?? 1
-      if (exit === 0 || opts.okCodes?.includes(exit)) return resolve({ stdout, stderr, code: exit })
+      if (exit === 0 || opts.okCodes?.includes(exit)) return resolve({ stdout, stderr, code: exit, raw })
       reject(toGitError(stdout, stderr, exit))
     })
 
-    if (opts.input !== undefined) child.stdin.end(opts.input, 'utf8')
+    if (typeof opts.input === 'string') child.stdin.end(opts.input, 'utf8')
+    else if (opts.input) child.stdin.end(opts.input)
     else child.stdin.end()
   })
 }
@@ -115,7 +122,9 @@ const PATTERNS: [RegExp, GitErrorCode][] = [
 function toGitError(stdout: string, stderr: string, exitCode: number): GitError {
   const text = `${stderr}\n${stdout}`
   const code = PATTERNS.find(([re]) => re.test(text))?.[1]
-  return new GitError(summarize(stderr || stdout) || `git exited with code ${exitCode}`, code, stderr, exitCode)
+  const error = new GitError(summarize(stderr || stdout) || `git exited with code ${exitCode}`, code, stderr, exitCode)
+  error.details = stripAnsi(`${stdout}\n${stderr}`.trim()).slice(-40_000)
+  return error
 }
 
 /** Keeps the lines a human needs: errors, fatal messages and hints, minus noise. */
@@ -127,4 +136,9 @@ function summarize(text: string): string {
   const important = lines.filter(l => /^(error|fatal|CONFLICT|hint: Updates)/.test(l))
   const picked = (important.length ? important : lines).slice(0, 6)
   return picked.map(l => l.replace(/^(error|fatal): /, '')).join('\n')
+}
+
+export function stripAnsi(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\r(?!\n)/g, '\n')
 }

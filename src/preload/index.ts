@@ -7,7 +7,7 @@ for (const channel of API_CHANNELS) {
     const r = (await ipcRenderer.invoke(channel, ...args)) as IpcEnvelope<unknown>
     if (r.ok) return r.value
     // Plain objects cross the context bridge; the renderer rebuilds the Error.
-    throw { message: r.error?.message ?? 'Unknown error', code: r.error?.code }
+    throw { message: r.error?.message ?? 'Unknown error', code: r.error?.code, details: r.error?.details }
   }
 }
 
