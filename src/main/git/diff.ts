@@ -267,15 +267,14 @@ export function buildPartialPatch(d: FileDiff, selection: LineSelection, directi
 
   d.hunks.forEach((hunk, hi) => {
     const picked = new Set(selection[hi] ?? [])
-    const body: string[] = []
+    const body: PatchLine[] = []
     let oldCount = 0
     let newCount = 0
     let firstOld: number | undefined
     let firstNew: number | undefined
     let changed = false
-    const keep = (prefix: string, ln: DiffLine, oldSide: boolean, newSide: boolean) => {
-      body.push(prefix + ln.text)
-      if (ln.noEol) body.push('\\ No newline at end of file')
+    const keep = (prefix: PatchLine['prefix'], ln: DiffLine, oldSide: boolean, newSide: boolean) => {
+      body.push({ prefix, text: ln.text, noEol: !!ln.noEol })
       if (oldSide) { oldCount++; firstOld ??= ln.oldNo }
       if (newSide) { newCount++; firstNew ??= ln.newNo }
     }
@@ -297,7 +296,7 @@ export function buildPartialPatch(d: FileDiff, selection: LineSelection, directi
     // on the side being matched; an empty side keeps git's "line before" convention.
     const oldStart = direction === 'forward' && firstOld !== undefined ? firstOld : hunk.oldStart
     const newStart = direction === 'reverse' && firstNew !== undefined ? firstNew : hunk.newStart
-    out.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`, ...body)
+    out.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`, ...endLines(body))
   })
 
   if (!out.length) return null
@@ -318,6 +317,46 @@ export function buildPartialPatch(d: FileDiff, selection: LineSelection, directi
       .map(h => (h === '--- /dev/null' ? `--- a/${d.path}` : h === '+++ /dev/null' ? `+++ b/${d.path}` : h))
   }
   return [...header, ...out, ''].join('\n')
+}
+
+interface PatchLine {
+  prefix: ' ' | '+' | '-'
+  text: string
+  /** The file's last line had no newline on the side(s) this line belongs to. */
+  noEol: boolean
+}
+
+const NO_EOL = '\\ No newline at end of file'
+
+/**
+ * Writes a hunk's lines with their "\ No newline at end of file" markers. A
+ * marker may only follow the last line of a side, and a selection can put
+ * lines after one: staging a line added below an old last line that had no
+ * newline keeps that line as context, with the addition after it. Such a
+ * line gets its newline on every side that goes on (as the full change
+ * would), instead of git joining it with the next one ("b" + "c" → "bc").
+ */
+function endLines(body: PatchLine[]): string[] {
+  // Whether a line of the old (new) side comes after each line.
+  const oldAfter: boolean[] = []
+  const newAfter: boolean[] = []
+  for (let i = body.length - 1, old = false, now = false; i >= 0; i--) {
+    oldAfter[i] = old
+    newAfter[i] = now
+    if (body[i].prefix !== '+') old = true
+    if (body[i].prefix !== '-') now = true
+  }
+  return body.flatMap((l, i) => {
+    const line = l.prefix + l.text
+    if (!l.noEol) return [line]
+    const oldEnds = l.prefix !== '+' && !oldAfter[i]
+    const newEnds = l.prefix !== '-' && !newAfter[i]
+    // Context still last on one side only: split it, so only that side lacks the newline.
+    if (l.prefix === ' ' && oldEnds !== newEnds) {
+      return oldEnds ? [`-${l.text}`, NO_EOL, `+${l.text}`] : [`-${l.text}`, `+${l.text}`, NO_EOL]
+    }
+    return oldEnds || newEnds ? [line, NO_EOL] : [line]
+  })
 }
 
 export async function applyPatch(repo: string, patch: string, args: string[], encoding: TextEncoding = 'utf8'): Promise<void> {

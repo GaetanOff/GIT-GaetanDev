@@ -1,4 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
+import { accessSync, constants, statSync } from 'node:fs'
+import { delimiter, isAbsolute, join } from 'node:path'
 import type { GitErrorCode } from '@shared/api'
 
 export class GitError extends Error {
@@ -46,6 +48,33 @@ export function setGitEnv(env: NodeJS.ProcessEnv): void {
   baseEnv = env
 }
 
+/**
+ * A program's absolute path, from the absolute folders of PATH only. Spawned
+ * by bare name, Windows looks in the working directory first, and git runs in
+ * the repository: a git.exe committed at its root would run instead of git.
+ */
+export function findOnPath(name: string, exts = process.platform === 'win32' ? ['.exe', '.com'] : ['']): string | null {
+  for (const raw of (process.env.PATH ?? '').split(delimiter)) {
+    const dir = raw.replace(/^"(.*)"$/, '$1')
+    // "" and "." would mean the working directory again.
+    if (!isAbsolute(dir)) continue
+    for (const ext of exts) {
+      const full = join(dir, name + ext)
+      try {
+        if (statSync(full).isFile()) {
+          accessSync(full, constants.X_OK)
+          return full
+        }
+      } catch { /* not here */ }
+    }
+  }
+  return null
+}
+
+/** Looked up on the first call, and again after it went missing (installed or moved while the app runs). */
+let gitPath: string | null = null
+const NOT_FOUND = 'Git was not found. Install Git for Windows and restart the app.'
+
 const GLOBAL_ARGS = ['-c', 'core.quotepath=false', '-c', 'color.ui=false', '-c', 'i18n.logOutputEncoding=UTF-8']
 
 /** The git command an argument list runs: "stash" for ['-c', 'k=v', 'stash', 'push']. */
@@ -63,7 +92,9 @@ function subcommand(args: string[]): string | undefined {
  */
 export function git(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn('git', [...GLOBAL_ARGS, ...args], {
+    gitPath ??= findOnPath('git')
+    if (!gitPath) return reject(new GitError(NOT_FOUND, 'GIT_NOT_FOUND'))
+    const child = spawn(gitPath, [...GLOBAL_ARGS, ...args], {
       cwd,
       windowsHide: true,
       env: {
@@ -111,8 +142,10 @@ export function git(cwd: string, args: string[], opts: ExecOptions = {}): Promis
     })
 
     child.on('error', (e: NodeJS.ErrnoException) => {
-      if (e.code === 'ENOENT') reject(new GitError('Git was not found. Install Git for Windows and restart the app.', 'GIT_NOT_FOUND'))
-      else reject(new GitError(e.message))
+      if (e.code === 'ENOENT') {
+        gitPath = null
+        reject(new GitError(NOT_FOUND, 'GIT_NOT_FOUND'))
+      } else reject(new GitError(e.message))
     })
 
     child.on('close', code => {

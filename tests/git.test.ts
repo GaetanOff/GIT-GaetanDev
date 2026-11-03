@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync, renameSync } from 'node:fs'
+import { copyFileSync, existsSync, readFileSync, renameSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { selectionFingerprint } from '@shared/types'
@@ -136,6 +136,33 @@ describe('edit history', () => {
     await expect(rebaseRun(repo, plan.base, steps, plan.head)).rejects.toThrow(/changed since this plan/)
     expect(sh(repo, 'log', '-1', '--format=%s')).toBe('made elsewhere')
   })
+
+  it('reads the plan of a history with merges without touching staged or unstaged changes', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': '1\n', 'b.txt': '1\n' })
+    sh(repo, 'checkout', '-q', '-b', 'side')
+    commit(repo, 'side', { 's.txt': 's\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'main', { 'm.txt': 'm\n' })
+    sh(repo, 'merge', '-q', '--no-edit', 'side')
+    // Partly staged, fully staged, intent-to-add and untracked.
+    write(repo, 'a.txt', '2\n')
+    sh(repo, 'add', 'a.txt')
+    write(repo, 'a.txt', '3\n')
+    write(repo, 'b.txt', '2\n')
+    sh(repo, 'add', 'b.txt')
+    write(repo, 'n.txt', 'n\n')
+    sh(repo, 'add', '-N', 'n.txt')
+    write(repo, 'u.txt', 'u\n')
+    const before = execFileSync('git', ['-C', repo, 'status', '--porcelain'], { encoding: 'utf8' })
+    const plan = await rebasePlan(repo, 'HEAD~2')
+    expect(plan.hasMerges).toBe(true)
+    expect(plan.structure?.some(s => s.kind === 'line' && s.text.startsWith('merge '))).toBe(true)
+    expect(execFileSync('git', ['-C', repo, 'status', '--porcelain'], { encoding: 'utf8' })).toBe(before)
+    expect(sh(repo, 'show', ':a.txt')).toBe('2')
+    expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('3\n')
+    expect(sh(repo, 'stash', 'list')).toBe('')
+  })
 })
 
 describe('line operations', () => {
@@ -162,6 +189,27 @@ describe('line operations', () => {
     const sel = { 0: d.hunks[0].lines.flatMap((l, i) => (l.type === 'ctx' ? [] : [i])) }
     await ops.unstageLines(repo, 'new.txt', sel, undefined, selectionFingerprint(d, sel), 'old.txt')
     expect(sh(repo, 'status', '--porcelain')).toBe('RM old.txt -> new.txt')
+  })
+
+  // "\ No newline at end of file" may only follow the last line: a line kept before a selected one needs its newline.
+  it('stages a line added below a last line that had no newline without joining them', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'a\nb' })
+    write(repo, 'a.txt', 'a\nb\nc\nd')
+    const d = await diff(repo, { kind: 'worktree', path: 'a.txt' }, OPTS)
+    const sel = { 0: [d.hunks[0].lines.findIndex(l => l.type === 'add' && l.text === 'c')] }
+    await ops.stageLines(repo, 'a.txt', sel, false, undefined, selectionFingerprint(d, sel))
+    expect(execFileSync('git', ['-C', repo, 'show', ':a.txt'], { encoding: 'utf8' })).toBe('a\nb\nc\n')
+  })
+
+  it('discards the removal of a last line that had no newline without joining it to the next', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'a\nb' })
+    write(repo, 'a.txt', 'a\nb\nc\nd')
+    const d = await diff(repo, { kind: 'worktree', path: 'a.txt' }, OPTS)
+    const sel = { 0: [d.hunks[0].lines.findIndex(l => l.type === 'del' && l.text === 'b')] }
+    await ops.discardLines(repo, 'a.txt', sel, undefined, selectionFingerprint(d, sel))
+    expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('a\nb\nb\nc\nd')
   })
 })
 
@@ -223,6 +271,19 @@ describe('history', () => {
     sh(repo, 'remote', 'add', 'local', 'C:/My Repos/x.git')
     const r = await refs(repo)
     expect(r.remotes.find(x => x.name === 'local')?.fetchUrl).toBe('C:/My Repos/x.git')
+  })
+
+  // Windows looks for a program named without a path in the working directory first, unless told not to.
+  it.runIf(process.platform === 'win32')('never runs a git.exe shipped inside the repository', async () => {
+    const repo = makeRepo()
+    copyFileSync(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'hostname.exe'), join(repo, 'git.exe'))
+    const saved = process.env.NoDefaultCurrentDirectoryInExePath
+    delete process.env.NoDefaultCurrentDirectoryInExePath
+    try {
+      expect((await git(repo, ['--version'])).stdout).toMatch(/^git version/)
+    } finally {
+      if (saved !== undefined) process.env.NoDefaultCurrentDirectoryInExePath = saved
+    }
   })
 
   it('reports output cut at maxBytes', async () => {

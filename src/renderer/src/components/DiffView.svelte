@@ -131,14 +131,16 @@
     const repo = app.repo?.path
     if (!repo || !diff) return
     const sel = toSelection(keys)
+    const path = diff.path
+    const oldPath = diff.oldPath
+    // The main process checks the lines are still the ones shown here before touching the file.
+    // Taken before the dialog: the diff reloads while it is up (an editor autosave), and the
+    // answer is about the lines the user selected, not those at the same positions afterwards.
+    const expect = selectionFingerprint(diff, sel)
     if (kind === 'discard') {
       const ok = await confirm({ title: 'Discard selected lines?', message: 'These changes are removed from the file on disk. A copy of the file as it is now goes to the recycle bin.', confirmLabel: 'Discard', danger: true })
       if (!ok) return
     }
-    const path = diff.path
-    const oldPath = diff.oldPath
-    // The main process checks the lines are still the ones shown here before touching the file.
-    const expect = selectionFingerprint(diff, sel)
     await app.run(kind === 'stage' ? 'Staging lines' : kind === 'unstage' ? 'Unstaging lines' : 'Discarding lines', async () => {
       if (kind === 'stage') await api['git:stageLines'](repo, path, sel, untracked, expect)
       else if (kind === 'unstage') await api['git:unstageLines'](repo, path, sel, expect, oldPath)
