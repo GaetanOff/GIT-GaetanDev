@@ -13,8 +13,11 @@ const posix = (p: string) => p.replace(/\\/g, '/')
 const quote = (p: string) => `'${posix(p).replace(/'/g, `'\\''`)}'`
 
 /** Commits after `base` (null: from the root), oldest first, as the rebase will replay them. */
-export async function rebasePlan(repo: string, base: string | null): Promise<RebasePlan> {
-  const range = base ? `${base}..HEAD` : 'HEAD'
+export async function rebasePlan(repo: string, symbolicBase: string | null): Promise<RebasePlan> {
+  // Both ends as commits, read once: the plan and the rebase that follows use the same range.
+  const head = await resolveCommit(repo, 'HEAD')
+  const base = symbolicBase && await resolveCommit(repo, symbolicBase)
+  const range = base ? `${base}..${head}` : head
   const out = await gitOut(repo, ['log', '--reverse', `--format=%H${US}%P${US}%an${US}%ae${US}%at${US}%s${US}%b${RS}`, range])
   const commits = out.split(RS).map(r => r.replace(/^\n/, '')).filter(Boolean).map(r => {
     const [sha, parents, author, email, date, subject, body] = r.split(US)
@@ -30,7 +33,11 @@ export async function rebasePlan(repo: string, base: string | null): Promise<Reb
   }
   const hasMerges = commits.some(c => c.parents.length > 1)
   const structure = hasMerges ? await extractTodo(repo, base, commits.map(c => c.sha)) : undefined
-  return { base, commits, hasMerges, pushed, structure }
+  return { base, head, commits, hasMerges, pushed, structure }
+}
+
+async function resolveCommit(repo: string, rev: string): Promise<string> {
+  return (await gitOut(repo, ['rev-parse', '--verify', '--end-of-options', `${rev}^{commit}`])).trim()
 }
 
 /**
@@ -76,9 +83,13 @@ async function extractTodo(repo: string, base: string | null, shas: string[]): P
  * the stretch between two such lines. Message files live in the git dir
  * because a rebase stopped on a conflict still needs them when it continues.
  */
-export async function rebaseRun(repo: string, base: string | null, steps: RebaseStep[]): Promise<void> {
+export async function rebaseRun(repo: string, base: string | null, steps: RebaseStep[], head: string): Promise<void> {
   const commits = steps.filter(s => s.action !== 'line')
   if (!commits.some(s => s.action !== 'drop')) throw new GitError('Every commit is dropped. Use a reset instead if that is what you want.')
+  // A commit made since the plan was shown is not in the todo: git would drop it.
+  if ((await resolveCommit(repo, 'HEAD')) !== head) {
+    throw new GitError('The branch changed since this plan was shown. Reopen "Edit history" to see the new commits.')
+  }
 
   const dir = join(await gitDir(repo), 'gdg-rebase')
   await rm(dir, { recursive: true, force: true })

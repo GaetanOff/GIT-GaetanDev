@@ -16,6 +16,8 @@ export async function unstagePaths(paths: string[]): Promise<void> {
 
 export async function discardPaths(paths: string[]): Promise<void> {
   if (!paths.length) return
+  // The paths belong to this repo: read it before the dialog, another may be opened meanwhile.
+  const path = repo()
   if (app.settings.confirmDiscard) {
     const ok = await confirm({
       title: paths.length === 1 ? `Discard changes to ${basename(paths[0])}?` : `Discard changes to ${paths.length} files?`,
@@ -26,7 +28,7 @@ export async function discardPaths(paths: string[]): Promise<void> {
     })
     if (!ok) return
   }
-  await app.run('Discarding', () => api['git:discard'](repo(), paths))
+  await app.run('Discarding', () => api['git:discard'](path, paths))
 }
 
 export async function ignorePattern(pattern: string): Promise<void> {
@@ -35,12 +37,13 @@ export async function ignorePattern(pattern: string): Promise<void> {
 
 /** Takes one side of a conflicted file whole; any hand edits in the file are replaced, so ask first. */
 export async function resolveWith(path: string, side: 'ours' | 'theirs'): Promise<void> {
+  const target = repo()
   const ok = await confirm({
     title: side === 'ours' ? 'Use your version?' : 'Use their version?',
     message: `“${basename(path)}” becomes ${side === 'ours' ? 'your' : 'their'} version as a whole. Edits you made to it while resolving are replaced.`,
     confirmLabel: side === 'ours' ? 'Use mine' : 'Use theirs',
   })
-  if (ok) await app.run('Resolving', () => api['git:resolve'](repo(), path, side))
+  if (ok) await app.run('Resolving', () => api['git:resolve'](target, path, side))
 }
 
 export function fileMenu(file: FileChange, area: Area, selection: string[]): MenuItem[] {
@@ -92,6 +95,7 @@ export function fileMenu(file: FileChange, area: Area, selection: string[]): Men
 }
 
 export async function stashPaths(paths: string[]): Promise<void> {
+  const target = repo()
   const message = await prompt({
     title: 'Stash files',
     message: paths.length === 1 ? paths[0] : `${paths.length} files`,
@@ -99,7 +103,7 @@ export async function stashPaths(paths: string[]): Promise<void> {
     confirmLabel: 'Stash',
   })
   if (message === null) return
-  await app.run('Stashing', () => api['git:stash'](repo(), message, true, paths), { success: 'Stashed.' })
+  await app.run('Stashing', () => api['git:stash'](target, message, true, paths), { success: 'Stashed.' })
 }
 
 export function openStashDialog(): void {

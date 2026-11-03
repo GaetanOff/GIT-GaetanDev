@@ -5,6 +5,11 @@ import { shortSha } from './format'
 import { app } from './state.svelte'
 import { choose, confirm, openDialog, prompt, toast, type MenuItem } from './ui.svelte'
 
+/**
+ * The repo in front. Actions that ask first read it before the dialog: an
+ * "Open in" from Explorer can switch repos while it is up, and the answer
+ * belongs to the repo the question was about.
+ */
 const repo = () => app.repo!.path
 
 /* ─── Branches ──────────────────────────────────────────────────────────────── */
@@ -12,6 +17,7 @@ const repo = () => app.repo!.path
 export async function mergeInto(ref: string): Promise<void> {
   const current = app.status?.branch
   if (!current) return
+  const path = repo()
   const how = await choose({
     title: `Merge ${ref} into ${current}`,
     message: 'A merge commit keeps history as it happened. Squash folds every commit of the branch into staged changes you then commit once.',
@@ -21,7 +27,7 @@ export async function mergeInto(ref: string): Promise<void> {
     ],
   })
   if (!how) return
-  await app.run(`Merging ${ref}`, () => api['git:merge'](repo(), ref, { squash: how === 'squash' }), {
+  await app.run(`Merging ${ref}`, () => api['git:merge'](path, ref, { squash: how === 'squash' }), {
     success: how === 'squash' ? `Squashed ${ref}: review and commit the staged changes.` : `Merged ${ref} into ${current}.`,
   })
   if (how === 'squash') app.view = 'changes'
@@ -30,16 +36,18 @@ export async function mergeInto(ref: string): Promise<void> {
 export async function rebaseOnto(ref: string): Promise<void> {
   const current = app.status?.branch
   if (!current) return
+  const path = repo()
   const ok = await confirm({
     title: `Rebase ${current} onto ${ref}?`,
     message: `Your commits on ${current} are replayed on top of ${ref}. If ${current} was already pushed you will need to force push.`,
     confirmLabel: 'Rebase',
   })
-  if (ok) await app.run(`Rebasing onto ${ref}`, () => api['git:rebase'](repo(), ref), { success: `Rebased ${current} onto ${ref}.` })
+  if (ok) await app.run(`Rebasing onto ${ref}`, () => api['git:rebase'](path, ref), { success: `Rebased ${current} onto ${ref}.` })
 }
 
 export async function deleteBranch(b: Branch): Promise<void> {
   if (b.remote) {
+    const path = repo()
     const [remote, ...rest] = b.name.split('/')
     const branch = rest.join('/')
     const ok = await confirm({
@@ -48,7 +56,7 @@ export async function deleteBranch(b: Branch): Promise<void> {
       confirmLabel: 'Delete on remote',
       danger: true,
     })
-    if (ok) await app.run(`Deleting ${b.name}`, () => api['git:deleteRemoteBranch'](repo(), remote, branch), { success: `Deleted ${b.name}.` })
+    if (ok) await app.run(`Deleting ${b.name}`, () => api['git:deleteRemoteBranch'](path, remote, branch), { success: `Deleted ${b.name}.` })
     return
   }
   const ok = await confirm({
@@ -112,8 +120,9 @@ export async function restoreDeleted(name: string, sha: string, repoPath = repo(
 }
 
 export async function renameBranch(b: Branch): Promise<void> {
+  const path = repo()
   const name = await prompt({ title: 'Rename branch', label: 'New name', value: b.name, confirmLabel: 'Rename', mono: true, validate: validateBranchName })
-  if (name && name !== b.name) await app.run('Renaming branch', () => api['git:renameBranch'](repo(), b.name, name))
+  if (name && name !== b.name) await app.run('Renaming branch', () => api['git:renameBranch'](path, b.name, name))
 }
 
 export function branchMenu(b: Branch): MenuItem[] {
@@ -153,6 +162,7 @@ export function branchMenu(b: Branch): MenuItem[] {
 /* ─── Commits ───────────────────────────────────────────────────────────────── */
 
 export async function resetTo(c: Commit): Promise<void> {
+  const path = repo()
   const mode = await choose({
     title: `Reset ${app.status?.branch ?? 'HEAD'} to ${shortSha(c.sha)}`,
     message: 'Soft keeps your changes staged. Mixed keeps them as unstaged changes. Hard throws every change away.',
@@ -167,7 +177,7 @@ export async function resetTo(c: Commit): Promise<void> {
     const ok = await confirm({ title: 'Hard reset?', message: 'All uncommitted changes and every commit after this one on the branch will be discarded.', confirmLabel: 'Reset hard', danger: true })
     if (!ok) return
   }
-  await app.run('Resetting', () => api['git:reset'](repo(), c.sha, mode), { success: `Reset to ${shortSha(c.sha)} (${mode}).` })
+  await app.run('Resetting', () => api['git:reset'](path, c.sha, mode), { success: `Reset to ${shortSha(c.sha)} (${mode}).` })
 }
 
 export function commitMenu(c: Commit): MenuItem[] {
@@ -182,14 +192,16 @@ export function commitMenu(c: Commit): MenuItem[] {
     { label: 'Edit history from here…', icon: 'edit', disabled: !onBranch, run: () => app.openRebase(c.parents[0] ?? null, `from ${shortSha(c.sha)} “${c.subject}”`) },
     { label: 'Compare with HEAD', icon: 'split', run: () => app.openCompare(c.sha, 'HEAD') },
     { label: 'Checkout (detached)', icon: 'commit', run: async () => {
+      const path = repo()
       const ok = await confirm({ title: 'Checkout this commit?', message: 'You will be in “detached HEAD” state: new commits will not belong to any branch until you create one.', confirmLabel: 'Checkout' })
-      if (ok) await app.run('Checking out', () => api['git:checkoutCommit'](repo(), c.sha))
+      if (ok) await app.run('Checking out', () => api['git:checkoutCommit'](path, c.sha))
     } },
     'sep',
     { label: 'Cherry-pick onto current branch', icon: 'commit', disabled: !onBranch, run: () => app.run('Cherry-picking', () => api['git:cherryPick'](repo(), [c.sha]), { success: `Cherry-picked ${shortSha(c.sha)}.` }) },
     { label: 'Revert this commit', icon: 'undo', disabled: !onBranch, run: async () => {
+      const path = repo()
       const ok = await confirm({ title: 'Revert commit?', message: `A new commit will undo the changes of “${c.subject}”.`, confirmLabel: 'Revert' })
-      if (ok) await app.run('Reverting', () => api['git:revert'](repo(), [c.sha]), { success: 'Revert commit created.' })
+      if (ok) await app.run('Reverting', () => api['git:revert'](path, [c.sha]), { success: 'Revert commit created.' })
     } },
     { label: 'Reset current branch to here…', icon: 'undo', danger: true, disabled: !onBranch, run: () => resetTo(c) },
   ]
@@ -203,8 +215,9 @@ export function commitsMenu(list: Commit[]): MenuItem[] {
   return [
     { label: `Cherry-pick ${n} commits onto ${app.status?.branch ?? 'HEAD'}`, icon: 'commit', disabled: !onBranch, run: () => app.run('Cherry-picking', () => api['git:cherryPick'](repo(), shas), { success: `Cherry-picked ${n} commits.` }) },
     { label: `Revert ${n} commits`, icon: 'undo', disabled: !onBranch, run: async () => {
+      const path = repo()
       const ok = await confirm({ title: `Revert ${n} commits?`, message: 'One revert commit is created per commit, newest first.', confirmLabel: 'Revert' })
-      if (ok) await app.run('Reverting', () => api['git:revert'](repo(), shas), { success: `Reverted ${n} commits.` })
+      if (ok) await app.run('Reverting', () => api['git:revert'](path, shas), { success: `Reverted ${n} commits.` })
     } },
     'sep',
     { label: 'Compare oldest and newest', icon: 'split', run: () => app.openCompare(`${list[list.length - 1].sha}^`, list[0].sha, false) },
@@ -247,8 +260,9 @@ export function tagMenu(t: Tag): MenuItem[] {
     { label: 'Copy name', icon: 'copy', run: () => app.copy(t.name, 'Tag copied') },
     'sep',
     { label: 'Delete locally', icon: 'trash', danger: true, run: async () => {
+      const path = repo()
       const ok = await confirm({ title: `Delete tag ${t.name}?`, message: 'The tag is removed from this repository only.', confirmLabel: 'Delete', danger: true })
-      if (ok) await app.run('Deleting tag', () => api['git:deleteTag'](repo(), t.name))
+      if (ok) await app.run('Deleting tag', () => api['git:deleteTag'](path, t.name))
     } },
   ]
 }
@@ -264,9 +278,10 @@ export async function applyStash(s: Stash, pop: boolean): Promise<void> {
 }
 
 export async function dropStash(s: Stash): Promise<void> {
+  const path = repo()
   const ok = await confirm({ title: 'Drop stash?', message: `“${s.message}” will be deleted.`, confirmLabel: 'Drop', danger: true })
   if (!ok) return
-  await app.run('Dropping stash', () => api['git:stashDrop'](repo(), s.index, s.sha))
+  await app.run('Dropping stash', () => api['git:stashDrop'](path, s.index, s.sha))
   if (app.selectedStash === s.index) {
     app.selectedStash = null
     app.view = 'changes'

@@ -58,8 +58,9 @@
   }
 
   async function removeRemote(name: string) {
+    const repo = app.repo!.path
     const ok = await confirm({ title: `Remove remote “${name}”?`, message: 'Its remote-tracking branches are deleted locally. Nothing changes on the server.', confirmLabel: 'Remove', danger: true })
-    if (ok) await app.run('Removing remote', () => api['git:removeRemote'](app.repo!.path, name))
+    if (ok) await app.run('Removing remote', () => api['git:removeRemote'](repo, name))
   }
 
   /* Drag a branch onto another to merge or rebase. */
@@ -92,13 +93,14 @@
       { label: 'Open in terminal', icon: 'terminal', run: () => api['shell:terminal'](w.path) },
       'sep',
       { label: 'Remove worktree…', icon: 'trash', danger: true, disabled: w.current || w.bare, run: async () => {
+        const repo = app.repo!.path
         const ok = await confirm({ title: 'Remove this worktree?', message: `The folder ${w.path} is deleted. Its branch ${w.branch ?? ''} stays.`, confirmLabel: 'Remove', danger: true })
         if (!ok) return
         try {
-          await api['git:worktreeRemove'](app.repo!.path, w.path, false)
+          await api['git:worktreeRemove'](repo, w.path, false)
         } catch (err) {
           const force = await confirm({ title: 'Worktree has changes', message: `${(err as { message: string }).message}\n\nRemove it anyway and lose them?`, confirmLabel: 'Remove anyway', danger: true })
-          if (force) await app.run('Removing worktree', () => api['git:worktreeRemove'](app.repo!.path, w.path, true))
+          if (force) await app.run('Removing worktree', () => api['git:worktreeRemove'](repo, w.path, true))
         }
         await app.refreshRefs()
       } },

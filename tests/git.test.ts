@@ -21,6 +21,7 @@ const { status } = await import('../src/main/git/status')
 const { diff } = await import('../src/main/git/diff')
 const { conflict } = await import('../src/main/git/conflict')
 const { refs } = await import('../src/main/git/refs')
+const { rebasePlan, rebaseRun } = await import('../src/main/git/rebase')
 const { git, assertRefName } = await import('../src/main/git/exec')
 
 afterAll(cleanup)
@@ -109,6 +110,32 @@ describe('commit', () => {
     await expect(assertRefName(repo, 'branch', 'a..b')).rejects.toThrow(/not a valid branch name/)
     await expect(assertRefName(repo, 'branch', 'feature/ok')).resolves.toBeUndefined()
   })
+
+  it('undoes only the commit it was asked for', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base')
+    commit(repo, 'first')
+    const first = sh(repo, 'rev-parse', 'HEAD')
+    commit(repo, 'second')
+    await expect(ops.undoCommit(repo, first)).rejects.toThrow(/no longer the last one/)
+    expect(sh(repo, 'log', '-1', '--format=%s')).toBe('second')
+    expect(await ops.undoCommit(repo, sh(repo, 'rev-parse', 'HEAD'))).toBe('second')
+    expect(sh(repo, 'log', '-1', '--format=%s')).toBe('first')
+  })
+})
+
+describe('edit history', () => {
+  it('refuses a plan made before HEAD moved, so a new commit is never dropped', async () => {
+    const repo = makeRepo()
+    for (const i of [1, 2, 3]) commit(repo, `c${i}`, { 'f.txt': `${i}\n` })
+    const plan = await rebasePlan(repo, 'HEAD~2')
+    expect(plan.base).toBe(sh(repo, 'rev-parse', 'HEAD~2'))
+    expect(plan.commits.map(c => c.subject)).toEqual(['c2', 'c3'])
+    commit(repo, 'made elsewhere', { 'g.txt': 'g\n' })
+    const steps = plan.commits.map(c => ({ sha: c.sha, action: 'pick' as const }))
+    await expect(rebaseRun(repo, plan.base, steps, plan.head)).rejects.toThrow(/changed since this plan/)
+    expect(sh(repo, 'log', '-1', '--format=%s')).toBe('made elsewhere')
+  })
 })
 
 describe('line operations', () => {
@@ -152,6 +179,24 @@ describe('conflicts', () => {
     expect(c).toHaveLength(1)
     expect(c[0].ours).toEqual(['ours line', 'Part', '=======', 'ours end'])
     expect(c[0].theirs).toEqual(['theirs line', 'Section', '=======', 'theirs end'])
+  })
+
+  it('tells a new merge of the same file from an aborted one', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'f.txt': 'base\n' })
+    sh(repo, 'checkout', '-q', '-b', 'a')
+    commit(repo, 'a', { 'f.txt': 'from a\n' })
+    sh(repo, 'checkout', '-q', '-b', 'b', 'main')
+    commit(repo, 'b', { 'f.txt': 'from b\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'ours', { 'f.txt': 'ours\n' })
+    await git(repo, ['merge', 'a'], { okCodes: [1] })
+    const first = await conflict(repo, 'f.txt')
+    sh(repo, 'merge', '--abort')
+    await git(repo, ['merge', 'b'], { okCodes: [1] })
+    const second = await conflict(repo, 'f.txt')
+    expect(first.stages).not.toBe(second.stages)
+    expect((await conflict(repo, 'f.txt')).stages).toBe(second.stages)
   })
 })
 

@@ -40,7 +40,8 @@ export interface Api {
   'git:commitSetup'(repo: string): Promise<{ template: string; signing: boolean }>
   'git:lastCommitMessage'(repo: string): Promise<string>
   'git:preparedMessage'(repo: string): Promise<string>
-  'git:undoCommit'(repo: string): Promise<string>
+  /** `expect`: the commit to undo; refused if HEAD is another one by now. */
+  'git:undoCommit'(repo: string, expect?: string): Promise<string>
   'git:resolve'(repo: string, path: string, side: 'ours' | 'theirs'): Promise<void>
   'git:continue'(repo: string): Promise<void>
   'git:abort'(repo: string): Promise<void>
@@ -62,7 +63,7 @@ export interface Api {
   'git:operations'(repo: string): Promise<RepoOperationEntry[]>
   'git:restore'(repo: string, target: RestorePoint): Promise<RestorePoint>
   'git:rebasePlan'(repo: string, base: string | null): Promise<RebasePlan>
-  'git:rebaseRun'(repo: string, base: string | null, steps: RebaseStep[]): Promise<void>
+  'git:rebaseRun'(repo: string, base: string | null, steps: RebaseStep[], head: string): Promise<void>
 
   /* Refs */
   'git:refs'(repo: string): Promise<Refs>

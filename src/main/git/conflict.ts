@@ -10,8 +10,11 @@ async function blob(repo: string, sha: string): Promise<Buffer> {
   return (await git(repo, ['cat-file', 'blob', sha])).raw
 }
 
-/** Raw bytes of the index stages (1 base, 2 ours, 3 theirs); null where a side has no file. */
-async function stages(repo: string, path: string): Promise<[Buffer | null, Buffer | null, Buffer | null]> {
+/**
+ * Raw bytes of the index stages (1 base, 2 ours, 3 theirs), null where a side
+ * has no file, and their blob ids, which tell one conflict from another.
+ */
+async function stages(repo: string, path: string): Promise<{ blobs: [Buffer | null, Buffer | null, Buffer | null]; ids: string }> {
   const out = (await git(repo, ['ls-files', '-s', '--', path])).stdout
   const sha: Record<string, string> = {}
   for (const line of out.split('\n')) {
@@ -20,7 +23,8 @@ async function stages(repo: string, path: string): Promise<[Buffer | null, Buffe
     if (n) sha[n] = objectId
   }
   const read = (n: string) => (sha[n] ? blob(repo, sha[n]) : Promise.resolve(null))
-  return Promise.all([read('1'), read('2'), read('3')])
+  const blobs = await Promise.all([read('1'), read('2'), read('3')])
+  return { blobs, ids: ['1', '2', '3'].map(n => sha[n] ?? '-').join(' ') }
 }
 
 const isBinary = (b: Buffer | null) => !!b && b.subarray(0, 8000).includes(0)
@@ -73,13 +77,13 @@ const MARK = {
  * the result into common and conflicting chunks.
  */
 export async function conflict(repo: string, path: string): Promise<ConflictFile> {
-  const [[base, ours, theirs], lbl] = await Promise.all([stages(repo, path), labels(repo)])
+  const [{ blobs: [base, ours, theirs], ids }, lbl] = await Promise.all([stages(repo, path), labels(repo)])
   const disk = await readFile(join(repo, path)).catch(() => null)
   const resolvedOnDisk = !!disk && !isBinary(disk) && !/^<<<<<<< /m.test(disk.toString('utf8'))
 
   const result: ConflictFile = {
     path, mode: 'text', oursLabel: lbl.ours, theirsLabel: lbl.theirs, hasBase: !!base,
-    oursExists: !!ours, theirsExists: !!theirs, chunks: [], eol: '\n', finalNewline: true, resolvedOnDisk, encoding: 'utf8',
+    oursExists: !!ours, theirsExists: !!theirs, chunks: [], eol: '\n', finalNewline: true, resolvedOnDisk, encoding: 'utf8', stages: ids,
   }
   if (!ours || !theirs || isBinary(ours) || isBinary(theirs) || isBinary(base)) {
     result.mode = 'whole'
