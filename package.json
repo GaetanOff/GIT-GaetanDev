@@ -62,7 +62,8 @@
       {
         "provider": "github",
         "owner": "GaetanOff",
-        "repo": "GIT-GaetanDev"
+        "repo": "GIT-GaetanDev",
+        "releaseType": "release"
       }
     ],
     "electronFuses": {

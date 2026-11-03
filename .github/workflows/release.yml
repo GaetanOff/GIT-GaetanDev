@@ -13,13 +13,29 @@ jobs:
       contents: write
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The token publishes through GH_TOKEN below; it need not sit in .git/config while npm scripts run.
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+      # The release is named after package.json: a tag that says otherwise would publish another version.
+      - name: Tag matches package.json
+        shell: bash
+        run: |
+          version=$(node -p "require('./package.json').version")
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $version. Bump the version, then tag."
+            exit 1
+          fi
       - run: npm ci
+      # CI does not run on tags: the commit being released is checked here.
+      - run: npm run lint
+      - run: npm run check
       - run: npm test
       - run: npm run build
+      # releaseType "release" (package.json): published at once, not left as a draft auto-update cannot see.
       - run: npx electron-builder --win --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
