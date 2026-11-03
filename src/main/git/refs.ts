@@ -55,18 +55,19 @@ async function listTags(repo: string): Promise<Tag[]> {
   })
 }
 
+/**
+ * One "git remote get-url" per remote rather than parsing "git remote -v",
+ * whose columns are split by spaces: a local remote like "C:/My Repos/x.git"
+ * has spaces too. get-url also applies url.<base>.insteadOf, as -v does.
+ */
 async function listRemotes(repo: string): Promise<Remote[]> {
-  const out = await gitOut(repo, ['remote', '-v'])
-  const map = new Map<string, Remote>()
-  for (const line of out.split('\n')) {
-    const m = /^(\S+)\s+(\S+)\s+\((fetch|push)\)$/.exec(line.trim())
-    if (!m) continue
-    const r = map.get(m[1]) ?? { name: m[1], fetchUrl: '', pushUrl: '', provider: null }
-    if (m[3] === 'fetch') { r.fetchUrl = m[2]; r.provider = detectProvider(m[2]) }
-    else r.pushUrl = m[2]
-    map.set(m[1], r)
-  }
-  return [...map.values()]
+  const names = (await gitOut(repo, ['remote'])).split('\n').map(s => s.trim()).filter(Boolean)
+  const url = (name: string, push: boolean) =>
+    git(repo, ['remote', 'get-url', ...(push ? ['--push'] : []), name], { okCodes: [2, 128] }).then(r => (r.code === 0 ? r.stdout.split('\n')[0].trim() : ''))
+  return Promise.all(names.map(async name => {
+    const [fetchUrl, pushUrl] = await Promise.all([url(name, false), url(name, true)])
+    return { name, fetchUrl, pushUrl: pushUrl || fetchUrl, provider: fetchUrl ? detectProvider(fetchUrl) : null }
+  }))
 }
 
 async function listStashes(repo: string): Promise<Stash[]> {
