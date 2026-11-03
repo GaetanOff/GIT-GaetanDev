@@ -172,12 +172,26 @@
   }
 
   const markersLeft = $derived(resultText !== null && /^(<<<<<<<|=======$|>>>>>>>)/m.test(resultText))
-  const resultLines = $derived(resultText === null ? 0 : resultText.split('\n').length)
 
   /* The Result editor is a transparent textarea over a coloured copy of its text. */
   let hl = $state<HTMLPreElement>()
   const HL_MAX_LINES = 4000
   const resultArr = $derived(resultText === null ? [] : resultText.split('\n'))
+  const resultLines = $derived(resultArr.length)
+
+  /**
+   * Only the lines in view (and a margin) are drawn in the overlay and the
+   * gutter; spacers keep the full height so both scroll with the textarea.
+   * Rows are a fixed 19px (see .hl / .gutter). Typing then costs the lines on
+   * screen, not the whole file.
+   */
+  const ROW = 19
+  let resultScroll = $state(0)
+  let editorHeight = $state(0)
+  /** The textarea's content width, so the overlay can scroll sideways as far as it does. */
+  let textWidth = $state(0)
+  const first = $derived(Math.max(0, Math.floor(resultScroll / ROW) - 40))
+  const last = $derived(Math.min(resultLines, Math.ceil((resultScroll + editorHeight) / ROW) + 40))
   /** The overlay also shows conflict markers and regions, so it stays on even without a language. */
   const highlightResult = $derived(resultArr.length <= HL_MAX_LINES)
   const codeLang = $derived(app.settings.syntaxHighlight ? lang : null)
@@ -211,6 +225,8 @@
     return { markers, regions, states }
   })
   function syncScroll(t: HTMLTextAreaElement) {
+    resultScroll = t.scrollTop
+    textWidth = t.scrollWidth
     if (gutter) gutter.scrollTop = t.scrollTop
     if (hl) { hl.scrollTop = t.scrollTop; hl.scrollLeft = t.scrollLeft }
   }
@@ -317,11 +333,11 @@
       <span class="grow"></span>
       <button class="btn btn-ghost sm" onclick={() => (resultText = draftResult())} title="Discard edits here and rebuild from the choices made in Resolve">Rebuild from choices</button>
     </div>
-    <div class="editor">
-      <div class="gutter mono" bind:this={gutter} aria-hidden="true">{#each { length: resultLines } as _, n}<div>{n + 1}</div>{/each}</div>
+    <div class="editor" bind:clientHeight={editorHeight}>
+      <div class="gutter mono" bind:this={gutter} aria-hidden="true"><div style="height:{first * ROW}px"></div>{#each { length: last - first } as _, n}<div>{first + n + 1}</div>{/each}<div style="height:{(resultLines - last) * ROW}px"></div></div>
       <div class="code-wrap">
       {#if highlightResult}
-        <pre class="hl mono" bind:this={hl} aria-hidden="true">{#each resultArr as l, i}{@const mk = resultInfo.markers[i]}{#if mk}<div class="ln mk {mk}">{l}</div>{:else}<div class="ln {resultInfo.regions[i]}">{#if l}<Code text={l} lang={codeLang} state={resultInfo.states[i]} />{:else}{' '}{/if}</div>{/if}{/each}<div class="ln"> </div></pre>
+        <pre class="hl mono" bind:this={hl} aria-hidden="true"><div style="height:{first * ROW}px;width:{textWidth}px"></div>{#each resultArr.slice(first, last) as l, j}{@const i = first + j}{@const mk = resultInfo.markers[i]}{#if mk}<div class="ln mk {mk}">{l}</div>{:else}<div class="ln {resultInfo.regions[i]}">{#if l}<Code text={l} lang={codeLang} state={resultInfo.states[i]} />{:else}{' '}{/if}</div>{/if}{/each}<div style="height:{(resultLines - last) * ROW}px"></div><div class="ln"> </div></pre>
       {/if}
       <textarea class="mono" class:overlay={highlightResult} bind:value={resultText} spellcheck="false" wrap="off"
         onscroll={e => syncScroll(e.target as HTMLTextAreaElement)}
