@@ -15,6 +15,7 @@
   let amendBackup: { summary: string; body: string } | null = null
   let setup = $state<{ template: string; signing: boolean }>({ template: '', signing: false })
   let authors = $state.raw<Author[]>([])
+  let authorsRepo = ''
   let coOpen = $state(false)
   let coQuery = $state('')
   let coInput = $state<HTMLInputElement>()
@@ -45,7 +46,13 @@
   async function openCoAuthors() {
     coOpen = !coOpen
     coQuery = ''
-    if (coOpen && !authors.length && app.repo) authors = await api['git:authors'](app.repo.path).catch(() => [])
+    if (coOpen && app.repo) {
+      // Asked each time (the main process caches it); another repository's people never show here.
+      const repo = app.repo.path
+      if (authorsRepo !== repo) authors = []
+      const list = await api['git:authors'](repo).catch(() => null)
+      if (list && app.repo?.path === repo) { authors = list; authorsRepo = repo }
+    }
     queueMicrotask(() => coInput?.focus())
   }
 

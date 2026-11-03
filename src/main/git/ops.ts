@@ -140,10 +140,18 @@ async function hasCommitHook(repo: string): Promise<boolean> {
 
 /** People who committed here, most active first: suggestions for co-authors. */
 export async function authors(repo: string): Promise<Author[]> {
+  // shortlog walks the whole history: reuse the answer while HEAD has not moved, for ten minutes.
+  const head = (await git(repo, ['rev-parse', '-q', '--verify', 'HEAD'], { okCodes: [1] })).stdout.trim()
+  const cached = authorsCache.get(repo)
+  if (cached && cached.head === head && Date.now() - cached.at < 10 * 60_000) return cached.list
   const out = (await git(repo, ['shortlog', '-sne', '--all', 'HEAD'], { okCodes: [128] })).stdout
-  return out.split('\n').map(l => /^\s*(\d+)\s+(.+?) <([^>]+)>$/.exec(l)).filter(m => !!m)
+  const list = out.split('\n').map(l => /^\s*(\d+)\s+(.+?) <([^>]+)>$/.exec(l)).filter(m => !!m)
     .map(m => ({ commits: +m![1], name: m![2], email: m![3] })).slice(0, 300)
+  authorsCache.set(repo, { head, at: Date.now(), list })
+  return list
 }
+
+const authorsCache = new Map<string, { head: string; at: number; list: Author[] }>()
 
 /** The commit.template file, without its comment lines, and whether commits get signed. */
 export async function commitSetup(repo: string): Promise<{ template: string; signing: boolean }> {
