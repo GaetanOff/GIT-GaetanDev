@@ -57,7 +57,15 @@ async function labels(repo: string): Promise<{ ours: string; theirs: string }> {
   }
 }
 
-const MARK = { start: '<<<<<<< ours', base: '||||||| base', mid: '=======', end: '>>>>>>> theirs' }
+/**
+ * Markers far longer than git's 7 characters: a content line that is exactly
+ * "=======" (a Markdown or RST underline) must not be read as the separator.
+ */
+const MARKER_SIZE = 32
+const MARK = {
+  start: `${'<'.repeat(MARKER_SIZE)} ours`, base: `${'|'.repeat(MARKER_SIZE)} base`,
+  mid: '='.repeat(MARKER_SIZE), end: `${'>'.repeat(MARKER_SIZE)} theirs`,
+}
 
 /**
  * Rebuilds the conflict from the index stages with `git merge-file --diff3`, so
@@ -84,7 +92,7 @@ export async function conflict(repo: string, path: string): Promise<ConflictFile
     const files = { ours: join(dir, 'ours'), base: join(dir, 'base'), theirs: join(dir, 'theirs') }
     await Promise.all([writeFile(files.ours, ours), writeFile(files.base, base ?? Buffer.alloc(0)), writeFile(files.theirs, theirs)])
     // Exit code is the number of conflicts; negative (255) only on error.
-    const r = await git(repo, ['merge-file', '-p', '--diff3', '-L', 'ours', '-L', 'base', '-L', 'theirs', files.ours, files.base, files.theirs], {
+    const r = await git(repo, ['merge-file', '-p', '--diff3', `--marker-size=${MARKER_SIZE}`, '-L', 'ours', '-L', 'base', '-L', 'theirs', files.ours, files.base, files.theirs], {
       okCodes: Array.from({ length: 127 }, (_, i) => i + 1),
     })
     mergedRaw = r.raw
