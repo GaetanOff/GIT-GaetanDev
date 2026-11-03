@@ -1,6 +1,7 @@
 <script lang="ts">
   import Icon from './Icon.svelte'
   import DiffView from './DiffView.svelte'
+  import VirtualList from './VirtualList.svelte'
   import type { CommitDetail, CommitFile, DiffSource } from '@shared/types'
   import { commitMenu } from '@/lib/actions'
   import { api, asError } from '@/lib/api'
@@ -15,6 +16,7 @@
   let error = $state<string | null>(null)
   let file = $state<string | null>(null)
   let filesHeight = $state(loadHeight())
+  let fileList = $state<VirtualList<CommitFile>>()
   let token = 0
 
   function loadHeight() {
@@ -51,8 +53,11 @@
   function fileKey(e: KeyboardEvent) {
     if (!detail) return
     const i = detail.files.findIndex(f => f.path === file)
-    if (e.key === 'ArrowDown') { e.preventDefault(); file = detail.files[Math.min(i + 1, detail.files.length - 1)]?.path ?? file }
-    if (e.key === 'ArrowUp') { e.preventDefault(); file = detail.files[Math.max(i - 1, 0)]?.path ?? file }
+    const to = e.key === 'ArrowDown' ? Math.min(i + 1, detail.files.length - 1) : e.key === 'ArrowUp' ? Math.max(i - 1, 0) : -1
+    if (to < 0) return
+    e.preventDefault()
+    file = detail.files[to]?.path ?? file
+    fileList?.reveal(to)
   }
 
   function fileMenu(e: MouseEvent, f: CommitFile) {
@@ -132,18 +137,21 @@
     </header>
 
     <div class="files" style="height:{filesHeight}px" role="listbox" tabindex="0" aria-label="Files" onkeydown={fileKey}>
-      {#each detail.files as f (f.path)}
-        {@const st = statusStyle(f.status)}
-        <div class="file" class:sel={f.path === file} role="option" aria-selected={f.path === file} tabindex="-1"
-          onclick={() => (file = f.path)} oncontextmenu={e => fileMenu(e, f)} onkeydown={() => undefined}
-          title={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}>
-          <span class="st" style="color:{st.color};background:color-mix(in srgb, {st.color} 16%, transparent)">{st.letter}</span>
-          <span class="name truncate"><b>{basename(f.path)}</b>{#if dirname(f.path)}<span class="dir">{dirname(f.path)}</span>{/if}</span>
-          {#if f.binary}<span class="badge">bin</span>{:else}
-            <span class="n a">+{f.additions}</span><span class="n d">−{f.deletions}</span>
-          {/if}
-        </div>
-      {/each}
+      <!-- Virtualized: a vendoring or import commit can touch tens of thousands of files. -->
+      <VirtualList bind:this={fileList} items={detail.files} rowHeight={26} class="flist">
+        {#snippet row(f: CommitFile)}
+          {@const st = statusStyle(f.status)}
+          <div class="file" class:sel={f.path === file} role="option" aria-selected={f.path === file} tabindex="-1"
+            onclick={() => (file = f.path)} oncontextmenu={e => fileMenu(e, f)} onkeydown={() => undefined}
+            title={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}>
+            <span class="st" style="color:{st.color};background:color-mix(in srgb, {st.color} 16%, transparent)">{st.letter}</span>
+            <span class="name truncate"><b>{basename(f.path)}</b>{#if dirname(f.path)}<span class="dir">{dirname(f.path)}</span>{/if}</span>
+            {#if f.binary}<span class="badge">bin</span>{:else}
+              <span class="n a">+{f.additions}</span><span class="n d">−{f.deletions}</span>
+            {/if}
+          </div>
+        {/snippet}
+      </VirtualList>
       {#if !detail.files.length}<div class="none">No file changes (empty or merge commit).</div>{/if}
     </div>
     <div class="hsplit" role="separator" aria-orientation="horizontal" onpointerdown={dragFiles}></div>
@@ -181,7 +189,8 @@
   .stat.a { color: var(--green); }
   .stat.d { color: var(--red); }
 
-  .files { overflow-y: auto; flex-shrink: 0; padding: 4px 0; }
+  .files { overflow: hidden; flex-shrink: 0; display: flex; flex-direction: column; }
+  .files :global(.flist) { flex: 1; min-height: 0; }
   .file { display: flex; align-items: center; gap: 8px; height: 26px; padding: 0 12px; }
   .file:hover { background: var(--surface-1); }
   .file.sel { background: var(--surface-3); }
