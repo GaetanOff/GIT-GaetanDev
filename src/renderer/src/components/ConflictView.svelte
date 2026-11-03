@@ -10,7 +10,7 @@
   import Icon from './Icon.svelte'
   import DiffView from './DiffView.svelte'
   import Code from './Code.svelte'
-  import { langFor } from '@/lib/syntax'
+  import { langFor, nextState, type LexState } from '@/lib/syntax'
   import type { ConflictChunk, ConflictFile } from '@shared/types'
   import { api, asError } from '@/lib/api'
   import { basename, dirname } from '@/lib/format'
@@ -26,7 +26,10 @@
   let editing = $state<number | null>(null)
   let draft = $state('')
   let showBase = $state(loadShowBase())
-  let tab = $state<'resolve' | 'diff'>('resolve')
+  let tab = $state<'resolve' | 'result' | 'diff'>('resolve')
+  /** The whole result file, edited freely; null until the Result tab is opened. */
+  let resultText = $state<string | null>(null)
+  let gutter = $state<HTMLDivElement>()
   let saving = $state(false)
   let body = $state<HTMLDivElement>()
   let expanded = $state<Set<number>>(new Set())
@@ -54,6 +57,28 @@
   $effect(() => {
     if (app.repo) memory.set(`${app.repo.path}\0${path}`, $state.snapshot(picks))
   })
+
+  /** Lexer state at the start of every rendered line, keyed "chunk:side:line". */
+  const states = $derived.by(() => {
+    const map = new Map<string, LexState>()
+    if (!file || !app.settings.syntaxHighlight || !lang) return map
+    let st: LexState = null
+    const run = (key: string, lines: string[], from: LexState) => {
+      let s = from
+      lines.forEach((l, i) => { map.set(`${key}:${i}`, s); s = nextState(l, lang, s) })
+      return s
+    }
+    file.chunks.forEach((c, ci) => {
+      if (c.kind === 'common') st = run(`${ci}:c`, c.lines, st)
+      else {
+        run(`${ci}:b`, c.base, st)
+        run(`${ci}:t`, c.theirs, st)
+        st = run(`${ci}:o`, c.ours, st)
+      }
+    })
+    return map
+  })
+  const stOf = (key: string) => states.get(key)
 
   const conflicts = $derived(file ? file.chunks.map((c, i) => ({ c, i })).filter(x => x.c.kind === 'conflict') : [])
   const resolvedCount = $derived(conflicts.filter(x => picks[x.i]).length)
@@ -117,11 +142,55 @@
     return lines.join(f.eol) + (f.finalNewline ? f.eol : '')
   }
 
+  /** The result as it stands: chosen sides where picked, conflict markers elsewhere. */
+  function draftResult(): string {
+    const f = file!
+    const lines = f.chunks.flatMap((c, i) => {
+      if (c.kind === 'common') return c.lines
+      if (picks[i]) return linesFor(c, picks[i])
+      return [
+        `<<<<<<< ours (${f.oursLabel})`, ...c.ours,
+        ...(f.hasBase ? ['||||||| base', ...c.base] : []),
+        '=======', ...c.theirs, `>>>>>>> theirs (${f.theirsLabel})`,
+      ]
+    })
+    return lines.join('\n') + (f.finalNewline && lines.length ? '\n' : '')
+  }
+
+  function openResult() {
+    if (resultText === null) resultText = draftResult()
+    tab = 'result'
+  }
+
+  const markersLeft = $derived(resultText !== null && /^(<<<<<<<|=======$|>>>>>>>)/m.test(resultText))
+  const resultLines = $derived(resultText === null ? 0 : resultText.split('\n').length)
+
+  async function saveResult() {
+    if (!file || resultText === null || !app.repo) return
+    if (markersLeft) {
+      const ok = await confirm({ title: 'Conflict markers remain', message: 'The result still contains <<<<<<< / ======= / >>>>>>> lines. Save and mark resolved anyway?', confirmLabel: 'Save anyway', danger: true })
+      if (!ok) return
+    }
+    saving = true
+    try {
+      // The editor works with \n; write the file back with its own line endings and encoding.
+      const text = file.eol === '\r\n' ? resultText.replace(/\r?\n/g, '\r\n') : resultText
+      await api['git:resolveContent'](app.repo.path, path, text, file.encoding)
+      memory.delete(`${app.repo.path}\0${path}`)
+      toast('success', `${basename(path)} resolved and staged.`)
+    } catch (e) {
+      toast('error', asError(e).message)
+    } finally {
+      saving = false
+      await app.refreshAll()
+    }
+  }
+
   async function markResolved() {
     if (!file || !allResolved || !app.repo) return
     saving = true
     try {
-      await api['git:resolveContent'](app.repo.path, path, content())
+      await api['git:resolveContent'](app.repo.path, path, content(), file.encoding)
       memory.delete(`${app.repo.path}\0${path}`)
       toast('success', `${basename(path)} resolved and staged.`)
     } catch (e) {
@@ -173,10 +242,15 @@
     {/if}
     <div class="segmented">
       <button class:on={tab === 'resolve'} onclick={() => (tab = 'resolve')}>Resolve</button>
+      <button class:on={tab === 'result'} onclick={openResult} disabled={file?.mode !== 'text'} title="Edit the whole result file">Result</button>
       <button class:on={tab === 'diff'} onclick={() => (tab = 'diff')}>Diff</button>
     </div>
     <button class="icon-btn sm" title="Open in editor" onclick={() => api['shell:editor'](app.repo!.path, path).catch(e => toast('error', e.message))}><Icon name="code" size={14} /></button>
-    {#if file?.mode === 'text'}
+    {#if file?.mode === 'text' && tab === 'result'}
+      <button class="btn btn-primary sm" disabled={saving} onclick={saveResult} title="Write this text and stage it">
+        {#if saving}<span class="spinner"></span>{:else}<Icon name="check" size={13} />{/if}Save &amp; mark resolved
+      </button>
+    {:else if file?.mode === 'text'}
       <button class="btn btn-primary sm" disabled={!allResolved || saving} onclick={markResolved} title={allResolved ? 'Write the result and stage it' : 'Resolve every conflict first'}>
         {#if saving}<span class="spinner"></span>{:else}<Icon name="check" size={13} />{/if}Mark resolved
       </button>
@@ -185,6 +259,26 @@
 
   {#if tab === 'diff'}
     <DiffView source={{ kind: 'worktree', path, conflicted: true }} area="conflicted" />
+  {:else if tab === 'result' && file && resultText !== null}
+    <div class="resbar">
+      {#if markersLeft}<span class="badge amber"><Icon name="alert" size={11} />Conflict markers left</span>{:else}<span class="badge green"><Icon name="check" size={11} />No markers left</span>{/if}
+      <span class="dim">{resultLines} lines · {file.eol === '\r\n' ? 'CRLF' : 'LF'} · {file.encoding === 'utf8' ? 'UTF-8' : file.encoding}</span>
+      <span class="grow"></span>
+      <button class="btn btn-ghost sm" onclick={() => (resultText = draftResult())} title="Discard edits here and rebuild from the choices made in Resolve">Rebuild from choices</button>
+    </div>
+    <div class="editor">
+      <div class="gutter mono" bind:this={gutter} aria-hidden="true">{#each { length: resultLines } as _, n}<div>{n + 1}</div>{/each}</div>
+      <textarea class="mono" bind:value={resultText} spellcheck="false" wrap="off"
+        onscroll={e => { if (gutter) gutter.scrollTop = (e.target as HTMLTextAreaElement).scrollTop }}
+        onkeydown={e => {
+          if (e.key === 'Tab') {
+            e.preventDefault()
+            const t = e.target as HTMLTextAreaElement
+            t.setRangeText('\t', t.selectionStart, t.selectionEnd, 'end')
+            resultText = t.value
+          } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveResult() }
+        }}></textarea>
+    </div>
   {:else if error}
     <div class="empty"><h3>Could not read the conflict</h3><p>{error}</p></div>
   {:else if !file}
@@ -226,13 +320,13 @@
             {@const long = chunk.lines.length > FOLD * 2 + 2 && !expanded.has(i)}
             <div class="common mono">
               {#if long}
-                {#each chunk.lines.slice(0, i === 0 ? 0 : FOLD) as l}<div class="ln">{#if l}<Code text={l} {lang} />{:else}{' '}{/if}</div>{/each}
+                {#each chunk.lines.slice(0, i === 0 ? 0 : FOLD) as l, li}<div class="ln">{#if l}<Code text={l} {lang} state={stOf(`${i}:c:${li}`)} />{:else}{' '}{/if}</div>{/each}
                 <button class="fold" onclick={() => (expanded = new Set([...expanded, i]))}>
                   <Icon name="more" size={12} />{chunk.lines.length - (i === 0 ? 0 : FOLD) - (i === file.chunks.length - 1 ? 0 : FOLD)} unchanged lines
                 </button>
-                {#each chunk.lines.slice(i === file.chunks.length - 1 ? chunk.lines.length : -FOLD) as l}<div class="ln">{#if l}<Code text={l} {lang} />{:else}{' '}{/if}</div>{/each}
+                {#each chunk.lines.slice(i === file.chunks.length - 1 ? chunk.lines.length : -FOLD) as l, li}<div class="ln">{#if l}<Code text={l} {lang} state={stOf(`${i}:c:${chunk.lines.length - FOLD + li}`)} />{:else}{' '}{/if}</div>{/each}
               {:else}
-                {#each chunk.lines as l}<div class="ln">{#if l}<Code text={l} {lang} />{:else}{' '}{/if}</div>{/each}
+                {#each chunk.lines as l, li}<div class="ln">{#if l}<Code text={l} {lang} state={stOf(`${i}:c:${li}`)} />{:else}{' '}{/if}</div>{/each}
               {/if}
             </div>
           {:else}
@@ -250,17 +344,17 @@
               <div class="sides" class:three={showBase && file.hasBase}>
                 <button class="side ours" class:picked={r?.pick === 'ours'} onclick={() => pick(i, 'ours')}>
                   <span class="side-head"><span class="label">Ours</span><span class="who truncate">{file.oursLabel}</span><span class="use">Use ours</span></span>
-                  <span class="code mono">{#each chunk.ours as l}<span class="ln">{#if l}<Code text={l} {lang} />{:else}{' '}{/if}</span>{:else}<span class="nothing">(no lines)</span>{/each}</span>
+                  <span class="code mono">{#each chunk.ours as l, li}<span class="ln">{#if l}<Code text={l} {lang} state={stOf(`${i}:o:${li}`)} />{:else}{' '}{/if}</span>{:else}<span class="nothing">(no lines)</span>{/each}</span>
                 </button>
                 {#if showBase && file.hasBase}
                   <button class="side base" class:picked={r?.pick === 'base'} onclick={() => pick(i, 'base')}>
                     <span class="side-head"><span class="label">Base</span><span class="who">common ancestor</span><span class="use">Use base</span></span>
-                    <span class="code mono">{#each chunk.base as l}<span class="ln">{#if l}<Code text={l} {lang} />{:else}{' '}{/if}</span>{:else}<span class="nothing">(no lines)</span>{/each}</span>
+                    <span class="code mono">{#each chunk.base as l, li}<span class="ln">{#if l}<Code text={l} {lang} state={stOf(`${i}:b:${li}`)} />{:else}{' '}{/if}</span>{:else}<span class="nothing">(no lines)</span>{/each}</span>
                   </button>
                 {/if}
                 <button class="side theirs" class:picked={r?.pick === 'theirs'} onclick={() => pick(i, 'theirs')}>
                   <span class="side-head"><span class="label">Theirs</span><span class="who truncate">{file.theirsLabel}</span><span class="use">Use theirs</span></span>
-                  <span class="code mono">{#each chunk.theirs as l}<span class="ln">{#if l}<Code text={l} {lang} />{:else}{' '}{/if}</span>{:else}<span class="nothing">(no lines)</span>{/each}</span>
+                  <span class="code mono">{#each chunk.theirs as l, li}<span class="ln">{#if l}<Code text={l} {lang} state={stOf(`${i}:t:${li}`)} />{:else}{' '}{/if}</span>{:else}<span class="nothing">(no lines)</span>{/each}</span>
                 </button>
               </div>
               {#if editing === i}
@@ -300,6 +394,12 @@
   .fill { display: block; height: 100%; background: var(--green); transition: width 200ms; }
   .toolbar :global(.up) { transform: rotate(180deg); }
   .segmented button { padding: 0 8px; }
+  .segmented button:disabled { opacity: 0.4; }
+  .resbar { display: flex; align-items: center; gap: 10px; padding: 6px 12px; border-bottom: 1px solid var(--border); font-size: 11.5px; flex-shrink: 0; }
+  .resbar .dim { color: var(--text-faint); }
+  .editor { flex: 1; min-height: 0; display: flex; }
+  .gutter { width: 54px; flex-shrink: 0; overflow: hidden; padding: 8px 10px 8px 0; text-align: right; color: var(--text-dim); font-size: 12px; line-height: 19px; border-right: 1px solid var(--border); background: var(--panel-solid); }
+  .editor textarea { flex: 1; min-width: 0; resize: none; border: none; outline: none; padding: 8px 12px; background: transparent; color: #e5e7eb; font-size: 12px; line-height: 19px; tab-size: 4; white-space: pre; overflow: auto; }
 
   .disk { display: flex; align-items: center; gap: 10px; margin: 10px 12px 0; padding: 9px 12px; border-radius: var(--radius-lg); background: rgba(96, 165, 250, 0.1); border: 1px solid rgba(96, 165, 250, 0.25); color: #bfdbfe; font-size: 12px; }
 
