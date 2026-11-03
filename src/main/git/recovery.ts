@@ -81,8 +81,10 @@ async function bestDescendants(repo: string, branches: { name: string; sha: stri
     ])
     const [subject, date] = meta.trim().split('\x1f')
     // Name the source: the first candidate (in priority order) that contains the newest commit.
-    let source: Candidate | undefined
-    for (const c of candidates) {
+    // Candidates that cannot be told apart (thousands of unreferenced commits) need no search.
+    const alike = candidates.every(c => c.via === candidates[0].via && c.ref === candidates[0].ref)
+    let source: Candidate | undefined = alike ? candidates[0] : undefined
+    for (const c of alike ? [] : candidates) {
       if (c.sha === newest) { source = c; break }
       const anc = await git(repo, ['merge-base', '--is-ancestor', newest, c.sha], { okCodes: [1, 128] })
       if (anc.code === 0) { source = c; break }
