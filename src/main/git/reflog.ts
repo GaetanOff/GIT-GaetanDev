@@ -1,5 +1,5 @@
 import type { DeletedBranch, OperationKind, RepoOperationEntry, RestorePoint } from '@shared/types'
-import { git, gitOut, GitError } from './exec'
+import { assertRefName, git, gitOut, GitError } from './exec'
 import { currentBranch } from './refs'
 import { status } from './status'
 
@@ -145,6 +145,7 @@ export async function deletedBranches(repo: string): Promise<DeletedBranch[]> {
 }
 
 export async function restoreBranch(repo: string, name: string, sha: string): Promise<void> {
+  await assertRefName(repo, 'branch', name)
   await git(repo, ['branch', name, sha])
 }
 

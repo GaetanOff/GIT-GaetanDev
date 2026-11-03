@@ -117,6 +117,13 @@ export function git(cwd: string, args: string[], opts: ExecOptions = {}): Promis
   })
 }
 
+/** Refuses a new branch or tag name git would reject (or read as an option), saying which. */
+export async function assertRefName(repo: string, kind: 'branch' | 'tag', name: string): Promise<void> {
+  const ok = !!name && !name.startsWith('-') &&
+    (await git(repo, ['check-ref-format', `refs/${kind === 'branch' ? 'heads' : 'tags'}/${name}`], { okCodes: [1] })).code === 0
+  if (!ok) throw new GitError(`"${name}" is not a valid ${kind} name.`)
+}
+
 /** Shorthand returning stdout only. */
 export async function gitOut(cwd: string, args: string[], opts?: ExecOptions): Promise<string> {
   return (await git(cwd, args, opts)).stdout

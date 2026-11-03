@@ -5,7 +5,7 @@ import { basename, isAbsolute, join } from 'node:path'
 import { shell } from 'electron'
 import type { Author, DiffOptions, LineSelection, Progress, PullMode, ResetMode, RepoStatus } from '@shared/types'
 import { applyPatch, buildPartialPatch, diff } from './diff'
-import { git, gitOut, GitError } from './exec'
+import { assertRefName, git, gitOut, GitError } from './exec'
 import { currentBranch, defaultRemote, upstreamOf } from './refs'
 import { gitDir, status } from './status'
 import { withPruneJournal } from './recovery'
@@ -245,11 +245,13 @@ export async function checkoutCommit(repo: string, sha: string): Promise<void> {
 }
 
 export async function createBranch(repo: string, name: string, from: string | null, doCheckout: boolean): Promise<void> {
+  await assertRefName(repo, 'branch', name)
   if (doCheckout) await git(repo, ['switch', '-c', name, ...(from ? [from] : []), '--no-track'])
   else await git(repo, ['branch', '--no-track', name, ...(from ? [from] : [])])
 }
 
 export async function renameBranch(repo: string, from: string, to: string): Promise<void> {
+  await assertRefName(repo, 'branch', to)
   await git(repo, ['branch', '-m', from, to])
 }
 
@@ -272,6 +274,7 @@ export async function rebase(repo: string, onto: string): Promise<void> {
 }
 
 export async function createTag(repo: string, name: string, sha: string, message: string): Promise<void> {
+  await assertRefName(repo, 'tag', name)
   if (message.trim()) await git(repo, ['tag', '-a', name, sha, '-F', '-'], { input: message })
   else await git(repo, ['tag', name, sha])
 }

@@ -207,6 +207,15 @@ function trustedSender(e: IpcMainInvokeEvent): boolean {
   return frame.url.startsWith('file:') && /\/renderer\/index\.html(?:[?#].*)?$/.test(frame.url.replace(/\\/g, '/'))
 }
 
+/** Arguments, by position, that name a revision, branch, tag or remote. */
+const REF_ARGS: Record<string, number[]> = {
+  'git:cherryPick': [1], 'git:revert': [1], 'git:reset': [1], 'git:checkoutCommit': [1], 'git:commit:detail': [1],
+  'git:blame': [2], 'git:compare': [1, 2], 'git:rebasePlan': [1], 'git:rebaseRun': [1],
+  'git:checkout': [1], 'git:createBranch': [1, 2], 'git:renameBranch': [1, 2], 'git:deleteBranch': [1], 'git:restoreBranch': [1, 2],
+  'git:deleteRemoteBranch': [1, 2], 'git:merge': [1], 'git:rebase': [1], 'git:createTag': [1, 2], 'git:deleteTag': [1],
+  'git:pushTag': [1, 2], 'git:addRemote': [1, 2], 'git:removeRemote': [1], 'git:worktreeAdd': [2, 4],
+}
+
 /** Channels whose first argument may be null (the global identity, no repo to watch). */
 const NULL_REPO_OK = new Set(['git:identity', 'git:setIdentity', 'watch:set'])
 /** Channels that open a folder in another program: worktrees and submodules count, executables do not. */
@@ -232,6 +241,19 @@ function checkArgs(channel: string, args: unknown[]): void {
     } else if (!isRegistered(repo)) {
       throw new GitError(`"${repo}" is not one of your repositories. Add it first.`)
     }
+  }
+  // A revision, branch, tag or remote that starts with "-" would reach git as an option ("--exec=…").
+  const refs = (REF_ARGS[channel] ?? []).flatMap(i => {
+    const v = args[i]
+    return Array.isArray(v) ? v : [v]
+  })
+  if (channel === 'git:diff') refs.push((args[1] as { ref?: unknown } | undefined)?.ref)
+  if (channel === 'git:restore') refs.push((args[1] as { sha?: unknown; branch?: unknown } | undefined)?.sha, (args[1] as { branch?: unknown } | undefined)?.branch)
+  for (const r of refs) {
+    if (typeof r === 'string' && (r.startsWith('-') || r.includes('\0'))) throw new GitError(`"${r}" is not a valid name or revision.`)
+  }
+  if ((channel === 'git:stashApply' || channel === 'git:stashDrop') && !(Number.isInteger(args[1]) && (args[1] as number) >= 0)) {
+    throw new GitError('Invalid stash entry.')
   }
   if (channel === 'app:settings') {
     const patch = args[0]

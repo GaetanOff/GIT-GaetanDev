@@ -2,7 +2,7 @@ import { existsSync, realpathSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join, normalize } from 'node:path'
 import type { LfsInfo, Progress, Submodule, Worktree } from '@shared/types'
-import { git, gitOut } from './exec'
+import { assertRefName, git, gitOut } from './exec'
 
 type Reporter = (p: Progress | null) => void
 
@@ -122,8 +122,9 @@ export async function worktrees(repo: string): Promise<Worktree[]> {
 
 /** Adds a worktree on an existing branch, or on a new branch started from `from`. */
 export async function worktreeAdd(repo: string, path: string, branch: string, create: boolean, from: string | null): Promise<void> {
-  if (create) await git(repo, ['worktree', 'add', '-b', branch, path, ...(from ? [from] : [])])
-  else await git(repo, ['worktree', 'add', path, branch])
+  if (create) await assertRefName(repo, 'branch', branch)
+  if (create) await git(repo, ['worktree', 'add', '-b', branch, '--', path, ...(from ? [from] : [])])
+  else await git(repo, ['worktree', 'add', '--', path, branch])
 }
 
 export async function worktreeRemove(repo: string, path: string, force: boolean): Promise<void> {
