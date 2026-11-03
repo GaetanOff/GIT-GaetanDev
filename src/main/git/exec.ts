@@ -27,6 +27,8 @@ export interface ExecResult {
   code: number
   /** stdout as bytes, for content that may not be UTF-8. */
   raw: Buffer
+  /** Output stopped at `maxBytes`: what is there is only the beginning. */
+  truncated?: boolean
 }
 
 /** Git processes still running, so quitting the app can stop them. */
@@ -90,6 +92,7 @@ export function git(cwd: string, args: string[], opts: ExecOptions = {}): Promis
     let pending = ''
 
     child.stdout.on('data', (chunk: Buffer) => {
+      if (truncated) return
       if (opts.maxBytes && outBytes + chunk.length > opts.maxBytes) {
         truncated = true
         child.kill()
@@ -116,7 +119,7 @@ export function git(cwd: string, args: string[], opts: ExecOptions = {}): Promis
       const raw = Buffer.concat(out)
       const stdout = raw.toString('utf8')
       const stderr = Buffer.concat(err).toString('utf8')
-      if (truncated) return resolve({ stdout, stderr, code: -1, raw })
+      if (truncated) return resolve({ stdout, stderr, code: -1, raw, truncated: true })
       const exit = code ?? 1
       if (exit === 0 || opts.okCodes?.includes(exit)) return resolve({ stdout, stderr, code: exit, raw })
       reject(toGitError(stdout, stderr, exit))

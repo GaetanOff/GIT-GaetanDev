@@ -1,6 +1,6 @@
 import type { Blame, BlameCommit, FileCommit } from '@shared/types'
 import { decode, decodeOutput } from './encoding'
-import { git } from './exec'
+import { git, GitError } from './exec'
 import { cleanRef } from './log'
 
 const RS = '\x1e'
@@ -49,7 +49,9 @@ function splitLines(buf: Buffer): Buffer[] {
 
 /** Line-by-line authorship. `rev` null blames the working tree, uncommitted lines included. */
 export async function blame(repo: string, path: string, rev: string | null): Promise<Blame> {
-  const raw = (await git(repo, ['blame', '--porcelain', ...(rev ? [rev] : []), '--', path], { maxBytes: 64 * 1024 * 1024 })).raw
+  const r = await git(repo, ['blame', '--porcelain', ...(rev ? [rev] : []), '--', path], { maxBytes: 64 * 1024 * 1024 })
+  if (r.truncated) throw new GitError('This file is too large to blame here (over 64 MB of annotations).')
+  const raw = r.raw
   const result: Blame = { path, rev, lines: [], commits: {} }
   // Metadata is UTF-8; content lines (tab-prefixed) keep the file's own encoding, e.g. Windows-1252.
   const lines = splitLines(raw)

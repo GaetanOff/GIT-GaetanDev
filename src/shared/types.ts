@@ -114,6 +114,8 @@ export interface FileDiff {
   deletions: number
   /** Over the line budget: hunks are dropped unless the caller forces. */
   tooLarge?: boolean
+  /** Over the size git output is read up to: only the start is known, it cannot be shown. */
+  truncated?: boolean
   image?: { before?: string; after?: string }
   /** Encoding of the file content; patches are written back with it. */
   encoding: TextEncoding

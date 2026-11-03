@@ -24,8 +24,15 @@ function baseArgs(opts: DiffOptions): string[] {
 }
 
 export async function diff(repo: string, source: DiffSource, opts: DiffOptions): Promise<FileDiff> {
-  const { text, encoding } = decodeOutput(await rawDiff(repo, source, opts))
-  const parsed = parseDiff(text, source.path, opts.force)
+  const out = await rawDiff(repo, source, opts)
+  const { text, encoding } = decodeOutput(out.raw)
+  // Cut at MAX_DIFF_BYTES: the end is missing, so it is shown as too large, without hunks to act on.
+  const parsed = parseDiff(text, source.path, opts.force && !out.truncated)
+  if (out.truncated) {
+    parsed.tooLarge = true
+    parsed.truncated = true
+    parsed.hunks = []
+  }
   parsed.encoding = encoding
   parsed.lfs = lfsPointer(parsed)
   if (!parsed.binary) return parsed
@@ -36,11 +43,11 @@ export async function diff(repo: string, source: DiffSource, opts: DiffOptions):
   return parsed
 }
 
-async function rawDiff(repo: string, source: DiffSource, opts: DiffOptions): Promise<Buffer> {
+async function rawDiff(repo: string, source: DiffSource, opts: DiffOptions): Promise<{ raw: Buffer; truncated: boolean }> {
   const args = baseArgs(opts)
   const paths = (p: string, old?: string) => (old && old !== p ? ['--', old, p] : ['--', p])
   const run = (a: string[], okCodes?: number[]) =>
-    git(repo, a, { maxBytes: MAX_DIFF_BYTES, okCodes }).then(r => r.raw)
+    git(repo, a, { maxBytes: MAX_DIFF_BYTES, okCodes }).then(r => ({ raw: r.raw, truncated: !!r.truncated }))
 
   switch (source.kind) {
     case 'worktree':

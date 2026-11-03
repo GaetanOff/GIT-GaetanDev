@@ -250,8 +250,12 @@
     <div class="empty">
       <div class="empty-icon" style="background:var(--amber-soft);color:var(--amber)"><Icon name="alert" size={24} /></div>
       <h3>Large diff</h3>
-      <p>+{diff.additions} −{diff.deletions} lines. Rendering it may take a moment.</p>
-      <button class="btn btn-secondary" onclick={() => (force = true)}>Show anyway</button>
+      {#if diff.truncated}
+        <p>Over 40 MB of changes: too large to show here. Open the file in your editor instead.</p>
+      {:else}
+        <p>+{diff.additions} −{diff.deletions} lines. Rendering it may take a moment.</p>
+        <button class="btn btn-secondary" onclick={() => (force = true)}>Show anyway</button>
+      {/if}
     </div>
   {:else if empty}
     <div class="empty"><div class="empty-icon"><Icon name="check" size={24} /></div><h3>No content changes</h3><p>{diff.oldPath ? 'The file was renamed without changes.' : diff.modeChange ? 'Only the file mode changed.' : app.settings.ignoreWhitespace ? 'Only whitespace changed.' : 'The file is empty.'}</p></div>
