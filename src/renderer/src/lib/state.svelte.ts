@@ -164,7 +164,9 @@ class AppState {
       const saved = JSON.parse(localStorage.getItem('tabs') ?? '[]') as string[]
       this.tabs = saved.filter(id => s.repos.some(r => r.id === id))
     } catch { /* no tabs yet */ }
-    if (s.lastRepo && s.repos.some(r => r.id === s.lastRepo)) await this.openRepo(s.lastRepo).catch(() => undefined)
+    on('open:path', path => this.addRepo(path))
+    if (s.launchPath) await this.addRepo(s.launchPath)
+    else if (s.lastRepo && s.repos.some(r => r.id === s.lastRepo)) await this.openRepo(s.lastRepo).catch(() => undefined)
     this.ready = true
     this.scheduleAutoFetch()
   }

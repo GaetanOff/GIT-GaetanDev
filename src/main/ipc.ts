@@ -39,11 +39,19 @@ async function addRepo(path: string) {
   return upsertRepo(await topLevel(path))
 }
 
+/** A folder the app was launched with; the renderer opens it instead of the last repo. */
+let launchPath: string | null = null
+export function setLaunchPath(path: string | null): void {
+  launchPath = path
+}
+
 export function registerIpc(watcher: RepoWatcher): void {
   const h: Handlers = {
     'app:state': async () => {
       const s = getState()
-      return { repos: s.repos, lastRepo: s.lastRepo, settings: s.settings, platform: process.platform, version: app.getVersion(), home: homedir() }
+      const open = launchPath
+      launchPath = null
+      return { repos: s.repos, lastRepo: s.lastRepo, settings: s.settings, platform: process.platform, version: app.getVersion(), home: homedir(), launchPath: open }
     },
     'app:settings': async patch => updateSettings(patch),
     'repo:list': async () => getState().repos,

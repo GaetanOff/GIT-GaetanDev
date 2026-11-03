@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import type { GitErrorCode } from '@shared/api'
 
 export class GitError extends Error {
@@ -27,6 +27,15 @@ export interface ExecResult {
   code: number
   /** stdout as bytes, for content that may not be UTF-8. */
   raw: Buffer
+}
+
+/** Git processes still running, so quitting the app can stop them. */
+const running = new Set<ChildProcess>()
+
+/** Stops every git process still running (clone, fetch, push…): called on quit. */
+export function killRunning(): void {
+  for (const child of running) child.kill()
+  running.clear()
 }
 
 /** Extra environment for every git call: askpass wiring, set once at startup. */
@@ -59,6 +68,9 @@ export function git(cwd: string, args: string[], opts: ExecOptions = {}): Promis
         ...opts.env,
       },
     })
+
+    running.add(child)
+    child.on('exit', () => running.delete(child))
 
     const out: Buffer[] = []
     const err: Buffer[] = []

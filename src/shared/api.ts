@@ -10,7 +10,7 @@ import type {
  */
 export interface Api {
   /* App & repositories */
-  'app:state'(): Promise<{ repos: RepoEntry[]; lastRepo: string | null; settings: Settings; platform: string; version: string; home: string }>
+  'app:state'(): Promise<{ repos: RepoEntry[]; lastRepo: string | null; settings: Settings; platform: string; version: string; home: string; launchPath: string | null }>
   'app:settings'(patch: Partial<Settings>): Promise<Settings>
   'repo:list'(): Promise<RepoEntry[]>
   'repo:add'(path: string): Promise<RepoEntry>
@@ -131,6 +131,8 @@ export interface ApiEvents {
   'progress': Progress | null
   'askpass': AskPassRequest
   'menu': string
+  /** A folder passed to a second launch of the app ("Open with"). */
+  'open:path': string
 }
 
 /** Errors cross IPC as plain data so the renderer gets a clean message. */

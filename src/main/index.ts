@@ -1,19 +1,79 @@
-import { app, BrowserWindow, Menu, screen, shell } from 'electron'
-import { join } from 'node:path'
+import { existsSync, statSync } from 'node:fs'
+import { app, BrowserWindow, Menu, screen, session, shell } from 'electron'
+import { join, resolve } from 'node:path'
 import { startAskPass, stopAskPass } from './askpass'
-import { setGitEnv } from './git/exec'
+import { killRunning, setGitEnv } from './git/exec'
 import { devShot } from './devshot'
-import { askRenderer, registerIpc, send } from './ipc'
-import { getState, save } from './store'
+import { askRenderer, registerIpc, send, setLaunchPath } from './ipc'
+import { flush, getState, save } from './store'
 import { RepoWatcher } from './watcher'
 
 app.setAppUserModelId('fr.gaetandev.git')
 // Development aids (a separate profile, a dev server URL, scripted screenshots) never apply to an installed build.
 const dev = !app.isPackaged
 if (dev && process.env.GDG_USER_DATA) app.setPath('userData', process.env.GDG_USER_DATA)
-if (!app.requestSingleInstanceLock()) app.quit()
 
-const watcher = new RepoWatcher(e => send('repo:changed', e))
+process.on('unhandledRejection', reason => console.error('Unhandled rejection in main:', reason))
+
+/**
+ * A folder given on the command line ("Open with", a shortcut, `gaetandev-git .`):
+ * the first argument that names an existing directory. Development runs pass
+ * the app's own folder first, which is skipped.
+ */
+function folderArg(argv: string[], cwd = process.cwd()): string | null {
+  for (const arg of argv.slice(dev ? 2 : 1)) {
+    if (arg.startsWith('-')) continue
+    const full = resolve(cwd, arg)
+    try { if (existsSync(full) && statSync(full).isDirectory()) return full } catch { /* unreadable */ }
+  }
+  return null
+}
+
+// A second launch hands its folder to the running instance and exits before doing anything else.
+if (!app.requestSingleInstanceLock()) app.exit(0)
+else start()
+
+function start(): void {
+  const watcher = new RepoWatcher(e => send('repo:changed', e))
+  setLaunchPath(folderArg(process.argv))
+
+  app.whenReady().then(() => {
+    Menu.setApplicationMenu(null)
+    // The app needs no camera, microphone, location or notifications: refuse every request.
+    session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
+    session.defaultSession.setPermissionCheckHandler(() => false)
+    setGitEnv(startAskPass(askRenderer))
+    registerIpc(watcher)
+    createWindow()
+    app.on('activate', () => {
+      if (BrowserWindow.getAllWindows().length === 0) {
+        setGitEnv(startAskPass(askRenderer))
+        createWindow()
+      }
+    })
+  })
+
+  app.on('second-instance', (_e, argv, cwd) => {
+    const win = BrowserWindow.getAllWindows()[0]
+    if (!win) return
+    if (win.isMinimized()) win.restore()
+    win.focus()
+    const folder = folderArg(argv, cwd)
+    if (folder) send('open:path', folder)
+  })
+
+  app.on('window-all-closed', () => {
+    watcher.close()
+    if (process.platform !== 'darwin') app.quit()
+  })
+
+  app.on('will-quit', () => {
+    stopAskPass()
+    // Clones, fetches and pushes in flight would otherwise outlive the app and keep files locked.
+    killRunning()
+    flush()
+  })
+}
 
 function boundsFromState() {
   const w = getState().window
@@ -74,26 +134,3 @@ function createWindow(): BrowserWindow {
   else win.loadFile(join(__dirname, '../renderer/index.html'))
   return win
 }
-
-app.whenReady().then(() => {
-  Menu.setApplicationMenu(null)
-  setGitEnv(startAskPass(askRenderer))
-  registerIpc(watcher)
-  createWindow()
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
-  })
-})
-
-app.on('second-instance', () => {
-  const win = BrowserWindow.getAllWindows()[0]
-  if (!win) return
-  if (win.isMinimized()) win.restore()
-  win.focus()
-})
-
-app.on('window-all-closed', () => {
-  watcher.close()
-  stopAskPass()
-  if (process.platform !== 'darwin') app.quit()
-})
