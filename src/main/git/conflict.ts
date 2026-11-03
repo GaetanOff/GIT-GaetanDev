@@ -1,4 +1,3 @@
-import { spawn } from 'node:child_process'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -7,14 +6,8 @@ import { decode, detect, encode } from './encoding'
 import { git } from './exec'
 import { gitDir, operation } from './status'
 
-function blob(repo: string, sha: string): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const child = spawn('git', ['cat-file', 'blob', sha], { cwd: repo, windowsHide: true })
-    const parts: Buffer[] = []
-    child.stdout.on('data', (c: Buffer) => parts.push(c))
-    child.on('close', code => (code === 0 ? resolve(Buffer.concat(parts)) : reject(new Error(`Cannot read blob ${sha}`))))
-    child.on('error', reject)
-  })
+async function blob(repo: string, sha: string): Promise<Buffer> {
+  return (await git(repo, ['cat-file', 'blob', sha])).raw
 }
 
 /** Raw bytes of the index stages (1 base, 2 ours, 3 theirs); null where a side has no file. */

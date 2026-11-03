@@ -55,7 +55,11 @@ export class IgnoreCache {
     if (!candidates.length) return []
 
     const query = [...unknown, ...candidates]
-    const r = await git(this.repo, ['check-ignore', '-z', '--stdin'], { input: query.join('\0'), okCodes: [1] }).catch(() => null)
+    const r = await git(this.repo, ['check-ignore', '-z', '--stdin'], {
+      input: query.join('\0'), okCodes: [1],
+      // check-ignore rejects the literal pathspec mode every other call uses.
+      env: { GIT_LITERAL_PATHSPECS: '0' },
+    }).catch(() => null)
     if (!r) return candidates
     const ignored = new Set(r.stdout.split('\0').filter(Boolean))
     for (const d of unknown) this.dirs.set(d, ignored.has(d))

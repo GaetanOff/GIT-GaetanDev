@@ -54,6 +54,8 @@ export function git(cwd: string, args: string[], opts: ExecOptions = {}): Promis
         GIT_TERMINAL_PROMPT: '0',
         GIT_OPTIONAL_LOCKS: '0',
         GIT_PAGER: 'cat',
+        // Paths are file names, not patterns: discarding "a[1].txt" must not touch "a1.txt".
+        GIT_LITERAL_PATHSPECS: '1',
         ...opts.env,
       },
     })

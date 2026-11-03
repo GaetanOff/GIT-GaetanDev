@@ -1,4 +1,3 @@
-import { spawn } from 'node:child_process'
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { extname, join } from 'node:path'
@@ -148,13 +147,7 @@ async function sides(repo: string, source: DiffSource, d: FileDiff): Promise<{ b
     try {
       const size = +(await gitOut(repo, ['cat-file', '-s', spec])).trim()
       if (size > MAX_SIDE_BYTES) return null
-      return await new Promise<Buffer>((resolve, reject) => {
-        const child = spawn('git', ['cat-file', 'blob', spec], { cwd: repo, windowsHide: true })
-        const parts: Buffer[] = []
-        child.stdout.on('data', (c: Buffer) => parts.push(c))
-        child.on('close', code => (code === 0 ? resolve(Buffer.concat(parts)) : reject(new Error('cat-file failed'))))
-        child.on('error', reject)
-      })
+      return (await git(repo, ['cat-file', 'blob', spec])).raw
     } catch {
       return null
     }
