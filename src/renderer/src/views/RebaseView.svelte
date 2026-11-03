@@ -15,6 +15,8 @@
     date: number
     /** A merge commit: recreated as is, never edited. */
     merge: boolean
+    /** A structural line of git's --rebase-merges plan (label, reset, merge): fixed in place. */
+    line?: string
     /** Edited message: for a reword, or for a commit absorbing squashes. */
     message?: string
   }
@@ -41,14 +43,22 @@
       .catch(e => (base === 'HEAD~10' ? api['git:rebasePlan'](repo, null) : Promise.reject(e)))
       .then(p => {
         plan = p
-        rows = p.commits.map(c => ({ sha: c.sha, action: 'pick', subject: c.subject, body: c.body, author: c.author, date: c.date, merge: c.parents.length > 1 }))
-        selected = Math.max(0, rows.length - 1)
+        const row = (c: RebasePlan['commits'][number]): Row => ({ sha: c.sha, action: 'pick', subject: c.subject, body: c.body, author: c.author, date: c.date, merge: c.parents.length > 1 })
+        rows = p.structure
+          ? p.structure.map((it, k) => (it.kind === 'pick' ? row(p.commits.find(c => c.sha === it.sha)!) : { sha: `line-${k}`, action: 'pick', subject: it.text, body: '', author: '', date: 0, merge: false, line: it.text }))
+          : p.commits.map(row)
+        original = rows.map(r => r.sha).join(',')
+        selected = Math.max(0, rows.map(r => !r.line).lastIndexOf(true))
       })
       .catch(e => (error = asError(e).message))
   })
 
-  /** With merges in range git keeps its own order: no reordering, no squashing. */
-  const mergeMode = $derived(!!plan?.hasMerges)
+  /** With merges in range, git's plan is followed: commits move and squash within their own stretch. */
+  const mergeMode = $derived(!!plan?.structure)
+  let original = ''
+
+  /** Stretch index of each row: structural lines split the plan into independent parts. */
+  const segOf = (list: Row[], i: number) => list.slice(0, i).filter(r => r.line).length
 
   const fullMessage = (r: Row) => (r.body ? `${r.subject}\n\n${r.body}` : r.subject)
 
@@ -57,6 +67,7 @@
     const out: number[] = []
     let head = -1
     rows.forEach((r, i) => {
+      if (r.line) { head = -1; return out.push(-1) }
       if (r.action === 'drop') return out.push(-1)
       if (r.action === 'squash' || r.action === 'fixup') return out.push(head)
       head = i
@@ -65,14 +76,15 @@
     return out
   })
 
-  const firstKept = $derived(rows.findIndex(r => r.action !== 'drop'))
+  const commitRows = $derived(rows.filter(r => !r.line))
   const invalid = $derived(
-    firstKept < 0 ? 'Every commit is dropped.'
-      : rows[firstKept].action === 'squash' || rows[firstKept].action === 'fixup' ? 'The first kept commit cannot be squashed: move it, or pick it.'
+    !commitRows.some(r => r.action !== 'drop') ? 'Every commit is dropped.'
+      : rows.some((r, i) => (r.action === 'squash' || r.action === 'fixup') && !r.line && owner[i] < 0)
+        ? mergeMode ? 'A squashed commit needs a kept commit above it in the same part of the history.' : 'The first kept commit cannot be squashed: move it, or pick it.'
         : null,
   )
-  const resulting = $derived(rows.filter(r => r.action === 'pick' || r.action === 'reword').length)
-  const changed = $derived(!!plan && (rows.some((r, i) => r.action !== 'pick' || r.sha !== plan!.commits[i].sha || r.message !== undefined)))
+  const resulting = $derived(commitRows.filter(r => r.action === 'pick' || r.action === 'reword').length)
+  const changed = $derived(!!plan && (rows.map(r => r.sha).join(',') !== original || commitRows.some(r => r.action !== 'pick' || r.message !== undefined)))
 
   /** Members squashed into row `i`. */
   const members = (i: number) => rows.filter((_, j) => j !== i && owner[j] === i)
@@ -85,7 +97,7 @@
   }
 
   function setAction(i: number, action: RebaseAction) {
-    if (rows[i].merge || (mergeMode && (action === 'squash' || action === 'fixup'))) return
+    if (rows[i].merge || rows[i].line) return
     rows[i].action = action
     if (action === 'reword' && rows[i].message === undefined) rows[i].message = fullMessage(rows[i])
     if (action === 'pick' && !members(i).some(m => m.action === 'squash')) rows[i].message = undefined
@@ -97,10 +109,13 @@
   }
 
   function move(from: number, to: number) {
-    if (mergeMode) return
-    if (to < 0 || to >= rows.length || from === to) return
-    const [r] = rows.splice(from, 1)
-    rows.splice(to, 0, r)
+    if (to < 0 || to >= rows.length || from === to || rows[from].line) return
+    const next = [...rows]
+    const [r] = next.splice(from, 1)
+    next.splice(to, 0, r)
+    // Labels, resets and merges stay put: a commit only moves within its stretch.
+    if (segOf(next, to) !== segOf(rows, from)) return
+    rows = next
     selected = to
   }
 
@@ -109,13 +124,18 @@
     const keys: Record<string, RebaseAction> = { p: 'pick', r: 'reword', s: 'squash', f: 'fixup', d: 'drop' }
     if (e.altKey && e.key === 'ArrowUp') { e.preventDefault(); move(selected, selected - 1) }
     else if (e.altKey && e.key === 'ArrowDown') { e.preventDefault(); move(selected, selected + 1) }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); selected = Math.max(0, selected - 1) }
-    else if (e.key === 'ArrowDown') { e.preventDefault(); selected = Math.min(rows.length - 1, selected + 1) }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); selected = nextCommit(selected, -1) }
+    else if (e.key === 'ArrowDown') { e.preventDefault(); selected = nextCommit(selected, 1) }
     else if (keys[e.key.toLowerCase()] && !e.ctrlKey && !e.metaKey) { e.preventDefault(); setAction(selected, keys[e.key.toLowerCase()]) }
   }
 
+  function nextCommit(from: number, dir: 1 | -1): number {
+    for (let i = from + dir; i >= 0 && i < rows.length; i += dir) if (!rows[i].line) return i
+    return from
+  }
+
   function onDragStart(e: DragEvent, i: number) {
-    if (mergeMode) return e.preventDefault()
+    if (rows[i].line) return e.preventDefault()
     dragFrom = i
     e.dataTransfer!.effectAllowed = 'move'
     e.dataTransfer!.setData('text/plain', String(i))
@@ -145,6 +165,7 @@
       if (!ok) return
     }
     const steps: RebaseStep[] = rows.map((r, i) => {
+      if (r.line) return { sha: '', action: 'line', line: r.line }
       const hasSquash = members(i).some(m => m.action === 'squash')
       const message = r.action === 'reword' || ((r.action === 'pick') && hasSquash) ? r.message ?? defaultGroupMessage(i) : undefined
       return { sha: r.sha, action: r.action, message }
@@ -154,7 +175,7 @@
     const ok = await app.run('Rebasing', () => api['git:rebaseRun'](repo, plan!.base, steps).then(() => true))
     running = false
     if (ok) {
-      toast('success', `History rewritten: ${rows.length} commits → ${resulting}.`, { label: 'Undo', run: () => { app.view = 'undo' } })
+      toast('success', `History rewritten: ${commitRows.length} commits → ${resulting}.`, { label: 'Undo', run: () => { app.view = 'undo' } })
       app.closeTool()
       app.view = 'history'
     }
@@ -198,14 +219,21 @@
     <div class="body">
       <div class="list" bind:this={listEl} role="listbox" tabindex="0" aria-label="Commits to rewrite" onkeydown={onKey}>
         <div class="legend label">Oldest first · replayed top to bottom on {plan.base ? shortSha(plan.base) : 'the root'}</div>
-        {#if mergeMode}<div class="mnote"><Icon name="merge" size={13} />Merge commits are kept and recreated. Reorder, squash and fixup are off in this mode; pick, reword and drop still work.</div>{/if}
+        {#if mergeMode}<div class="mnote"><Icon name="merge" size={13} />Merges are kept: git's label, reset and merge steps stay in place. Commits can be reordered, squashed and dropped within their own part.</div>{/if}
         {#each rows as r, i (r.sha)}
           {@const t = tone(r.author)}
           {@const squashed = r.action === 'squash' || r.action === 'fixup'}
           {#if dropAt === i}<div class="drop-line"></div>{/if}
+          {#if r.line}
+            <div class="struct" class:branch={r.line.startsWith('#')} class:merge={r.line.startsWith('merge')}>
+              <Icon name={r.line.startsWith('merge') ? 'merge' : r.line.startsWith('#') ? 'branch' : r.line.startsWith('reset') ? 'undo' : 'tag'} size={12} />
+              <span class="mono truncate">{r.line.startsWith('#') ? r.line.slice(2) : r.line.replace(/ # .*$/, '')}</span>
+              {#if r.line.includes(' # ') && !r.line.startsWith('#')}<span class="dim truncate">{r.line.replace(/^.* # /, '')}</span>{/if}
+            </div>
+          {:else}
           <div
             class="row {r.action}" class:sel={i === selected} class:squashed class:dragging={dragFrom === i}
-            draggable={!mergeMode} role="option" aria-selected={i === selected} tabindex="-1"
+            draggable="true" role="option" aria-selected={i === selected} tabindex="-1"
             ondragstart={e => onDragStart(e, i)} ondragover={e => onDragOver(e, i)} ondrop={onDrop} ondragend={() => { dragFrom = null; dropAt = null }}
             onclick={() => { selected = i; listEl?.focus() }} onkeydown={() => undefined}
           >
@@ -214,7 +242,7 @@
               <span class="mergebadge"><Icon name="merge" size={12} />Merge · kept</span>
             {:else}
             <div class="actions">
-              {#each ACTIONS.filter(a => !mergeMode || (a.a !== 'squash' && a.a !== 'fixup')) as a}
+              {#each ACTIONS as a}
                 <button class="act {a.a}" class:on={r.action === a.a} title="{a.hint} ({a.key})" onclick={e => { e.stopPropagation(); selected = i; setAction(i, a.a) }}>{a.label}</button>
               {/each}
             </div>
@@ -227,6 +255,7 @@
             <span class="date">{relativeTime(r.date)}</span>
             <span class="sha mono">{shortSha(r.sha)}</span>
           </div>
+          {/if}
         {/each}
         {#if dropAt === rows.length}<div class="drop-line"></div>{/if}
       </div>
@@ -244,9 +273,9 @@
         {/if}
 
         <div class="summary">
-          <div class="srow"><span>Commits</span><b>{rows.length} → {resulting}</b></div>
-          <div class="srow"><span>Dropped</span><b>{rows.filter(r => r.action === 'drop').length}</b></div>
-          <div class="srow"><span>Squashed</span><b>{rows.filter(r => r.action === 'squash' || r.action === 'fixup').length}</b></div>
+          <div class="srow"><span>Commits</span><b>{commitRows.length} → {resulting}</b></div>
+          <div class="srow"><span>Dropped</span><b>{commitRows.filter(r => r.action === 'drop').length}</b></div>
+          <div class="srow"><span>Squashed</span><b>{commitRows.filter(r => r.action === 'squash' || r.action === 'fixup').length}</b></div>
           {#if plan.pushed}<div class="warn"><Icon name="alert" size={13} />{plan.pushed} already pushed: a force push will be needed.</div>{/if}
           {#if invalid}<div class="err">{invalid}</div>{/if}
           <p class="hint">Local changes are stashed and restored automatically. If a commit conflicts, resolve it in Changes and continue. Undo history can bring the old commits back.</p>
@@ -282,6 +311,10 @@
   .row.drop { background: rgba(239, 68, 68, 0.04); }
   .drop-line { height: 2px; margin: -2px 0 1px; border-radius: 1px; background: var(--green); }
   .grip { color: var(--text-dim); cursor: grab; display: flex; }
+  .struct { display: flex; align-items: center; gap: 8px; height: 24px; margin: 4px 0 4px 4px; padding: 0 10px; border-left: 2px solid var(--border-strong); color: var(--text-faint); font-size: 11.5px; }
+  .struct.merge { border-color: var(--purple); color: #d8b4fe; }
+  .struct.branch { border-color: transparent; padding-left: 0; margin-top: 12px; color: var(--text-muted); font-weight: 700; }
+  .struct .dim { color: var(--text-dim); }
   .mnote { display: flex; align-items: center; gap: 8px; margin: 0 2px 8px; padding: 8px 10px; border-radius: var(--radius); background: var(--purple-soft); color: #e9d5ff; font-size: 12px; }
   .mergebadge { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 10px; border-radius: var(--radius-sm); background: var(--purple-soft); color: #d8b4fe; font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; flex-shrink: 0; }
   .actions { display: flex; gap: 1px; padding: 2px; border-radius: var(--radius-sm); background: var(--surface-2); flex-shrink: 0; }
