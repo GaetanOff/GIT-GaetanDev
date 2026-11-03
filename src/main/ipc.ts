@@ -1,7 +1,7 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
 import { existsSync, mkdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, join } from 'node:path'
+import { basename, isAbsolute, join, posix } from 'node:path'
 import type { Api, ApiChannel, ApiEvents, IpcEnvelope } from '@shared/api'
 import { DEFAULT_SETTINGS, type Progress, type RepoImport, type Settings } from '@shared/types'
 import { registerPending, respond } from './askpass'
@@ -203,7 +203,7 @@ export function registerIpc(watcher: RepoWatcher): void {
         if (!trustedSender(e)) throw new GitError('Request refused: it does not come from the app window.')
         checkArgs(channel, args)
         const run = () => (fn as (...a: unknown[]) => Promise<unknown>)(...args)
-        return { ok: true, value: await (WRITES.has(channel) ? serial(args[0] as string, run) : run()) }
+        return { ok: true, value: await schedule(channel, args[0] as string, run) }
       } catch (e) {
         const err = e as GitError
         return { ok: false, error: { message: err.message ?? String(e), code: err.code, details: err.details || undefined } }
@@ -225,28 +225,44 @@ function trustedSender(e: IpcMainInvokeEvent): boolean {
 }
 
 /**
- * Channels that write the index, HEAD or the working tree. Two at once on the
- * same repository fail on index.lock or interleave (staging during a pull, a
- * discard during a stash), so they run one after another per repository;
- * reads and network-only commands stay concurrent.
+ * Channels that write the index, HEAD, the working tree, local refs or the
+ * config. Two at once on the same repository fail on a lock (index.lock, a
+ * ref, config.lock) or interleave (staging during a pull, a discard during a
+ * stash), so they run one after another per repository; reads stay concurrent.
  */
 const WRITES = new Set([
   'git:stage', 'git:unstage', 'git:stageLines', 'git:unstageLines', 'git:discard', 'git:discardLines', 'git:ignore',
   'git:commit', 'git:undoCommit', 'git:resolve', 'git:continue', 'git:abort', 'git:skip', 'git:resolveContent', 'git:resolveWhole',
   'git:cherryPick', 'git:revert', 'git:reset', 'git:checkoutCommit', 'git:restore', 'git:rebaseRun', 'git:rebasePlan',
-  'git:checkout', 'git:createBranch', 'git:merge', 'git:rebase', 'git:stash', 'git:stashApply', 'git:stashDrop', 'git:pull',
-  'git:submoduleUpdate', 'git:lfsPull',
+  'git:checkout', 'git:createBranch', 'git:renameBranch', 'git:deleteBranch', 'git:restoreBranch', 'git:merge', 'git:rebase',
+  'git:createTag', 'git:deleteTag', 'git:stash', 'git:stashApply', 'git:stashDrop', 'git:addRemote', 'git:removeRemote', 'git:pull',
+  'git:submoduleUpdate', 'git:lfsPull', 'git:worktreeAdd', 'git:worktreeRemove', 'repo:setFsmonitor',
 ])
-const queues = new Map<string, Promise<unknown>>()
+/**
+ * Channels that talk to a remote and update remote-tracking refs: two at once
+ * fail on ref locks ("cannot lock ref 'refs/remotes/origin/main'"), as when
+ * the background fetch meets a pull. They run one at a time per repository on
+ * a queue of their own, so a slow fetch or push never holds up staging or a
+ * commit. A pull is on both: the network first, then the writes.
+ */
+const NETWORK = new Set(['git:fetch', 'git:pull', 'git:push', 'git:pushTag', 'git:deleteRemoteBranch', 'git:remoteSearch'])
+const writeQueues = new Map<string, Promise<unknown>>()
+const networkQueues = new Map<string, Promise<unknown>>()
 
-/** Runs `fn` after every earlier write on the same repository has settled. */
-function serial<T>(repo: string, fn: () => Promise<T>): Promise<T> {
+/** Runs `fn` after every earlier call on the same queue and repository has settled. */
+function serial<T>(queues: Map<string, Promise<unknown>>, repo: string, fn: () => Promise<T>): Promise<T> {
   const key = repo.replace(/\\/g, '/').toLowerCase()
   const result = (queues.get(key) ?? Promise.resolve()).catch(() => undefined).then(fn)
   const tail = result.catch(() => undefined)
   queues.set(key, tail)
   tail.then(() => { if (queues.get(key) === tail) queues.delete(key) })
   return result
+}
+
+/** Runs a channel's handler on the queues it belongs to (none for reads). */
+export function schedule<T>(channel: string, repo: string, fn: () => Promise<T>): Promise<T> {
+  const write = WRITES.has(channel) ? () => serial(writeQueues, repo, fn) : fn
+  return NETWORK.has(channel) ? serial(networkQueues, repo, write) : write()
 }
 
 /** Arguments, by position, that name a revision, branch, tag or remote. */
@@ -256,6 +272,21 @@ const REF_ARGS: Record<string, number[]> = {
   'git:checkout': [1], 'git:createBranch': [1, 2], 'git:renameBranch': [1, 2], 'git:deleteBranch': [1], 'git:restoreBranch': [1, 2],
   'git:deleteRemoteBranch': [1, 2], 'git:merge': [1], 'git:rebase': [1], 'git:createTag': [1, 2], 'git:deleteTag': [1],
   'git:pushTag': [1, 2], 'git:addRemote': [1, 2], 'git:removeRemote': [1], 'git:worktreeAdd': [2, 4],
+}
+
+/** Arguments, by position, that name files of the repository (a list of them, for some). */
+const PATH_ARGS: Record<string, number[]> = {
+  'git:stage': [1], 'git:unstage': [1], 'git:discard': [1], 'git:stash': [3],
+  'git:stageLines': [1], 'git:unstageLines': [1, 4], 'git:discardLines': [1], 'git:resolve': [1], 'git:conflict': [1],
+  'git:resolveContent': [1], 'git:resolveWhole': [1], 'git:fileLog': [1], 'git:blame': [1], 'git:submoduleUpdate': [1],
+  'shell:reveal': [1], 'shell:editor': [1],
+}
+
+/** A path relative to the repository that stays inside it: files are read and written at `join(repo, path)`. */
+function insideRepo(path: string): boolean {
+  if (!path || path.includes('\0') || isAbsolute(path) || /^[a-z]:/i.test(path)) return false
+  const parts = posix.normalize(path.replace(/\\/g, '/'))
+  return parts !== '..' && !parts.startsWith('../')
 }
 
 /** Channels whose first argument may be null (the global identity, no repo to watch). */
@@ -269,7 +300,7 @@ const OPENS_FOLDER = new Set(['shell:reveal', 'shell:editor', 'shell:terminal'])
  * compromised page could otherwise run git in any folder or point the
  * editor command at any program.
  */
-function checkArgs(channel: string, args: unknown[]): void {
+export function checkArgs(channel: string, args: unknown[]): void {
   const repoFirst = channel.startsWith('git:') || OPENS_FOLDER.has(channel) ||
     ['watch:set', 'provider:url', 'repo:fsmonitor', 'repo:setFsmonitor'].includes(channel)
   if (repoFirst) {
@@ -289,10 +320,23 @@ function checkArgs(channel: string, args: unknown[]): void {
     const v = args[i]
     return Array.isArray(v) ? v : [v]
   })
-  if (channel === 'git:diff') refs.push((args[1] as { ref?: unknown } | undefined)?.ref)
+  // A file path leaving the repository ("../…", "C:\…") would be read or written out there.
+  const paths = (PATH_ARGS[channel] ?? []).flatMap(i => {
+    const v = args[i]
+    return Array.isArray(v) ? v : [v]
+  })
+  if (channel === 'git:diff') {
+    const source = args[1] as Partial<Record<'sha' | 'from' | 'to' | 'path' | 'oldPath' | 'index', unknown>> | undefined
+    refs.push(source?.sha, source?.from, source?.to)
+    paths.push(source?.path, source?.oldPath)
+    if (source?.index !== undefined && !(Number.isInteger(source.index) && (source.index as number) >= 0)) throw new GitError('Invalid stash entry.')
+  }
   if (channel === 'git:restore') refs.push((args[1] as { sha?: unknown; branch?: unknown } | undefined)?.sha, (args[1] as { branch?: unknown } | undefined)?.branch)
   for (const r of refs) {
     if (typeof r === 'string' && (r.startsWith('-') || r.includes('\0'))) throw new GitError(`"${r}" is not a valid name or revision.`)
+  }
+  for (const p of paths) {
+    if (p !== undefined && p !== null && (typeof p !== 'string' || !insideRepo(p))) throw new GitError(`"${String(p)}" must be a file inside the repository.`)
   }
   if ((channel === 'git:stashApply' || channel === 'git:stashDrop') && !(Number.isInteger(args[1]) && (args[1] as number) >= 0)) {
     throw new GitError('Invalid stash entry.')

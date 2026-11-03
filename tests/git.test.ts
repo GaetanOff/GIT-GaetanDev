@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, existsSync, readFileSync, renameSync } from 'node:fs'
+import { copyFileSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { selectionFingerprint } from '@shared/types'
@@ -19,7 +19,7 @@ vi.mock('electron', () => ({
 const ops = await import('../src/main/git/ops')
 const { status } = await import('../src/main/git/status')
 const { diff } = await import('../src/main/git/diff')
-const { conflict } = await import('../src/main/git/conflict')
+const { conflict, resolveContent } = await import('../src/main/git/conflict')
 const { refs } = await import('../src/main/git/refs')
 const { rebasePlan, rebaseRun } = await import('../src/main/git/rebase')
 const { git, assertRefName } = await import('../src/main/git/exec')
@@ -61,6 +61,17 @@ describe('discard', () => {
     expect(readFileSync(join(repo, 'new.txt.trashed'), 'utf8')).toBe('never committed\n')
     expect(sh(repo, 'ls-files')).toBe('a.txt')
   })
+
+  it('brings back a file whose deletion was staged while it stays on disk', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'a\n' })
+    sh(repo, 'rm', '--cached', '-q', 'a.txt')
+    write(repo, 'a.txt', 'changed\n')
+    await ops.discard(repo, ['a.txt'])
+    expect(changed(repo)).toEqual(['a.txt.trashed'])
+    expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('a\n')
+    expect(readFileSync(join(repo, 'a.txt.trashed'), 'utf8')).toBe('changed\n')
+  })
 })
 
 describe('stash', () => {
@@ -90,6 +101,32 @@ describe('stash', () => {
     write(repo, 'a.txt', 'one\n')
     await ops.stash(repo, 'one', false)
     await expect(ops.stashDrop(repo, 0, 'f'.repeat(40))).rejects.toThrow(/stash list changed/)
+  })
+
+  // The tracked changes are already back when the untracked file is refused: applying again only adds a misleading error.
+  it('reports an untracked file in the way instead of applying the stash a second time', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': '1\n' })
+    write(repo, 'a.txt', '2\n')
+    write(repo, 'u.txt', 'u\n')
+    sh(repo, 'stash', 'push', '-q', '-u')
+    write(repo, 'u.txt', 'other\n')
+    const err = await ops.stashApply(repo, 0, true).then(() => null, (e: Error) => e)
+    expect(err?.message).toBe('The changes are back, but untracked files of the stash are in the way: u.txt. The stash is kept.')
+    expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('2\n')
+    expect(sh(repo, 'stash', 'list')).not.toBe('')
+  })
+
+  it('still falls back to a plain apply when the staged state cannot be restored', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': '1\n' })
+    write(repo, 'a.txt', '2\n')
+    sh(repo, 'add', 'a.txt')
+    sh(repo, 'stash', 'push', '-q')
+    commit(repo, 'moved on', { 'a.txt': '3\n' })
+    await expect(ops.stashApply(repo, 0, false)).rejects.toThrow()
+    // The plain apply ran: a merge conflict, not "conflicts in index".
+    expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toMatch(/^<<<<<<< /m)
   })
 })
 
@@ -162,6 +199,18 @@ describe('edit history', () => {
     expect(sh(repo, 'show', ':a.txt')).toBe('2')
     expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('3\n')
     expect(sh(repo, 'stash', 'list')).toBe('')
+  })
+
+  it('refuses steps that would run a command', async () => {
+    const repo = makeRepo()
+    for (const i of [1, 2]) commit(repo, `c${i}`, { 'f.txt': `${i}\n` })
+    const plan = await rebasePlan(repo, 'HEAD~1')
+    const picks = plan.commits.map(c => ({ sha: c.sha, action: 'pick' as const }))
+    const exec = { sha: '', action: 'line' as const, line: 'exec git tag hacked' }
+    await expect(rebaseRun(repo, plan.base, [exec, ...picks], plan.head)).rejects.toThrow(/not a step/)
+    const smuggled = { sha: `${plan.commits[0].sha}\nexec git tag hacked`, action: 'pick' as const }
+    await expect(rebaseRun(repo, plan.base, [smuggled], plan.head)).rejects.toThrow(/not a step/)
+    expect(sh(repo, 'tag')).toBe('')
   })
 })
 
@@ -246,6 +295,36 @@ describe('conflicts', () => {
     expect(first.stages).not.toBe(second.stages)
     expect((await conflict(repo, 'f.txt')).stages).toBe(second.stages)
   })
+
+  it('finds a conflict on the first line of a UTF-8 file with a BOM', async () => {
+    const repo = makeRepo()
+    const bom = '﻿'
+    commit(repo, 'base', { 'a.cs': `${bom}using A;\nclass X {}\n` })
+    sh(repo, 'checkout', '-q', '-b', 'other')
+    commit(repo, 'theirs', { 'a.cs': `${bom}using B;\nclass X {}\n` })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'ours', { 'a.cs': `${bom}using C;\nclass X {}\n` })
+    await git(repo, ['merge', 'other'], { okCodes: [1] })
+    const f = await conflict(repo, 'a.cs')
+    expect(f.encoding).toBe('utf8-bom')
+    expect(f.chunks[0]).toEqual({ kind: 'conflict', ours: ['using C;'], base: ['using A;'], theirs: ['using B;'] })
+    await resolveContent(repo, 'a.cs', 'using C;\nclass X {}\n', f.encoding)
+    expect(readFileSync(join(repo, 'a.cs'), 'utf8')).toBe(`${bom}using C;\nclass X {}\n`)
+  })
+
+  it('reads each side of a conflict in its own encoding', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'name = x\n' })
+    sh(repo, 'checkout', '-q', '-b', 'other')
+    writeFileSync(join(repo, 'a.txt'), Buffer.from('name = caf\xe9\n', 'latin1'))
+    commit(repo, 'theirs')
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'ours', { 'a.txt': 'name = cafe\n' })
+    await git(repo, ['merge', 'other'], { okCodes: [1] })
+    const f = await conflict(repo, 'a.txt')
+    expect(f.encoding).toBe('windows-1252')
+    expect(f.chunks[0]).toEqual({ kind: 'conflict', ours: ['name = cafe'], base: ['name = x'], theirs: ['name = café'] })
+  })
 })
 
 describe('history', () => {
@@ -284,6 +363,15 @@ describe('history', () => {
     } finally {
       if (saved !== undefined) process.env.NoDefaultCurrentDirectoryInExePath = saved
     }
+  })
+
+  it('survives git exiting before it reads its input', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base')
+    const r = await git(repo, ['rev-parse', 'HEAD'], { input: 'x'.repeat(20_000_000) })
+    expect(r.stdout.trim()).toMatch(/^[0-9a-f]{40}$/)
+    // A write error on stdin would surface on the next turns of the event loop.
+    await new Promise(resolve => setTimeout(resolve, 200))
   })
 
   it('reports output cut at maxBytes', async () => {

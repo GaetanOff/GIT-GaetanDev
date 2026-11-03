@@ -8,6 +8,10 @@
   const H = 28
   const x = (i: number) => W / 2 + i * W
   const mid = H / 2
+  // The cell is `lanes` wide: edges entirely past it would be drawn only to be clipped.
+  const shown = (edges: GraphRow['top']) => edges.filter(e => e.from < lanes || e.to < lanes)
+  const top = $derived(shown(row.top))
+  const bottom = $derived(shown(row.bottom))
 
   function path(from: number, to: number, y0: number, y1: number): string {
     if (from === to) return `M${x(from)} ${y0}V${y1}`
@@ -17,10 +21,10 @@
 </script>
 
 <svg width={Math.max(lanes, 1) * W} height={H} class="graph" aria-hidden="true">
-  {#each row.top as e}
+  {#each top as e}
     <path d={path(e.from, e.to, 0, mid)} stroke={laneColor(e.color)} />
   {/each}
-  {#each row.bottom as e}
+  {#each bottom as e}
     <path d={path(e.from, e.to, mid, H)} stroke={laneColor(e.color)} />
   {/each}
   {#if head}

@@ -109,6 +109,10 @@ export function git(cwd: string, args: string[], opts: ExecOptions = {}): Promis
         // Except for stash, whose own pathspec magic (":/" to clear stashed untracked files)
         // breaks in literal mode: callers give it ":(literal)" paths instead.
         GIT_LITERAL_PATHSPECS: subcommand(args) === 'stash' ? '0' : '1',
+        // A stalled HTTPS transfer (under 1 KB/s for a minute) fails instead of holding its queue
+        // until the app restarts; sign-in prompts come before the transfer and are not timed.
+        GIT_HTTP_LOW_SPEED_LIMIT: process.env.GIT_HTTP_LOW_SPEED_LIMIT ?? '1000',
+        GIT_HTTP_LOW_SPEED_TIME: process.env.GIT_HTTP_LOW_SPEED_TIME ?? '60',
         ...opts.env,
       },
     })
@@ -158,6 +162,9 @@ export function git(cwd: string, args: string[], opts: ExecOptions = {}): Promis
       reject(toGitError(stdout, stderr, exit))
     })
 
+    // Git may exit before reading all its input (a lock held elsewhere, a failing hook): the write then
+    // fails, which 'close' already reports through the exit code. Unhandled, it would crash the main process.
+    child.stdin.on('error', () => undefined)
     if (typeof opts.input === 'string') child.stdin.end(opts.input, 'utf8')
     else if (opts.input) child.stdin.end(opts.input)
     else child.stdin.end()

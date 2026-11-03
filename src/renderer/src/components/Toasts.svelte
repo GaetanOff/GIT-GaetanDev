@@ -12,7 +12,8 @@
       <div class="body">
         <div class="msg">{t.message}</div>
         {#if t.action}
-          <button class="act" onclick={() => { t.action!.run(); dismissToast(t.id) }}>{t.action.label}</button>
+          <!-- Once: a second click during the exit animation would run it again. -->
+          <button class="act" disabled={t.leaving} onclick={() => { if (t.leaving) return; dismissToast(t.id); t.action!.run() }}>{t.action.label}</button>
         {/if}
       </div>
       <button class="close" onclick={() => dismissToast(t.id)} aria-label="Dismiss"><Icon name="x" size={13} /></button>

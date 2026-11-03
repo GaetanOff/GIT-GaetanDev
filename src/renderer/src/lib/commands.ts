@@ -128,8 +128,9 @@ export const COMMANDS: Command[] = [
   { id: 'pull', title: 'Pull', group: 'Sync', icon: 'pull', keys: 'mod+shift+l', when: () => onBranch() && !!app.status?.upstream, run: () => app.pull() },
   { id: 'push', title: 'Push', group: 'Sync', icon: 'push', keys: 'mod+shift+u', when: () => onBranch() && hasRemote(), run: () => app.push() },
   { id: 'forcePush', title: 'Force push (with lease)', group: 'Sync', icon: 'push', when: () => onBranch() && !!app.status?.upstream, run: async () => {
+    const id = app.repo?.id
     const ok = await confirm({ title: 'Force push?', message: 'This overwrites the remote branch with your local one. It fails safely if someone pushed in the meantime.', confirmLabel: 'Force push', danger: true })
-    if (ok) await app.push(true)
+    if (ok && app.stillOn(id)) await app.push(true)
   } },
   { id: 'newBranch', title: 'New branch…', group: 'Branch', icon: 'plus', keys: 'mod+shift+n', when: hasRepo, run: () => openDialog({ kind: 'branch' }) },
   { id: 'renameBranch', title: 'Rename current branch…', group: 'Branch', icon: 'edit', when: onBranch, run: renameCurrentBranch },
@@ -175,7 +176,8 @@ function startRebase(): void {
 
 export async function undoLastOperation(): Promise<void> {
   if (!app.repo) return
-  const ops = await api['git:operations'](app.repo.path)
+  const { id, path } = app.repo
+  const ops = await api['git:operations'](path)
   const op = ops[0]
   if (!op?.before.sha) return void toast('info', 'Nothing to undo.')
   const ok = await confirm({
@@ -183,7 +185,7 @@ export async function undoLastOperation(): Promise<void> {
     message: `Go back to ${op.before.branch ?? 'detached HEAD'} at ${op.before.sha.slice(0, 7)}. Uncommitted changes are kept, and you can redo.`,
     confirmLabel: 'Undo',
   })
-  if (ok) await app.restore(op.before, `before “${op.title}”`)
+  if (ok) await app.restore(op.before, `before “${op.title}”`, id)
 }
 
 export function isTyping(): boolean {
