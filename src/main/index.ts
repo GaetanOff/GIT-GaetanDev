@@ -8,7 +8,9 @@ import { getState, save } from './store'
 import { RepoWatcher } from './watcher'
 
 app.setAppUserModelId('fr.gaetandev.git')
-if (process.env.GDG_USER_DATA) app.setPath('userData', process.env.GDG_USER_DATA)
+// Development aids (a separate profile, a dev server URL, scripted screenshots) never apply to an installed build.
+const dev = !app.isPackaged
+if (dev && process.env.GDG_USER_DATA) app.setPath('userData', process.env.GDG_USER_DATA)
 if (!app.requestSingleInstanceLock()) app.quit()
 
 const watcher = new RepoWatcher(e => send('repo:changed', e))
@@ -67,8 +69,8 @@ function createWindow(): BrowserWindow {
   })
   win.on('focus', () => win.webContents.send('menu', 'focus'))
 
-  devShot(win)
-  if (process.env.ELECTRON_RENDERER_URL) win.loadURL(process.env.ELECTRON_RENDERER_URL)
+  if (dev) devShot(win)
+  if (dev && process.env.ELECTRON_RENDERER_URL) win.loadURL(process.env.ELECTRON_RENDERER_URL)
   else win.loadFile(join(__dirname, '../renderer/index.html'))
   return win
 }

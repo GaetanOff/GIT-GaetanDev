@@ -8,7 +8,7 @@ import { writeFileSync } from 'node:fs'
  */
 export function devShot(win: BrowserWindow): void {
   const target = process.env.GDG_SHOT
-  if (!target) return
+  if (!target || app.isPackaged) return
   win.webContents.once('did-finish-load', async () => {
     await new Promise(r => setTimeout(r, +(process.env.GDG_SHOT_DELAY ?? 2500)))
     if (process.env.GDG_SHOT_JS) {
