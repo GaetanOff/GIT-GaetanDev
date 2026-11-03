@@ -10,6 +10,16 @@
     op === 'merge' ? 'Merge in progress' : op === 'rebase' ? `Rebase in progress${app.status?.operationStep ? ` · ${app.status.operationStep}` : ''}` : op === 'cherry-pick' ? 'Cherry-pick in progress' : 'Revert in progress',
   )
 
+  async function skip() {
+    const ok = await confirm({
+      title: 'Skip this commit?',
+      message: `The commit ${op === 'rebase' ? 'being replayed' : 'being applied'} is left out, along with any resolution made for it. The ${op} then goes on with the next one.`,
+      confirmLabel: 'Skip commit',
+      danger: true,
+    })
+    if (ok) await app.run('Skipping', () => api['git:skip'](app.repo!.path))
+  }
+
   async function abort() {
     const ok = await confirm({ title: `Abort ${op}?`, message: 'The repository goes back to how it was before it started. Resolutions made so far are lost.', confirmLabel: 'Abort', danger: true })
     if (ok) await app.run('Aborting', () => api['git:abort'](app.repo!.path))
@@ -27,7 +37,7 @@
     </div>
     <div class="row acts">
       <button class="btn btn-danger sm" onclick={abort}>Abort</button>
-      {#if op !== 'merge'}<button class="btn btn-secondary sm" onclick={() => app.run('Skipping', () => api['git:skip'](app.repo!.path))}>Skip</button>{/if}
+      {#if op !== 'merge'}<button class="btn btn-secondary sm" onclick={skip}>Skip</button>{/if}
       <span class="grow"></span>
       <button class="btn btn-primary sm" disabled={!!conflicts} onclick={() => app.run('Continuing', () => api['git:continue'](app.repo!.path))}>
         {op === 'merge' ? 'Commit merge' : 'Continue'}

@@ -33,6 +33,16 @@ export async function ignorePattern(pattern: string): Promise<void> {
   await app.run('Updating .gitignore', () => api['git:ignore'](repo(), pattern), { success: `Added “${pattern}” to .gitignore.` })
 }
 
+/** Takes one side of a conflicted file whole; any hand edits in the file are replaced, so ask first. */
+export async function resolveWith(path: string, side: 'ours' | 'theirs'): Promise<void> {
+  const ok = await confirm({
+    title: side === 'ours' ? 'Use your version?' : 'Use their version?',
+    message: `“${basename(path)}” becomes ${side === 'ours' ? 'your' : 'their'} version as a whole. Edits you made to it while resolving are replaced.`,
+    confirmLabel: side === 'ours' ? 'Use mine' : 'Use theirs',
+  })
+  if (ok) await app.run('Resolving', () => api['git:resolve'](repo(), path, side))
+}
+
 export function fileMenu(file: FileChange, area: Area, selection: string[]): MenuItem[] {
   const paths = selection.includes(file.path) ? selection : [file.path]
   const many = paths.length > 1
@@ -42,8 +52,8 @@ export function fileMenu(file: FileChange, area: Area, selection: string[]): Men
 
   if (area === 'conflicted') {
     items.push(
-      { label: 'Use my version (ours)', icon: 'check', run: () => app.run('Resolving', () => api['git:resolve'](repo(), file.path, 'ours')) },
-      { label: 'Use their version (theirs)', icon: 'check', run: () => app.run('Resolving', () => api['git:resolve'](repo(), file.path, 'theirs')) },
+      { label: 'Use my version (ours)', icon: 'check', run: () => resolveWith(file.path, 'ours') },
+      { label: 'Use their version (theirs)', icon: 'check', run: () => resolveWith(file.path, 'theirs') },
       { label: 'Mark as resolved', icon: 'check', hint: 'Stage', run: () => stagePaths([file.path]) },
       'sep',
     )
