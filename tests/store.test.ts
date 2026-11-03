@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, statSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
@@ -18,5 +18,14 @@ describe('saved state', () => {
     store.flush()
     await new Promise(resolve => setTimeout(resolve, 400))
     expect(statSync(join(userData, 'state.json')).isDirectory()).toBe(true)
+  })
+
+  it('drops hand-edited settings a setting may not hold', async () => {
+    rmSync(join(userData, 'state.json'), { recursive: true, force: true })
+    writeFileSync(join(userData, 'state.json'), JSON.stringify({ repos: [], settings: { diffContext: 2.5, editorCommand: null, pullMode: 'rebase', autoFetchMinutes: -1 } }))
+    vi.resetModules()
+    const store = await import('../src/main/store')
+    const s = store.getState().settings
+    expect([s.diffContext, s.editorCommand, s.pullMode, s.autoFetchMinutes]).toEqual([3, '', 'rebase', 5])
   })
 })

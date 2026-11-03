@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { closeSync, fsyncSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeSync } from 'node:fs'
 import { open, rename, rm } from 'node:fs/promises'
 import { basename, join, normalize } from 'node:path'
-import { DEFAULT_SETTINGS, type RepoEntry, type Settings } from '@shared/types'
+import { DEFAULT_SETTINGS, isSettingKey, validSetting, type RepoEntry, type Settings } from '@shared/types'
 
 interface State {
   repos: RepoEntry[]
@@ -13,6 +13,16 @@ interface State {
 }
 
 const file = () => join(app.getPath('userData'), 'state.json')
+
+/** Saved settings, each one kept only if it is a value the setting may hold (a hand edit may not be). */
+function validSettings(saved: unknown): Settings {
+  const settings = { ...DEFAULT_SETTINGS }
+  if (!saved || typeof saved !== 'object') return settings
+  for (const [key, value] of Object.entries(saved)) {
+    if (isSettingKey(key) && validSetting(key, value)) (settings as Record<string, unknown>)[key] = value
+  }
+  return settings
+}
 const fresh = (): State => ({ repos: [], lastRepo: null, settings: { ...DEFAULT_SETTINGS } })
 
 const RETRYABLE = new Set(['EPERM', 'EBUSY', 'EACCES'])
@@ -52,7 +62,7 @@ function load(): State {
     return {
       repos: Array.isArray(raw.repos) ? raw.repos.filter(isRepo) : [],
       lastRepo: typeof raw.lastRepo === 'string' ? raw.lastRepo : null,
-      settings: { ...DEFAULT_SETTINGS, ...(raw.settings && typeof raw.settings === 'object' ? raw.settings : {}) },
+      settings: validSettings(raw.settings),
       window: raw.window && typeof raw.window === 'object' ? raw.window : undefined,
     }
   } catch {

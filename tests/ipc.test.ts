@@ -29,6 +29,16 @@ describe('argument checks', () => {
   })
 })
 
+describe('settings checks', () => {
+  it('takes only values a setting may hold', () => {
+    for (const patch of [{ diffContext: 2.5 }, { autoFetchMinutes: -1 }, { pullMode: 'octopus' }, { sidebarWidth: Infinity }, { editorCommand: null }]) {
+      expect(() => checkArgs('app:settings', [patch]), JSON.stringify(patch)).toThrow(/not a valid value/)
+    }
+    expect(() => checkArgs('app:settings', [JSON.parse('{"__proto__": {"x": 1}}')])).toThrow(/Unknown setting/)
+    expect(() => checkArgs('app:settings', [{ diffContext: 5, pullMode: 'rebase', autoFetchMinutes: 0, listWidth: 360 }])).not.toThrow()
+  })
+})
+
 describe('scheduling', () => {
   const tick = () => new Promise(resolve => setTimeout(resolve, 20))
 

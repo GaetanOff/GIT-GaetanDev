@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, isAbsolute, join, posix } from 'node:path'
 import type { Api, ApiChannel, ApiEvents, IpcEnvelope } from '@shared/api'
-import { DEFAULT_SETTINGS, type Progress, type RepoImport, type Settings } from '@shared/types'
+import { isSettingKey, validSetting, type Progress, type RepoImport } from '@shared/types'
 import { registerPending, respond } from './askpass'
 import { blame, fileLog } from './git/blame'
 import { compare } from './git/compare'
@@ -392,8 +392,8 @@ export function checkArgs(channel: string, args: unknown[]): void {
     const patch = args[0]
     if (!patch || typeof patch !== 'object') throw new GitError('Invalid settings.')
     for (const [key, value] of Object.entries(patch)) {
-      if (!(key in DEFAULT_SETTINGS)) throw new GitError(`Unknown setting "${key}".`)
-      if (typeof value !== typeof DEFAULT_SETTINGS[key as keyof Settings]) throw new GitError(`Setting "${key}" has the wrong type.`)
+      if (!isSettingKey(key)) throw new GitError(`Unknown setting "${key}".`)
+      if (!validSetting(key, value)) throw new GitError(`"${String(value)}" is not a valid value for the setting "${key}".`)
     }
   }
 }

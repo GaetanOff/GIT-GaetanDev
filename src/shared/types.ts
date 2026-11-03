@@ -53,6 +53,27 @@ export const DEFAULT_SETTINGS: Settings = {
   syntaxHighlight: true,
 }
 
+const int = (min: number, max: number) => (v: unknown) => Number.isInteger(v) && (v as number) >= min && (v as number) <= max
+const oneOf = (...values: string[]) => (v: unknown) => values.includes(v as string)
+const bool = (v: unknown) => typeof v === 'boolean'
+const str = (v: unknown) => typeof v === 'string'
+
+/**
+ * What each setting may hold. The UI offers nothing else, but a hand-edited
+ * state.json or a compromised page could: a fractional diff context broke
+ * every diff ("-U2.5"), a negative fetch interval fetched every millisecond.
+ */
+const SETTING_RULES: { [K in keyof Settings]: (v: unknown) => boolean } = {
+  autoFetchMinutes: int(0, 24 * 60), pullMode: oneOf('merge', 'rebase', 'ff-only'), diffMode: oneOf('unified', 'split'),
+  diffContext: int(0, 100), ignoreWhitespace: bool, historyScope: oneOf('current', 'all'), editorCommand: str, terminalCommand: str,
+  confirmDiscard: bool, sidebarWidth: int(100, 4000), listWidth: int(100, 4000), syntaxHighlight: bool,
+}
+
+/** A key of Settings itself, not one inherited from Object ("__proto__", "constructor"). */
+export const isSettingKey = (key: string): key is keyof Settings => Object.hasOwn(SETTING_RULES, key)
+
+export const validSetting = (key: keyof Settings, value: unknown): boolean => SETTING_RULES[key](value)
+
 /* ─── Working tree ──────────────────────────────────────────────────────────── */
 
 /** One porcelain-v2 status letter: `.` means unchanged on that side. */
