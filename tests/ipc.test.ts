@@ -16,9 +16,12 @@ describe('argument checks', () => {
   })
 
   it('refuses file paths outside the repository', () => {
-    for (const path of ['../outside.txt', 'src/../../outside.txt', '..\\outside.txt', 'C:\\Windows\\win.ini', '/etc/passwd', 'C:x.txt']) {
+    const win = process.platform === 'win32'
+    for (const path of ['../outside.txt', 'src/../../outside.txt', '..\\outside.txt', '/etc/passwd', ...(win ? ['C:\\Windows\\win.ini', 'C:x.txt'] : [])]) {
       expect(() => checkArgs('git:resolveContent', [REPO, path, 'text']), path).toThrow(/inside the repository/)
     }
+    // A file a commit made on Linux or macOS can hold.
+    if (!win) expect(() => checkArgs('git:diff', [REPO, { kind: 'commit', sha: 'HEAD', path: 'c:notes.md' }, {}])).not.toThrow()
     expect(() => checkArgs('git:stage', [REPO, ['ok.txt', '../outside.txt']])).toThrow(/inside the repository/)
     expect(() => checkArgs('git:diff', [REPO, { kind: 'worktree', path: '../x', untracked: true }, {}])).toThrow(/inside the repository/)
     expect(() => checkArgs('git:conflict', [REPO, 'src/a b/[1].txt'])).not.toThrow()

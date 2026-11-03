@@ -286,7 +286,8 @@ const PATH_ARGS: Record<string, number[]> = {
 
 /** A path relative to the repository that stays inside it: files are read and written at `join(repo, path)`. */
 function insideRepo(path: string): boolean {
-  if (!path || path.includes('\0') || isAbsolute(path) || /^[a-z]:/i.test(path)) return false
+  // "c:notes.md" names a drive on Windows only; elsewhere it is a file a commit can hold.
+  if (!path || path.includes('\0') || isAbsolute(path) || (process.platform === 'win32' && /^[a-z]:/i.test(path))) return false
   const parts = posix.normalize(path.replace(/\\/g, '/'))
   return parts !== '..' && !parts.startsWith('../')
 }
