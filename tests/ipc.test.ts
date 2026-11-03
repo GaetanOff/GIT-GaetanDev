@@ -17,7 +17,7 @@ describe('argument checks', () => {
 
   it('refuses file paths outside the repository', () => {
     const win = process.platform === 'win32'
-    for (const path of ['../outside.txt', 'src/../../outside.txt', '..\\outside.txt', '/etc/passwd', ...(win ? ['C:\\Windows\\win.ini', 'C:x.txt'] : [])]) {
+    for (const path of ['../outside.txt', 'src/../../outside.txt', '..\\outside.txt', '/etc/passwd', '.git/hooks/pre-commit', '.GIT\\config', 'vendor/lib/.git/hooks/post-checkout', ...(win ? ['C:\\Windows\\win.ini', 'C:x.txt'] : [])]) {
       expect(() => checkArgs('git:resolveContent', [REPO, path, 'text']), path).toThrow(/inside the repository/)
     }
     // A file a commit made on Linux or macOS can hold.

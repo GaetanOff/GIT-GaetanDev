@@ -303,7 +303,9 @@ function insideRepo(path: string): boolean {
   // "c:notes.md" names a drive on Windows only; elsewhere it is a file a commit can hold.
   if (!path || path.includes('\0') || isAbsolute(path) || (process.platform === 'win32' && /^[a-z]:/i.test(path))) return false
   const parts = posix.normalize(path.replace(/\\/g, '/'))
-  return parts !== '..' && !parts.startsWith('../')
+  if (parts === '..' || parts.startsWith('../')) return false
+  // Nor inside a .git folder (hooks, config): git never tracks a path through one, so no file shown is.
+  return !parts.split('/').some(p => p.toLowerCase() === '.git')
 }
 
 /** Channels whose first argument may be null (the global identity, no repo to watch). */
