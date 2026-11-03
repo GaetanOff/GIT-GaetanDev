@@ -9,7 +9,8 @@ const RS = '\x1e'
 const US = '\x1f'
 
 const posix = (p: string) => p.replace(/\\/g, '/')
-const quote = (p: string) => `"${posix(p).replace(/"/g, '\\"')}"`
+/** Single-quoted for sh: nothing inside is expanded, so a dollar sign or backtick in the path stays literal. */
+const quote = (p: string) => `'${posix(p).replace(/'/g, `'\\''`)}'`
 
 /** Commits after `base` (null: from the root), oldest first, as the rebase will replay them. */
 export async function rebasePlan(repo: string, base: string | null): Promise<RebasePlan> {
@@ -43,7 +44,11 @@ async function extractTodo(repo: string, base: string | null, shas: string[]): P
   await mkdir(dir, { recursive: true })
   const out = join(dir, 'generated-todo')
   await rm(out, { force: true })
-  await git(repo, ['rebase', '-i', '--rebase-merges', '--autostash', ...(base ? [base] : ['--root'])], {
+  // No hooks for this dry run (pre-rebase could refuse or act), and full command names whatever the user's config.
+  const noHooks = join(dir, 'no-hooks')
+  await mkdir(noHooks, { recursive: true })
+  await git(repo, ['-c', `core.hooksPath=${posix(noHooks)}`, '-c', 'rebase.abbreviateCommands=false',
+    'rebase', '-i', '--rebase-merges', '--autostash', ...(base ? [base] : ['--root'])], {
     env: { GIT_SEQUENCE_EDITOR: `f() { cp "$1" ${quote(out)}; : > "$1"; }; f`, GIT_EDITOR: 'true' },
     okCodes: [1],
   })
@@ -54,7 +59,7 @@ async function extractTodo(repo: string, base: string | null, shas: string[]): P
   for (const raw of text.split(/\r?\n/)) {
     const line = raw.trimEnd()
     if (!line || (line.startsWith('#') && !line.startsWith('# Branch '))) continue
-    const pick = /^pick ([0-9a-f]+)/.exec(line)
+    const pick = /^(?:pick|p) ([0-9a-f]+)/.exec(line)
     const full = pick && shas.find(s => s.startsWith(pick[1]))
     if (full) items.push({ kind: 'pick', sha: full })
     else items.push({ kind: 'line', text: line })
