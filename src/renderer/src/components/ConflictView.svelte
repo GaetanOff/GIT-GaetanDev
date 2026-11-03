@@ -38,6 +38,8 @@
   })
   let gutter = $state<HTMLDivElement>()
   let saving = $state(false)
+  /** In the Result editor, Tab inserts a tab until Escape is pressed. */
+  let tabMoves = false
   let body = $state<HTMLDivElement>()
   let expanded = $state<Set<number>>(new Set())
   let token = 0
@@ -325,13 +327,19 @@
         onscroll={e => syncScroll(e.target as HTMLTextAreaElement)}
         oninput={e => syncScroll(e.target as HTMLTextAreaElement)}
         onkeydown={e => {
-          if (e.key === 'Tab') {
+          // Tab types a tab, as in an editor; after Escape it moves focus on instead, so the
+          // keyboard is never stuck here (the convention of code editors).
+          if (e.key === 'Escape') tabMoves = true
+          else if (e.key === 'Tab' && !tabMoves && !e.shiftKey) {
             e.preventDefault()
             const t = e.target as HTMLTextAreaElement
             t.setRangeText('\t', t.selectionStart, t.selectionEnd, 'end')
             resultText = t.value
-          } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveResult() }
-        }}></textarea>
+          } else if (e.key !== 'Tab') tabMoves = false
+          if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); saveResult() }
+        }}
+        onblur={() => (tabMoves = false)}
+        aria-label="Merged result. Tab inserts a tab; press Escape, then Tab, to leave the editor."></textarea>
       </div>
     </div>
   {:else if error}
