@@ -15,6 +15,9 @@
   import HistoryView from '@/views/HistoryView.svelte'
   import StashView from '@/views/StashView.svelte'
   import FileView from '@/views/FileView.svelte'
+  import RebaseView from '@/views/RebaseView.svelte'
+  import UndoView from '@/views/UndoView.svelte'
+  import CompareView from '@/views/CompareView.svelte'
   import Resizer from '@/components/Resizer.svelte'
 
   let dragOver = $state(false)
@@ -73,6 +76,12 @@
           <HistoryView />
         {:else if app.view === 'file' && app.fileTarget}
           <FileView />
+        {:else if app.view === 'rebase' && app.rebaseTarget}
+          <RebaseView />
+        {:else if app.view === 'compare' && app.compareTarget}
+          <CompareView />
+        {:else if app.view === 'undo'}
+          <UndoView />
         {:else}
           <StashView />
         {/if}

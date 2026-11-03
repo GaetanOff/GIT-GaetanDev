@@ -6,6 +6,9 @@ import type { Api, ApiChannel, ApiEvents, IpcEnvelope } from '@shared/api'
 import type { Progress } from '@shared/types'
 import { registerPending, respond } from './askpass'
 import { blame, fileLog } from './git/blame'
+import { compare } from './git/compare'
+import { rebasePlan, rebaseRun } from './git/rebase'
+import { operations, restore } from './git/reflog'
 import { conflict, resolveContent, resolveWhole } from './git/conflict'
 import { diff } from './git/diff'
 import { git, GitError } from './git/exec'
@@ -101,6 +104,11 @@ export function registerIpc(watcher: RepoWatcher): void {
     'git:checkoutCommit': async (repo, sha) => ops.checkoutCommit(repo, sha),
     'git:fileLog': async (repo, path, skip, limit) => fileLog(repo, path, skip, limit),
     'git:blame': async (repo, path, rev) => blame(repo, path, rev),
+    'git:compare': async (repo, base, head, threeDot) => compare(repo, base, head, threeDot),
+    'git:operations': async repo => operations(repo),
+    'git:restore': async (repo, target) => restore(repo, target),
+    'git:rebasePlan': async (repo, base) => rebasePlan(repo, base),
+    'git:rebaseRun': async (repo, base, steps) => rebaseRun(repo, base, steps),
 
     'git:refs': async repo => refs(repo),
     'git:checkout': async (repo, branch, opts) => ops.checkout(repo, branch, opts),

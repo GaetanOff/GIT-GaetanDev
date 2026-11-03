@@ -114,9 +114,40 @@ export const COMMANDS: Command[] = [
   { id: 'terminal', title: 'Open in terminal', group: 'Repository', icon: 'terminal', keys: 'mod+`', when: hasRepo, run: () => api['shell:terminal'](app.repo!.path) },
   { id: 'refresh', title: 'Refresh', group: 'Repository', icon: 'fetch', keys: 'f5', when: hasRepo, run: () => app.refreshAll() },
   { id: 'addRemote', title: 'Add remote…', group: 'Repository', icon: 'cloud', when: hasRepo, run: () => openDialog({ kind: 'remote' }) },
+  { id: 'undoHistory', title: 'Show undo history', group: 'View', icon: 'undo', keys: 'mod+3', when: hasRepo, run: () => (app.view = 'undo') },
+  { id: 'undoOp', title: 'Undo last operation (checkout, merge, rebase, reset…)', group: 'Repository', icon: 'undo', keys: 'mod+shift+z', when: () => hasRepo() && !isTyping(), run: undoLastOperation },
+  { id: 'rebase', title: 'Edit history (interactive rebase)…', group: 'Branch', icon: 'edit', keys: 'mod+alt+r', when: onBranch, run: startRebase },
+  { id: 'compare', title: 'Compare branches…', group: 'Branch', icon: 'split', keys: 'mod+alt+c', when: hasRepo, run: () => app.openCompare(defaultBase(), app.status?.branch ?? 'HEAD') },
+  { id: 'syntax', title: 'Toggle syntax highlighting', group: 'View', icon: 'code', run: () => app.updateSettings({ syntaxHighlight: !app.settings.syntaxHighlight }) },
   { id: 'settings', title: 'Settings', group: 'App', icon: 'cog', keys: 'mod+,', run: () => openDialog({ kind: 'settings' }) },
   { id: 'shortcuts', title: 'Keyboard shortcuts', group: 'App', icon: 'command', keys: 'mod+/', run: () => openDialog({ kind: 'shortcuts' }) },
 ]
+
+/** The branch most work is compared against: the remote default, else main/master/develop. */
+export function defaultBase(): string {
+  const names = app.refs.branches.map(b => b.name)
+  return ['origin/main', 'origin/master', 'origin/develop', 'main', 'master', 'develop'].find(n => names.includes(n) && n !== app.status?.branch) ?? 'HEAD~1'
+}
+
+/** Rebase the commits not pushed yet, or the last ten when there is no upstream. */
+function startRebase(): void {
+  const st = app.status
+  if (st?.upstream && st.ahead) app.openRebase(st.upstream, `${st.ahead} unpushed commit${st.ahead > 1 ? 's' : ''} on ${st.branch}`)
+  else app.openRebase('HEAD~10', 'the last 10 commits')
+}
+
+export async function undoLastOperation(): Promise<void> {
+  if (!app.repo) return
+  const ops = await api['git:operations'](app.repo.path)
+  const op = ops[0]
+  if (!op?.before.sha) return void toast('info', 'Nothing to undo.')
+  const ok = await confirm({
+    title: `Undo “${op.title}”?`,
+    message: `Go back to ${op.before.branch ?? 'detached HEAD'} at ${op.before.sha.slice(0, 7)}. Uncommitted changes are kept, and you can redo.`,
+    confirmLabel: 'Undo',
+  })
+  if (ok) await app.restore(op.before, `before “${op.title}”`)
+}
 
 export function isTyping(): boolean {
   const el = document.activeElement as HTMLElement | null

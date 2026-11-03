@@ -1,11 +1,14 @@
-import type { Commit, FileChange, Progress, Refs, RepoEntry, RepoStatus, Settings } from '@shared/types'
+import type { Commit, FileChange, Progress, Refs, RepoEntry, RepoStatus, RestorePoint, SearchMode, Settings } from '@shared/types'
 import { DEFAULT_SETTINGS } from '@shared/types'
 import { api, asError, on, type AppError } from './api'
 import { GraphBuilder, type GraphRow } from './graph'
 import { choose, confirm, openDialog, toast } from './ui.svelte'
 
-export type View = 'changes' | 'history' | 'stash' | 'file'
-export interface FileTarget { path: string; tab: 'history' | 'blame'; rev: string | null; back: Exclude<View, 'file'> }
+export type View = 'changes' | 'history' | 'stash' | 'file' | 'rebase' | 'undo' | 'compare'
+type MainView = 'changes' | 'history' | 'stash' | 'undo'
+export interface FileTarget { path: string; tab: 'history' | 'blame'; rev: string | null; back: MainView }
+export interface RebaseTarget { base: string | null; label: string; back: MainView }
+export interface CompareTarget { base: string; head: string; threeDot: boolean; back: MainView }
 export type Area = 'staged' | 'unstaged' | 'conflicted'
 
 const PAGE = 400
@@ -37,11 +40,14 @@ class AppState {
   historyDone = $state(false)
   historyLoading = $state(false)
   historySearch = $state('')
+  historySearchMode = $state<SearchMode>('message')
   selectedCommit = $state<string | null>(null)
   selectedStash = $state<number | null>(null)
 
   /* File history & blame */
   fileTarget = $state<FileTarget | null>(null)
+  rebaseTarget = $state<RebaseTarget | null>(null)
+  compareTarget = $state<CompareTarget | null>(null)
 
   /* Commit drafts survive repo switches */
   drafts = $state<Record<string, { summary: string; body: string; amend: boolean }>>({})
@@ -151,8 +157,10 @@ class AppState {
     this.selectedStash = null
     this.historySearch = ''
     this.lastFetched = null
-    if (this.view === 'stash' || this.view === 'file') this.view = 'changes'
+    if (this.view !== 'changes' && this.view !== 'history') this.view = 'changes'
     this.fileTarget = null
+    this.rebaseTarget = null
+    this.compareTarget = null
     this.commits = []
     this.graph = []
     await api['watch:set'](entry.path)
@@ -264,7 +272,7 @@ class AppState {
     this.historyLoading = true
     try {
       const commits = await api['git:log'](repo.path, {
-        scope: this.settings.historyScope, skip: 0, limit: PAGE, search: this.historySearch || undefined,
+        scope: this.settings.historyScope, skip: 0, limit: PAGE, search: this.historySearch || undefined, searchMode: this.historySearchMode,
       })
       if (token !== this.historyToken) return
       this.commits = commits
@@ -284,7 +292,7 @@ class AppState {
     this.historyLoading = true
     try {
       const more = await api['git:log'](this.repo.path, {
-        scope: this.settings.historyScope, skip: this.commits.length, limit: PAGE, search: this.historySearch || undefined,
+        scope: this.settings.historyScope, skip: this.commits.length, limit: PAGE, search: this.historySearch || undefined, searchMode: this.historySearchMode,
       })
       if (token !== this.historyToken) return
       this.commits = [...this.commits, ...more]
@@ -441,14 +449,49 @@ class AppState {
 
   /** Opens the history or blame of one file; Back returns to the current view. */
   openFile(path: string, tab: 'history' | 'blame', rev: string | null = null): void {
-    const back = this.view === 'file' ? this.fileTarget?.back ?? 'changes' : this.view
-    this.fileTarget = { path, tab, rev, back }
+    this.fileTarget = { path, tab, rev, back: this.mainView() }
     this.view = 'file'
   }
 
   closeFile(): void {
     this.view = this.fileTarget?.back ?? 'changes'
     this.fileTarget = null
+  }
+
+  /** The list view to return to when a full-screen tool (file, rebase, compare) closes. */
+  private mainView(): MainView {
+    const v = this.view
+    if (v === 'file') return this.fileTarget?.back ?? 'changes'
+    if (v === 'rebase') return this.rebaseTarget?.back ?? 'history'
+    if (v === 'compare') return this.compareTarget?.back ?? 'history'
+    return v
+  }
+
+  openRebase(base: string | null, label: string): void {
+    this.rebaseTarget = { base, label, back: this.mainView() }
+    this.view = 'rebase'
+  }
+
+  openCompare(base: string, head: string, threeDot = true): void {
+    this.compareTarget = { base, head, threeDot, back: this.mainView() }
+    this.view = 'compare'
+  }
+
+  closeTool(): void {
+    this.view = this.mainView()
+    this.fileTarget = null
+    this.rebaseTarget = null
+    this.compareTarget = null
+  }
+
+  /** Goes back to a point of the undo history, then offers to come back (redo). */
+  async restore(point: RestorePoint, label: string): Promise<void> {
+    if (!this.repo) return
+    const repo = this.repo.path
+    const prev = await this.run(`Restoring ${label}`, () => api['git:restore'](repo, point))
+    if (prev) {
+      toast('success', `Restored: ${label}`, { label: 'Redo', run: () => this.run('Redoing', () => api['git:restore'](repo, prev)) }, 10_000)
+    }
   }
 
   copy(text: string, what = 'Copied'): void {

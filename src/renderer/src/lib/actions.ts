@@ -88,6 +88,7 @@ export function branchMenu(b: Branch): MenuItem[] {
   const items: MenuItem[] = [
     { label: isCurrent ? 'Current branch' : `Switch to ${b.remote ? short : b.name}`, icon: 'branch', disabled: isCurrent, run: () => app.checkout(b.name) },
     { label: 'New branch from here…', icon: 'plus', run: () => openDialog({ kind: 'branch', from: b.name, fromLabel: b.name }) },
+    ...(current && !isCurrent ? [{ label: `Compare with ${current}`, icon: 'split' as const, run: () => app.openCompare(current, b.name) }] : []),
     'sep',
   ]
   if (current && !isCurrent) {
@@ -143,6 +144,8 @@ export function commitMenu(c: Commit): MenuItem[] {
     'sep',
     { label: 'New branch from here…', icon: 'branch', run: () => openDialog({ kind: 'branch', from: c.sha, fromLabel: shortSha(c.sha) }) },
     { label: 'Create tag here…', icon: 'tag', run: () => openDialog({ kind: 'tag', sha: c.sha }) },
+    { label: 'Edit history from here…', icon: 'edit', disabled: !onBranch, run: () => app.openRebase(c.parents[0] ?? null, `from ${shortSha(c.sha)} “${c.subject}”`) },
+    { label: 'Compare with HEAD', icon: 'split', run: () => app.openCompare(c.sha, 'HEAD') },
     { label: 'Checkout (detached)', icon: 'commit', run: async () => {
       const ok = await confirm({ title: 'Checkout this commit?', message: 'You will be in “detached HEAD” state: new commits will not belong to any branch until you create one.', confirmLabel: 'Checkout' })
       if (ok) await app.run('Checking out', () => api['git:checkoutCommit'](repo(), c.sha))

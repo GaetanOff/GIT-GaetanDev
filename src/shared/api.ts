@@ -1,5 +1,5 @@
 import type {
-  AskPassRequest, Blame, Commit, ConflictFile, FileCommit, CommitDetail, DiffOptions, DiffSource, FileDiff, GitIdentity, LineSelection,
+  AskPassRequest, Blame, Commit, CompareResult, ConflictFile, FileCommit, RebasePlan, RebaseStep, RepoOperationEntry, RestorePoint, CommitDetail, DiffOptions, DiffSource, FileDiff, GitIdentity, LineSelection,
   LogQuery, Progress, ProviderLink, Refs, RepoChangeEvent, RepoEntry, RepoStatus, ResetMode, Settings,
 } from './types'
 
@@ -52,6 +52,11 @@ export interface Api {
   'git:checkoutCommit'(repo: string, sha: string): Promise<void>
   'git:fileLog'(repo: string, path: string, skip: number, limit: number): Promise<FileCommit[]>
   'git:blame'(repo: string, path: string, rev: string | null): Promise<Blame>
+  'git:compare'(repo: string, base: string, head: string, threeDot: boolean): Promise<CompareResult>
+  'git:operations'(repo: string): Promise<RepoOperationEntry[]>
+  'git:restore'(repo: string, target: RestorePoint): Promise<RestorePoint>
+  'git:rebasePlan'(repo: string, base: string | null): Promise<RebasePlan>
+  'git:rebaseRun'(repo: string, base: string | null, steps: RebaseStep[]): Promise<void>
 
   /* Refs */
   'git:refs'(repo: string): Promise<Refs>
@@ -98,7 +103,7 @@ export const API_CHANNELS: ApiChannel[] = [
   'git:status', 'git:diff', 'git:stage', 'git:unstage', 'git:stageLines', 'git:unstageLines', 'git:discard',
   'git:discardLines', 'git:ignore', 'git:commit', 'git:lastCommitMessage', 'git:preparedMessage', 'git:undoCommit', 'git:resolve',
   'git:continue', 'git:abort', 'git:skip', 'git:conflict', 'git:resolveContent', 'git:resolveWhole',
-  'git:log', 'git:commit:detail', 'git:cherryPick', 'git:revert', 'git:reset', 'git:checkoutCommit', 'git:fileLog', 'git:blame',
+  'git:log', 'git:commit:detail', 'git:cherryPick', 'git:revert', 'git:reset', 'git:checkoutCommit', 'git:fileLog', 'git:blame', 'git:compare', 'git:operations', 'git:restore', 'git:rebasePlan', 'git:rebaseRun',
   'git:refs', 'git:checkout', 'git:createBranch', 'git:renameBranch', 'git:deleteBranch', 'git:deleteRemoteBranch',
   'git:merge', 'git:rebase', 'git:createTag', 'git:deleteTag', 'git:pushTag', 'git:stash', 'git:stashApply',
   'git:stashDrop', 'git:stashFiles', 'git:addRemote', 'git:removeRemote',

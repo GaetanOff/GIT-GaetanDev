@@ -24,6 +24,7 @@ export interface Settings {
   confirmDiscard: boolean
   sidebarWidth: number
   listWidth: number
+  syntaxHighlight: boolean
 }
 
 export const DEFAULT_SETTINGS: Settings = {
@@ -38,6 +39,7 @@ export const DEFAULT_SETTINGS: Settings = {
   confirmDiscard: true,
   sidebarWidth: 248,
   listWidth: 340,
+  syntaxHighlight: true,
 }
 
 /* ─── Working tree ──────────────────────────────────────────────────────────── */
@@ -119,6 +121,7 @@ export type DiffSource =
   | { kind: 'index'; path: string; oldPath?: string }
   | { kind: 'commit'; sha: string; path: string; oldPath?: string }
   | { kind: 'stash'; index: number; path: string; untracked?: boolean }
+  | { kind: 'range'; from: string; to: string; path: string; oldPath?: string }
 
 export interface DiffOptions {
   context: number
@@ -158,12 +161,73 @@ export interface CommitDetail extends Commit {
   files: CommitFile[]
 }
 
+/** message: --grep; author: --author; content: -S (adds/removes the text); regex: -G (diff matches). */
+export type SearchMode = 'message' | 'author' | 'content' | 'regex'
+
 export interface LogQuery {
   scope: HistoryScope
   skip: number
   limit: number
   search?: string
+  searchMode?: SearchMode
   path?: string
+}
+
+/* ─── Compare ───────────────────────────────────────────────────────────────── */
+
+export interface CompareResult {
+  base: string
+  head: string
+  /** Resolved commit the file diff starts from: the merge base in three-dot mode. */
+  from: string
+  to: string
+  mergeBase: string | null
+  /** Commits in head that base does not have, newest first. */
+  ahead: Commit[]
+  /** Number of commits in base that head does not have. */
+  behind: number
+  files: CommitFile[]
+  threeDot: boolean
+}
+
+/* ─── Reflog / undo ─────────────────────────────────────────────────────────── */
+
+export type OperationKind = 'commit' | 'amend' | 'checkout' | 'reset' | 'merge' | 'rebase' | 'pull' | 'cherry-pick' | 'revert' | 'other'
+
+/** One user-level operation reconstructed from HEAD's reflog (a rebase is one entry, not many). */
+export interface RepoOperationEntry {
+  id: string
+  kind: OperationKind
+  title: string
+  detail: string
+  date: number
+  /** HEAD and branch just before the operation: the point "undo" goes back to. */
+  before: { sha: string; branch: string | null }
+  after: { sha: string; branch: string | null }
+}
+
+export interface RestorePoint {
+  sha: string
+  branch: string | null
+}
+
+/* ─── Interactive rebase ────────────────────────────────────────────────────── */
+
+export type RebaseAction = 'pick' | 'reword' | 'squash' | 'fixup' | 'drop'
+
+export interface RebaseStep {
+  sha: string
+  action: RebaseAction
+  /** New message for a reword, or for a commit absorbing squashes. */
+  message?: string
+}
+
+export interface RebasePlan {
+  base: string | null
+  commits: (Commit & { body: string })[]
+  hasMerges: boolean
+  /** How many of these commits are already on the upstream (a force push follows). */
+  pushed: number
 }
 
 /** A commit that touched a file, with the file's path in that commit (it follows renames). */
