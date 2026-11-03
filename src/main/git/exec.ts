@@ -1,0 +1,130 @@
+import { spawn } from 'node:child_process'
+import type { GitErrorCode } from '@shared/api'
+
+export class GitError extends Error {
+  constructor(message: string, public code?: GitErrorCode, public stderr = '', public exitCode = 1) {
+    super(message)
+    this.name = 'GitError'
+  }
+}
+
+export interface ExecOptions {
+  input?: string
+  /** Exit codes treated as success (git diff --no-index exits 1 on differences). */
+  okCodes?: number[]
+  env?: NodeJS.ProcessEnv
+  /** Called with each progress line git writes to stderr. */
+  onStderrLine?: (line: string) => void
+  maxBytes?: number
+}
+
+export interface ExecResult {
+  stdout: string
+  stderr: string
+  code: number
+}
+
+/** Extra environment for every git call: askpass wiring, set once at startup. */
+let baseEnv: NodeJS.ProcessEnv = {}
+export function setGitEnv(env: NodeJS.ProcessEnv): void {
+  baseEnv = env
+}
+
+const GLOBAL_ARGS = ['-c', 'core.quotepath=false', '-c', 'color.ui=false', '-c', 'i18n.logOutputEncoding=UTF-8']
+
+/**
+ * Runs git and resolves with its output. Rejects with a GitError whose message
+ * is the last meaningful stderr line, and whose code classifies the failure.
+ */
+export function git(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', [...GLOBAL_ARGS, ...args], {
+      cwd,
+      windowsHide: true,
+      env: {
+        ...process.env,
+        ...baseEnv,
+        LANG: 'C',
+        LC_ALL: 'C',
+        GIT_TERMINAL_PROMPT: '0',
+        GIT_OPTIONAL_LOCKS: '0',
+        GIT_PAGER: 'cat',
+        ...opts.env,
+      },
+    })
+
+    const out: Buffer[] = []
+    const err: Buffer[] = []
+    let outBytes = 0
+    let truncated = false
+    let pending = ''
+
+    child.stdout.on('data', (chunk: Buffer) => {
+      if (opts.maxBytes && outBytes + chunk.length > opts.maxBytes) {
+        truncated = true
+        child.kill()
+        return
+      }
+      outBytes += chunk.length
+      out.push(chunk)
+    })
+    child.stderr.on('data', (chunk: Buffer) => {
+      err.push(chunk)
+      if (!opts.onStderrLine) return
+      pending += chunk.toString('utf8')
+      const parts = pending.split(/[\r\n]/)
+      pending = parts.pop() ?? ''
+      for (const line of parts) if (line.trim()) opts.onStderrLine(line)
+    })
+
+    child.on('error', (e: NodeJS.ErrnoException) => {
+      if (e.code === 'ENOENT') reject(new GitError('Git was not found. Install Git for Windows and restart the app.', 'GIT_NOT_FOUND'))
+      else reject(new GitError(e.message))
+    })
+
+    child.on('close', code => {
+      const stdout = Buffer.concat(out).toString('utf8')
+      const stderr = Buffer.concat(err).toString('utf8')
+      if (truncated) return resolve({ stdout, stderr, code: -1 })
+      const exit = code ?? 1
+      if (exit === 0 || opts.okCodes?.includes(exit)) return resolve({ stdout, stderr, code: exit })
+      reject(toGitError(stdout, stderr, exit))
+    })
+
+    if (opts.input !== undefined) child.stdin.end(opts.input, 'utf8')
+    else child.stdin.end()
+  })
+}
+
+/** Shorthand returning stdout only. */
+export async function gitOut(cwd: string, args: string[], opts?: ExecOptions): Promise<string> {
+  return (await git(cwd, args, opts)).stdout
+}
+
+const PATTERNS: [RegExp, GitErrorCode][] = [
+  [/would be overwritten by (checkout|merge)|Please commit your changes or stash them/i, 'LOCAL_CHANGES_OVERWRITTEN'],
+  [/\[rejected\].*\((non-fast-forward|fetch first)\)|Updates were rejected because/i, 'NON_FAST_FORWARD'],
+  [/has no upstream branch|no tracking information/i, 'NO_UPSTREAM'],
+  [/Authentication failed|could not read Username|Permission denied \(publickey|terminal prompts disabled|HTTP Basic: Access denied|returned error: 40[13]/i, 'AUTH_FAILED'],
+  [/CONFLICT \(|Merge conflict|fix conflicts|could not apply|after resolving the conflicts/i, 'CONFLICTS'],
+  [/nothing to commit|no changes added to commit/i, 'NOTHING_TO_COMMIT'],
+  [/is not fully merged/i, 'BRANCH_NOT_MERGED'],
+  [/not a git repository/i, 'NOT_A_REPO'],
+]
+
+function toGitError(stdout: string, stderr: string, exitCode: number): GitError {
+  const text = `${stderr}\n${stdout}`
+  const code = PATTERNS.find(([re]) => re.test(text))?.[1]
+  return new GitError(summarize(stderr || stdout) || `git exited with code ${exitCode}`, code, stderr, exitCode)
+}
+
+/** Keeps the lines a human needs: errors, fatal messages and hints, minus noise. */
+function summarize(text: string): string {
+  const lines = text
+    .split(/\r?\n/)
+    .map(l => l.trimEnd())
+    .filter(l => l && !/^(remote: )?(Enumerating|Counting|Compressing|Writing|Total|Delta|Receiving|Resolving)/.test(l))
+  const important = lines.filter(l => /^(error|fatal|CONFLICT|hint: Updates)/.test(l))
+  const picked = (important.length ? important : lines).slice(0, 6)
+  return picked.map(l => l.replace(/^(error|fatal): /, '')).join('\n')
+}
