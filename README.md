@@ -17,6 +17,7 @@ Built with Electron, Svelte 5 and TypeScript. All Git work goes through your ins
 - **Compare**: any two branches, tags or commits, since their fork point (like a pull request) or tip to tip, with the commits and the per-file diff (`Ctrl+Alt+C`, or from branch and commit menus).
 - **Search code history**: find the commits that added or removed a string (`git log -S`) or whose diff matches a regex (`-G`), next to message and author search.
 - **Syntax highlighting** in diffs, blame and conflicts, computed only for the lines on screen, with block comments, template strings and triple quotes carried across lines.
+- **Import from GitHub Desktop**: every repository GitHub Desktop lists is added in one go (command palette, or the welcome screen). Its IndexedDB list is read by Chromium from a copy, so GitHub Desktop itself is never touched; folders that no longer exist are skipped.
 - **Tabs**: several repositories open at once, each remembering its view and selection; `Ctrl+Tab`, `Ctrl+W`, drag to reorder.
 - **Submodules, worktrees, Git LFS**: submodules with their state (not cloned, moved, conflict) and one-click update; worktrees listed, created and removed, opened as tabs; LFS pointers shown as such, LFS objects pulled, a warning when git-lfs is missing.
 - **Commits**: co-authors picked from the repository's authors, Conventional Commits type, `commit.template`, signed-commit badges ("Verified"), and the full output of a failing pre-commit hook with a "commit without hooks" escape hatch.

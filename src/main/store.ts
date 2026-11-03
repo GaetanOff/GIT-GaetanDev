@@ -143,6 +143,14 @@ export function upsertRepo(path: string): RepoEntry {
   return entry
 }
 
+/** Adds a repository to the list without opening it (imports). */
+export function addRepoEntry(path: string, name?: string): RepoEntry {
+  const entry: RepoEntry = { id: randomUUID(), path: normalize(path), name: name || basename(path), lastOpened: 0 }
+  getState().repos.push(entry)
+  save()
+  return entry
+}
+
 export function repoById(id: string): RepoEntry {
   const r = getState().repos.find(x => x.id === id)
   if (!r) throw new Error('Repository not found. It may have been removed.')

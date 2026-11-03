@@ -319,6 +319,20 @@ class AppState {
     }
   }
 
+  /** Adds the repositories GitHub Desktop lists, and says what happened. */
+  async importGithubDesktop(): Promise<void> {
+    const r = await this.run('Importing from GitHub Desktop', () => api['repo:importGithubDesktop'](), { refresh: false })
+    if (!r) return
+    this.repos = r.repos
+    const parts = [
+      r.added.length ? `${r.added.length} repositor${r.added.length > 1 ? 'ies' : 'y'} added` : 'No new repository',
+      r.known ? `${r.known} already here` : '',
+      r.skipped.length ? `${r.skipped.length} skipped (folder gone)` : '',
+    ].filter(Boolean)
+    toast(r.added.length ? 'success' : 'info', `GitHub Desktop: ${parts.join(', ')}.`)
+    if (!this.repo && r.repos.length) await this.openRepo(r.repos[0].id).catch(() => undefined)
+  }
+
   async initRepo(path: string): Promise<void> {
     await this.run('Creating repository', async () => {
       const entry = await api['repo:init'](path)

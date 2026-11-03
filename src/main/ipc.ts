@@ -1,9 +1,9 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
 import { existsSync, mkdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import type { Api, ApiChannel, ApiEvents, IpcEnvelope } from '@shared/api'
-import { DEFAULT_SETTINGS, type Progress, type Settings } from '@shared/types'
+import { DEFAULT_SETTINGS, type Progress, type RepoImport, type Settings } from '@shared/types'
 import { registerPending, respond } from './askpass'
 import { blame, fileLog } from './git/blame'
 import { compare } from './git/compare'
@@ -22,7 +22,8 @@ import { isRepo, status, topLevel } from './git/status'
 import { openEditor, openTerminal } from './integrations'
 import { detectProvider, providerUrl } from './provider'
 import { installUpdate } from './updater'
-import { getState, isRegistered, removeRepo, repoById, save, updateSettings, upsertRepo } from './store'
+import { githubDesktopRepos } from './importers'
+import { addRepoEntry, getState, isRegistered, removeRepo, repoById, save, updateSettings, upsertRepo } from './store'
 import type { RepoWatcher } from './watcher'
 
 type Handlers = { [K in ApiChannel]: (...args: Parameters<Api[K]>) => ReturnType<Api[K]> }
@@ -58,6 +59,19 @@ export function registerIpc(watcher: RepoWatcher): void {
     'app:installUpdate': async () => installUpdate(),
     'repo:list': async () => getState().repos,
     'repo:add': async path => addRepo(path),
+    'repo:importGithubDesktop': async () => {
+      const found = await githubDesktopRepos()
+      const result: RepoImport = { added: [], known: 0, skipped: [], repos: [] }
+      for (const r of found) {
+        // A folder with a .git entry (a directory, or a file for worktrees and submodules).
+        if (r.missing || !existsSync(join(r.path, '.git'))) { result.skipped.push(r.path); continue }
+        if (isRegistered(r.path)) { result.known++; continue }
+        addRepoEntry(r.path, r.alias ?? undefined)
+        result.added.push(r.alias ?? basename(r.path))
+      }
+      result.repos = getState().repos
+      return result
+    },
     'repo:init': async path => {
       mkdirSync(path, { recursive: true })
       await git(path, ['init', '-b', 'main'])

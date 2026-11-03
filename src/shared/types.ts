@@ -8,6 +8,17 @@ export interface RepoEntry {
   pinned?: boolean
 }
 
+/** What importing another app's repository list did. */
+export interface RepoImport {
+  /** Newly added. */
+  added: string[]
+  /** Already in the list. */
+  known: number
+  /** Listed there, but the folder is gone or is no longer a Git repository. */
+  skipped: string[]
+  repos: RepoEntry[]
+}
+
 export type PullMode = 'merge' | 'rebase' | 'ff-only'
 export type DiffMode = 'unified' | 'split'
 export type HistoryScope = 'current' | 'all'

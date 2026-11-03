@@ -1,0 +1,54 @@
+import { app, BrowserWindow, session } from 'electron'
+import { cpSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { basename, join } from 'node:path'
+import { GitError } from './git/exec'
+
+export interface ForeignRepo {
+  path: string
+  /** The name the other app shows, when the user renamed it there. */
+  alias: string | null
+  /** The other app could not find the folder any more. */
+  missing: boolean
+}
+
+/**
+ * The repositories GitHub Desktop lists. It keeps them in IndexedDB (a
+ * LevelDB store with compressed blocks), so the list is read the way it was
+ * written: by Chromium, in a hidden window whose session points at a copy of
+ * GitHub Desktop's IndexedDB folder. The copy leaves GitHub Desktop's own
+ * files untouched, even while it runs.
+ */
+export async function githubDesktopRepos(): Promise<ForeignRepo[]> {
+  const source = join(app.getPath('appData'), 'GitHub Desktop', 'IndexedDB')
+  if (!existsSync(source)) throw new GitError('GitHub Desktop was not found on this computer.')
+
+  const dir = mkdtempSync(join(tmpdir(), 'gdg-github-desktop-'))
+  // The page must be on the file:// origin, the one GitHub Desktop's database belongs to.
+  cpSync(source, join(dir, 'IndexedDB'), { recursive: true, filter: p => basename(p) !== 'LOCK' })
+  writeFileSync(join(dir, 'blank.html'), '<!doctype html><meta charset="utf-8"><title>import</title>')
+  const win = new BrowserWindow({ show: false, webPreferences: { session: session.fromPath(dir), sandbox: true, contextIsolation: true } })
+  try {
+    await win.loadFile(join(dir, 'blank.html'))
+    const rows = (await win.webContents.executeJavaScript(`(async () => {
+      const db = await new Promise((resolve, reject) => {
+        const r = indexedDB.open('Database')
+        r.onsuccess = () => resolve(r.result)
+        r.onerror = () => reject(r.error)
+      })
+      if (![...db.objectStoreNames].includes('repositories')) return []
+      return new Promise((resolve, reject) => {
+        const q = db.transaction('repositories').objectStore('repositories').getAll()
+        q.onsuccess = () => resolve(q.result.map(r => ({ path: r.path, alias: r.alias ?? null, missing: !!r.missing })))
+        q.onerror = () => reject(q.error)
+      })
+    })()`)) as ForeignRepo[]
+    return rows.filter(r => typeof r.path === 'string' && r.path)
+  } catch (e) {
+    throw new GitError(`Could not read GitHub Desktop's repository list: ${(e as Error).message}`)
+  } finally {
+    win.destroy()
+    // The session may still hold the copy open on Windows; the temp folder is cleaned up later then.
+    try { rmSync(dir, { recursive: true, force: true }) } catch { /* left to the OS */ }
+  }
+}

@@ -1,6 +1,6 @@
 import type {
   AskPassRequest, Author, Blame, DeletedBranch, NewerTip, TextEncoding, Commit, CompareResult, ConflictFile, FileCommit, RebasePlan, RebaseStep, RepoOperationEntry, RestorePoint, CommitDetail, DiffOptions, DiffSource, FileDiff, GitIdentity, LineSelection,
-  LogQuery, Progress, ProviderLink, Refs, RepoChangeEvent, RepoEntry, RepoStatus, ResetMode, Settings,
+  LogQuery, Progress, ProviderLink, Refs, RepoChangeEvent, RepoEntry, RepoImport, RepoStatus, ResetMode, Settings,
 } from './types'
 
 /**
@@ -16,6 +16,8 @@ export interface Api {
   'app:settings'(patch: Partial<Settings>): Promise<Settings>
   'repo:list'(): Promise<RepoEntry[]>
   'repo:add'(path: string): Promise<RepoEntry>
+  /** Adds every repository GitHub Desktop lists that still exists. */
+  'repo:importGithubDesktop'(): Promise<RepoImport>
   'repo:init'(path: string): Promise<RepoEntry>
   'repo:clone'(url: string, parent: string, name: string): Promise<RepoEntry>
   'repo:remove'(id: string): Promise<RepoEntry[]>
@@ -113,7 +115,7 @@ export interface Api {
 export type ApiChannel = keyof Api
 
 export const API_CHANNELS: ApiChannel[] = [
-  'app:state', 'app:installUpdate', 'app:settings', 'repo:list', 'repo:add', 'repo:init', 'repo:clone', 'repo:remove', 'repo:open', 'repo:pin',
+  'app:state', 'app:installUpdate', 'app:settings', 'repo:list', 'repo:add', 'repo:importGithubDesktop', 'repo:init', 'repo:clone', 'repo:remove', 'repo:open', 'repo:pin',
   'dialog:pickFolder',
   'git:status', 'git:diff', 'git:stage', 'git:unstage', 'git:stageLines', 'git:unstageLines', 'git:discard',
   'git:discardLines', 'git:ignore', 'git:commit', 'git:lastCommitMessage', 'git:preparedMessage', 'git:undoCommit', 'git:resolve',

@@ -113,6 +113,7 @@ export const COMMANDS: Command[] = [
   { id: 'branches', title: 'Switch branch…', group: 'Branch', icon: 'branch', keys: 'mod+b', when: hasRepo, run: () => (overlays.branchMenu = true) },
   { id: 'files', title: 'Go to changed file…', group: 'Changes', icon: 'file', keys: 'mod+p', when: hasRepo, run: () => openPalette('files') },
   { id: 'add', title: 'Add local repository…', group: 'Repository', icon: 'folder', keys: 'mod+o', run: pickAndAddRepo },
+  { id: 'importGithubDesktop', title: 'Import repositories from GitHub Desktop', group: 'Repository', icon: 'download', run: () => app.importGithubDesktop() },
   { id: 'clone', title: 'Clone repository…', group: 'Repository', icon: 'download', keys: 'mod+shift+o', run: () => openDialog({ kind: 'clone' }) },
   { id: 'init', title: 'Create new repository…', group: 'Repository', icon: 'plus', run: pickAndInitRepo },
   { id: 'changes', title: 'Show changes', group: 'View', icon: 'changes', keys: 'mod+1', when: hasRepo, run: () => (app.view = 'changes') },

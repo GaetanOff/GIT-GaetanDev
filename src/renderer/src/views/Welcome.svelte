@@ -38,6 +38,10 @@
         <span class="ico purple"><Icon name="plus" size={20} /></span>
         <span class="t"><b>Create a new repository</b><span>git init in a folder of your choice</span></span>
       </button>
+      <button class="action" onclick={() => app.importGithubDesktop()}>
+        <span class="ico amber"><Icon name="cloud" size={20} /></span>
+        <span class="t"><b>Import from GitHub Desktop</b><span>Every repository it lists, in one go</span></span>
+      </button>
     </div>
 
     {#if recent.length}
@@ -79,6 +83,7 @@
   .ico.green { background: var(--green-soft); color: var(--green); }
   .ico.blue { background: rgba(96, 165, 250, 0.16); color: var(--blue); }
   .ico.purple { background: var(--purple-soft); color: var(--purple); }
+  .ico.amber { background: var(--amber-soft); color: var(--amber); }
   .t { flex: 1; display: flex; flex-direction: column; gap: 2px; }
   .t b { color: #fff; font-size: 14px; }
   .t span { color: var(--text-faint); font-size: 12px; }
