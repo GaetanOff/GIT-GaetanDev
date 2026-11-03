@@ -8,6 +8,10 @@
   let { tab: initialTab = 'general', onclose }: { tab?: string; onclose: () => void } = $props()
   // svelte-ignore state_referenced_locally
   let tab = $state(initialTab)
+  let perf = $state<{ enabled: boolean; supported: boolean; files: number } | null>(null)
+  $effect(() => {
+    if (app.repo) api['repo:fsmonitor'](app.repo.path).then(p => (perf = p)).catch(() => (perf = null))
+  })
 
   let gName = $state('')
   let gEmail = $state('')
@@ -84,6 +88,17 @@
         <div class="field">
           <label class="check"><input type="checkbox" checked={app.settings.syntaxHighlight} onchange={e => app.updateSettings({ syntaxHighlight: (e.target as HTMLInputElement).checked })} />Syntax highlighting in diffs, blame and conflicts</label>
         </div>
+        {#if app.repo && perf}
+          <div class="field">
+            <span class="label">Performance · {app.repo.name}</span>
+            <label class="check" title={perf.supported ? '' : 'Needs Git 2.36+ on Windows or macOS'}>
+              <input type="checkbox" checked={perf.enabled} disabled={!perf.supported}
+                onchange={async e => { const on = (e.target as HTMLInputElement).checked; await api['repo:setFsmonitor'](app.repo!.path, on); perf = { ...perf!, enabled: on } }} />
+              Git file system monitor and untracked cache
+            </label>
+            <span class="hint">{perf.files.toLocaleString('en')} tracked files. Recommended above ~20,000: status stops scanning the whole tree.</span>
+          </div>
+        {/if}
       {:else if tab === 'git'}
         <p class="intro">Who your commits are attributed to. Most providers match this email to your account.</p>
         <div class="field"><span class="label">Name</span><input class="input" bind:value={gName} placeholder="Jane Doe" /></div>
