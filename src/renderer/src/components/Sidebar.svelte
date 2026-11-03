@@ -75,6 +75,10 @@
       <Icon name="history" size={15} />
       <span class="grow">History</span>
     </button>
+    <button class="nav-item" class:on={app.view === 'undo'} onclick={() => (app.view = 'undo')}>
+      <Icon name="undo" size={15} />
+      <span class="grow">Undo history</span>
+    </button>
   </nav>
 
   <div class="filter">
