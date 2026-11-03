@@ -431,13 +431,16 @@ class AppState {
     const token = this.historyToken
     this.historyLoading = true
     try {
+      // Each page makes git walk and sort the history again (topo order): pages double in
+      // size, so scrolling through N commits costs log(N) walks rather than N / 400.
+      const limit = Math.max(PAGE, this.commits.length)
       const more = await api['git:log'](this.repo.path, {
-        scope: this.settings.historyScope, skip: this.commits.length, limit: PAGE, search: this.historySearch || undefined, searchMode: this.historySearchMode,
+        scope: this.settings.historyScope, skip: this.commits.length, limit, search: this.historySearch || undefined, searchMode: this.historySearchMode,
       })
       if (token !== this.historyToken) return
       this.commits = [...this.commits, ...more]
       this.graph = [...this.graph, ...this.graphBuilder.add(more)]
-      this.historyDone = more.length < PAGE
+      this.historyDone = more.length < limit
     } catch (e) {
       // Paging runs from a scroll handler that nobody awaits: report the failure here.
       if (token === this.historyToken) toast('error', asError(e).message)
