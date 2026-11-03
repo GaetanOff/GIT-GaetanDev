@@ -49,7 +49,8 @@ export async function submodules(repo: string): Promise<Submodule[]> {
     links.set(path, { sha: stage === '0' || !prev ? sha : prev.sha, conflict: stage !== '0' || !!prev?.conflict })
   }
 
-  return Promise.all([...links].map(async ([path, link]) => {
+  // A few at a time: a repository with hundreds of submodules must not start hundreds of git processes.
+  return mapLimit([...links], 6, async ([path, link]) => {
     const dir = join(repo, path)
     let state: Submodule['state'] = 'ok'
     if (link.conflict) state = 'conflict'
@@ -60,7 +61,21 @@ export async function submodules(repo: string): Promise<Submodule[]> {
       else if (head !== link.sha) state = 'modified'
     }
     return { path, sha: link.sha, state, describe: '', url: urlByPath.get(path) ?? '' }
-  }))
+  })
+}
+
+/** Like Promise.all over `items.map(fn)`, with at most `limit` calls running at once; keeps the order. */
+async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length)
+  let next = 0
+  const worker = async () => {
+    while (next < items.length) {
+      const i = next++
+      out[i] = await fn(items[i])
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker))
+  return out
 }
 
 export async function submoduleUpdate(repo: string, path: string | null, report: Reporter): Promise<void> {
