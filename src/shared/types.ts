@@ -213,6 +213,29 @@ export interface RepoOperationEntry {
   after: { sha: string; branch: string | null }
 }
 
+/** A local branch that no longer exists, with the last commit it is known to have pointed to. */
+export interface DeletedBranch {
+  name: string
+  sha: string
+  date: number
+  subject: string
+  /** reflog: guessed from HEAD's history; app: recorded when the app deleted it (exact). */
+  source: 'reflog' | 'app'
+}
+
+/** A more recent commit found for a deleted branch than its last known tip. */
+export interface NewerTip {
+  name: string
+  sha: string
+  /** Commits between the known tip and this one. */
+  ahead: number
+  subject: string
+  date: number
+  /** remote: still on a remote-tracking branch (pushed from elsewhere); unreferenced: only in git's object store. */
+  via: 'remote' | 'unreferenced'
+  ref?: string
+}
+
 export interface RestorePoint {
   sha: string
   branch: string | null
@@ -223,11 +246,17 @@ export interface RestorePoint {
 export type RebaseAction = 'pick' | 'reword' | 'squash' | 'fixup' | 'drop'
 
 export interface RebaseStep {
+  /** Empty for a structural line. */
   sha: string
-  action: RebaseAction
+  /** `line`: a label, reset or merge line of a --rebase-merges plan, passed through as is. */
+  action: RebaseAction | 'line'
   /** New message for a reword, or for a commit absorbing squashes. */
   message?: string
+  line?: string
 }
+
+/** One entry of git's own --rebase-merges plan: a commit, or a structural line. */
+export type RebaseTodoItem = { kind: 'pick'; sha: string } | { kind: 'line'; text: string }
 
 export interface RebasePlan {
   base: string | null
@@ -235,6 +264,8 @@ export interface RebasePlan {
   hasMerges: boolean
   /** How many of these commits are already on the upstream (a force push follows). */
   pushed: number
+  /** With merges in range: git's plan, in order (commits and label/reset/merge lines). */
+  structure?: RebaseTodoItem[]
 }
 
 /** A commit that touched a file, with the file's path in that commit (it follows renames). */
