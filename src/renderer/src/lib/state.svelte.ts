@@ -131,6 +131,17 @@ class AppState {
     return this.drafts[this.repo?.id ?? '_'] ?? { summary: '', body: '', amend: false }
   }
 
+  /**
+   * Whether the repository a dialog or a toast was about is still the one in
+   * front. Both outlive a tab switch ("Open in" from Explorer brings another
+   * repository forward): their answer must not land on the one shown now.
+   */
+  stillOn(id: string | undefined): boolean {
+    if (id && this.repo?.id === id) return true
+    toast('info', 'That was about another repository. Switch back to it and try again.')
+    return false
+  }
+
   /* ─── Lifecycle ───────────────────────────────────────────────────────────── */
 
   async init(): Promise<void> {
@@ -200,7 +211,8 @@ class AppState {
     const t = ++this.openToken
     const entry = await api['repo:open'](id)
     if (t !== this.openToken) return
-    if (this.repo && this.repo.id !== entry.id) this.memory.set(this.repo.id, this.snapshot())
+    // A tab just closed is still in front here: it has nothing to remember.
+    if (this.repo && this.repo.id !== entry.id && this.tabs.includes(this.repo.id)) this.memory.set(this.repo.id, this.snapshot())
     this.drafts[entry.id] ??= { summary: '', body: '', amend: false }
     this.repo = entry
     if (!this.tabs.includes(entry.id)) this.tabs = [...this.tabs, entry.id]
@@ -443,7 +455,7 @@ class AppState {
 
   async reloadHistory(keepSelection = false): Promise<void> {
     const token = ++this.historyToken
-    this.graphBuilder.reset()
+    this.graphBuilder.reset(!!this.historySearch)
     this.historyDone = false
     const repo = this.repo
     if (!repo) return
@@ -510,6 +522,7 @@ class AppState {
   }
 
   private reportError(err: AppError): void {
+    const id = this.repo?.id
     switch (err.code) {
       case 'CONFLICTS':
         this.view = 'changes'
@@ -520,7 +533,7 @@ class AppState {
         break
       case 'NON_FAST_FORWARD':
         toast('error', 'The remote has commits you do not have yet. Pull first, then push again.', {
-          label: 'Pull now', run: () => this.pull(),
+          label: 'Pull now', run: () => this.stillOn(id) && this.pull(),
         })
         break
       default:
@@ -531,15 +544,17 @@ class AppState {
   async fetch(background = false): Promise<void> {
     if (!this.repo) return
     const repo = this.repo.path
+    // The time of the last fetch belongs to the repository fetched, whichever is in front by then.
+    const fetched = () => { if (this.repo?.path === repo) this.lastFetched = Date.now() }
     if (background) {
       try { await api['git:fetch'](repo) } catch { return }
-      this.lastFetched = Date.now()
+      fetched()
       await this.refreshAll()
       return
     }
     await this.run('Fetching', async () => {
       await api['git:fetch'](repo)
-      this.lastFetched = Date.now()
+      fetched()
     })
   }
 
@@ -547,18 +562,19 @@ class AppState {
     if (!this.repo) return
     const repo = this.repo.path
     await this.run('Pulling', () => api['git:pull'](repo))
-    this.lastFetched = Date.now()
+    if (this.repo?.path === repo) this.lastFetched = Date.now()
   }
 
   async push(force = false): Promise<void> {
     if (!this.repo) return
-    const repo = this.repo.path
+    const { id, path: repo } = this.repo
     const publishing = !this.status?.upstream
+    const branch = this.status?.branch ?? ''
     const end = this.beginBusy(publishing ? 'Publishing' : 'Pushing')
     try {
       await api['git:push'](repo, { force })
-      toast('success', publishing ? `Published ${this.status?.branch} to the remote.` : 'Pushed.', publishing ? {
-        label: 'Create pull request', run: () => this.openProvider({ type: 'pr', branch: this.status?.branch ?? '' }),
+      toast('success', publishing ? `Published ${branch} to the remote.` : 'Pushed.', publishing ? {
+        label: 'Create pull request', run: () => this.stillOn(id) && this.openProvider({ type: 'pr', branch }),
       } : undefined)
     } catch (e) {
       const err = asError(e)
@@ -572,6 +588,7 @@ class AppState {
             { label: 'Force push', value: 'force', variant: 'danger' },
           ],
         })
+        if (choice && !this.stillOn(id)) return
         if (choice === 'pull') await this.pull()
         if (choice === 'force') await this.push(true)
         return
@@ -579,7 +596,7 @@ class AppState {
       if (err.code === 'NON_FAST_FORWARD' && force) {
         // The lease held, but the remote has commits that never reached this branch's history.
         toast('error', 'Force push refused: the remote has commits you have not seen in this branch, so they would be lost. Pull or look at them first.', {
-          label: 'Pull now', run: () => this.pull(),
+          label: 'Pull now', run: () => this.stillOn(id) && this.pull(),
         })
         return
       }
@@ -674,13 +691,16 @@ class AppState {
     this.compareTarget = null
   }
 
-  /** Goes back to a point of the undo history, then offers to come back (redo). */
-  async restore(point: RestorePoint, label: string): Promise<void> {
-    if (!this.repo) return
+  /**
+   * Goes back to a point of the undo history, then offers to come back (redo).
+   * `id`: the repository the point was shown for, read before any dialog.
+   */
+  async restore(point: RestorePoint, label: string, id = this.repo?.id): Promise<void> {
+    if (!this.repo || !this.stillOn(id)) return
     const repo = this.repo.path
     const prev = await this.run(`Restoring ${label}`, () => api['git:restore'](repo, point))
     if (prev) {
-      toast('success', `Restored: ${label}`, { label: 'Redo', run: () => this.run('Redoing', () => api['git:restore'](repo, prev)) }, 10_000)
+      toast('success', `Restored: ${label}`, { label: 'Redo', run: () => this.stillOn(id) && this.run('Redoing', () => api['git:restore'](repo, prev)) }, 10_000)
     }
   }
 

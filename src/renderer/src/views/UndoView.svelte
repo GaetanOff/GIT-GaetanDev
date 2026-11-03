@@ -107,6 +107,9 @@
   async function restoreBranch(b: DeletedBranch, at: 'newest' | 'known' = 'newest') {
     const n = at === 'newest' ? newer[b.name] : undefined
     const sha = n?.sha ?? b.sha
+    // The repository the branch was listed for, even if another one is in front once the dialog closes.
+    const path = app.repo?.path
+    if (!path) return
     const ok = await confirm({
       title: `Restore branch ${b.name}?`,
       message: n
@@ -116,7 +119,7 @@
           : `It is recreated at ${shortSha(sha)}, the last commit you had checked out on it. No newer commit was found on a remote branch or in the object store.`,
       confirmLabel: 'Restore',
     })
-    if (ok) await restoreDeleted(b.name, sha)
+    if (ok) await restoreDeleted(b.name, sha, path)
   }
 
   const ICON: Record<OperationKind, IconName> = {
@@ -133,8 +136,9 @@
   }
 
   async function undo(op: RepoOperationEntry) {
+    const id = app.repo?.id
     const ok = await confirm({ title: `Undo “${op.title}”?`, message: explain(op), confirmLabel: 'Go back' })
-    if (ok) await app.restore(op.before, `before “${op.title}”`)
+    if (ok) await app.restore(op.before, `before “${op.title}”`, id)
   }
 
   const groups = $derived.by(() => {

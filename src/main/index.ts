@@ -15,6 +15,8 @@ const dev = !app.isPackaged
 if (dev && process.env.GDG_USER_DATA) app.setPath('userData', process.env.GDG_USER_DATA)
 
 process.on('unhandledRejection', reason => console.error('Unhandled rejection in main:', reason))
+// One failed callback must not take every open repository down with it.
+process.on('uncaughtException', error => console.error('Uncaught exception in main:', error))
 
 /**
  * A folder given on the command line ("Open with", a shortcut, `gaetandev-git .`):

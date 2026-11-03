@@ -87,6 +87,25 @@ async function extractTodo(repo: string, base: string | null, shas: string[]): P
   return items
 }
 
+const ACTIONS = new Set(['pick', 'reword', 'squash', 'fixup', 'drop', 'line'])
+/** What git's own --rebase-merges plan holds besides commits: never `exec`, `break` or anything that runs a command. */
+const PLAN_LINE = /^(?:label|reset|merge|update-ref|pick|noop|#)(?: |$)/
+
+/**
+ * Every step goes into the todo file as one line: a sha must be a sha, and a
+ * structural line one that git's plan has, or a newline or an `exec` line
+ * would run a command.
+ */
+function checkSteps(steps: RebaseStep[]): void {
+  if (!Array.isArray(steps)) throw new GitError('Invalid history plan.')
+  for (const s of steps) {
+    const ok = !!s && ACTIONS.has(s.action) && (s.message === undefined || typeof s.message === 'string') && (s.action === 'line'
+      ? typeof s.line === 'string' && !/[\r\n]/.test(s.line) && PLAN_LINE.test(s.line)
+      : typeof s.sha === 'string' && /^[0-9a-f]{4,64}$/i.test(s.sha))
+    if (!ok) throw new GitError(`"${String(s?.line ?? s?.sha)}" is not a step of a history plan.`)
+  }
+}
+
 /**
  * Runs `git rebase -i` with a todo list written by the app. Squash groups and
  * rewords are done with `fixup` plus an `exec git commit --amend -F <file>`,
@@ -97,6 +116,7 @@ async function extractTodo(repo: string, base: string | null, shas: string[]): P
  * because a rebase stopped on a conflict still needs them when it continues.
  */
 export async function rebaseRun(repo: string, base: string | null, steps: RebaseStep[], head: string): Promise<void> {
+  checkSteps(steps)
   const commits = steps.filter(s => s.action !== 'line')
   if (!commits.some(s => s.action !== 'drop')) throw new GitError('Every commit is dropped. Use a reset instead if that is what you want.')
   // A commit made since the plan was shown is not in the todo: git would drop it.

@@ -33,14 +33,21 @@ interface Lane {
 export class GraphBuilder {
   private lanes: (Lane | null)[] = []
   private nextColor = 0
+  private flat = false
 
-  reset(): void {
+  /**
+   * `flat` for search results: they skip the commits in between, so parents
+   * never show up and every lane would stay open (a graph growing with the
+   * square of the results). They are laid out in one column instead.
+   */
+  reset(flat = false): void {
     this.lanes = []
     this.nextColor = 0
+    this.flat = flat
   }
 
   add(commits: Commit[]): GraphRow[] {
-    return commits.map(c => this.row(c))
+    return commits.map(c => (this.flat ? { col: 0, color: 0, top: [], bottom: [], width: 1, merge: c.parents.length > 1 } : this.row(c)))
   }
 
   private row(c: Commit): GraphRow {

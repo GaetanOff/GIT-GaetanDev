@@ -3,7 +3,7 @@ import { appendFile, copyFile, lstat, mkdir, readFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { basename, isAbsolute, join } from 'node:path'
 import { shell } from 'electron'
-import { selectionFingerprint, type Author, type DiffOptions, type FileDiff, type LineSelection, type Progress, type PullMode, type ResetMode, type RepoStatus } from '@shared/types'
+import { selectionFingerprint, type Author, type DiffOptions, type FileChange, type FileDiff, type LineSelection, type Progress, type PullMode, type ResetMode, type RepoStatus } from '@shared/types'
 import { applyPatch, buildPartialPatch, diff } from './diff'
 import { assertRefName, git, gitOut, GitError } from './exec'
 import { currentBranch, defaultRemote, upstreamOf } from './refs'
@@ -79,7 +79,10 @@ export async function discardLines(repo: string, path: string, selection: LineSe
  */
 export async function discard(repo: string, paths: string[]): Promise<void> {
   const st = await status(repo)
-  const byPath = new Map(st.files.map(f => [f.path, f]))
+  // A file removed from the index but still on disk ("git rm --cached") is listed twice, as a staged
+  // deletion and as untracked: undoing the deletion is what brings it back to HEAD's version.
+  const byPath = new Map<string, FileChange>()
+  for (const f of st.files) if (!byPath.get(f.path) || byPath.get(f.path)!.untracked) byPath.set(f.path, f)
   const created: string[] = []
   const tracked: string[] = []
   for (const p of paths) {
@@ -367,9 +370,15 @@ async function checkStash(repo: string, index: number, sha?: string): Promise<vo
 export async function stashApply(repo: string, index: number, pop: boolean, sha?: string): Promise<void> {
   await checkStash(repo, index, sha)
   await git(repo, ['stash', pop ? 'pop' : 'apply', '--index', `stash@{${index}}`]).catch(async e => {
-    // --index fails when the staged state cannot be restored; fall back to a plain apply.
-    if (e instanceof GitError && e.code !== 'CONFLICTS') await git(repo, ['stash', pop ? 'pop' : 'apply', `stash@{${index}}`])
-    else throw e
+    // --index fails up front when the staged state cannot be restored: then a plain apply is the way.
+    // Other failures are not about the index. An untracked file in the way stops git after the changes
+    // are back: applying again would bury that under "your local changes would be overwritten".
+    if (e instanceof GitError && /conflicts in index/i.test(`${e.message}\n${e.stderr}`)) return git(repo, ['stash', pop ? 'pop' : 'apply', `stash@{${index}}`])
+    if (e instanceof GitError && /could not restore untracked files/i.test(e.message)) {
+      const inTheWay = [...e.stderr.matchAll(/^(.+) already exists, no checkout\r?$/gm)].map(m => m[1])
+      e.message = `The changes are back, but untracked files of the stash are in the way${inTheWay.length ? `: ${inTheWay.join(', ')}` : ''}. The stash is kept.`
+    }
+    throw e
   })
 }
 

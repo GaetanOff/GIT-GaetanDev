@@ -71,6 +71,18 @@ const MARK = {
   mid: '='.repeat(MARKER_SIZE), end: `${'>'.repeat(MARKER_SIZE)} theirs`,
 }
 
+const isAscii = (b: Buffer) => b.every(c => c < 0x80)
+
+/**
+ * The encoding the resolved file is written back in, so it round-trips: ours
+ * (Windows-1252, UTF-8 with BOM…), unless ours is plain ASCII, which any of
+ * them reads the same; then the first other side whose bytes tell.
+ */
+function fileEncoding(...sides: (Buffer | null)[]): TextEncoding {
+  const telling = sides.find(b => b && (detect(b) === 'utf8-bom' || !isAscii(b)))
+  return telling ? detect(telling) : 'utf8'
+}
+
 /**
  * Rebuilds the conflict from the index stages with `git merge-file --diff3`, so
  * the base is always available whatever merge.conflictStyle says, then splits
@@ -90,11 +102,15 @@ export async function conflict(repo: string, path: string): Promise<ConflictFile
     return result
   }
 
+  // Each side is decoded with its own encoding and merged as UTF-8 without a BOM: a BOM on line 1
+  // would stand in front of the conflict marker, and a Windows-1252 side would not read as text.
+  result.encoding = fileEncoding(ours, theirs, base)
+  const utf8 = (side: Buffer | null) => (side ? Buffer.from(decode(side), 'utf8') : Buffer.alloc(0))
   const dir = await mkdtemp(join(tmpdir(), 'gdg-merge-'))
   let mergedRaw: Buffer
   try {
     const files = { ours: join(dir, 'ours'), base: join(dir, 'base'), theirs: join(dir, 'theirs') }
-    await Promise.all([writeFile(files.ours, ours), writeFile(files.base, base ?? Buffer.alloc(0)), writeFile(files.theirs, theirs)])
+    await Promise.all([writeFile(files.ours, utf8(ours)), writeFile(files.base, utf8(base)), writeFile(files.theirs, utf8(theirs))])
     // Exit code is the number of conflicts; negative (255) only on error.
     const r = await git(repo, ['merge-file', '-p', '--diff3', `--marker-size=${MARKER_SIZE}`, '-L', 'ours', '-L', 'base', '-L', 'theirs', files.ours, files.base, files.theirs], {
       okCodes: Array.from({ length: 127 }, (_, i) => i + 1),
@@ -104,9 +120,7 @@ export async function conflict(repo: string, path: string): Promise<ConflictFile
     await rm(dir, { recursive: true, force: true }).catch(() => undefined)
   }
 
-  // Decode with the encoding the file really has (Windows-1252, UTF-8 with BOM…), so it round-trips.
-  result.encoding = detect(ours)
-  const merged = decode(mergedRaw, result.encoding)
+  const merged = mergedRaw.toString('utf8')
   // Keep the line endings the file has on disk (autocrlf checkouts), else those of the merge.
   const sample = disk && !isBinary(disk) ? decode(disk, detect(disk)) : merged
   const crlf = (sample.match(/\r\n/g)?.length ?? 0) > (sample.match(/(?<!\r)\n/g)?.length ?? 0)

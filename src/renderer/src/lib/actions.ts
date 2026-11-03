@@ -59,15 +59,16 @@ export async function deleteBranch(b: Branch): Promise<void> {
     if (ok) await app.run(`Deleting ${b.name}`, () => api['git:deleteRemoteBranch'](path, remote, branch), { success: `Deleted ${b.name}.` })
     return
   }
+  if (!app.repo) return
+  // The repo the question is about, even if another tab is in front once it is answered or git is done.
+  const target = { path: app.repo.path, id: app.repo.id }
   const ok = await confirm({
     title: `Delete branch “${b.name}”?`,
     message: b.upstream ? `The remote branch ${b.upstream} is kept.` : 'This branch was never pushed: its unique commits will only be reachable through the reflog.',
     confirmLabel: 'Delete',
     danger: true,
   })
-  if (!ok || !app.repo) return
-  // The repo this happens in, even if another tab is in front by the time git answers.
-  const target = { path: app.repo.path, id: app.repo.id }
+  if (!ok) return
   try {
     const sha = await api['git:deleteBranch'](target.path, b.name, false)
     deleted(b.name, sha, target)
@@ -229,6 +230,7 @@ export function commitsMenu(list: Commit[]): MenuItem[] {
 export async function dropBranch(dragged: string, target: string): Promise<void> {
   if (dragged === target) return
   const current = app.status?.branch
+  const id = app.repo?.id
   const choice = await choose({
     title: `${dragged} → ${target}`,
     message: target === current
@@ -239,7 +241,8 @@ export async function dropBranch(dragged: string, target: string): Promise<void>
       { label: `Rebase ${target} onto it`, value: 'rebase' as const, variant: 'secondary' },
     ],
   })
-  if (!choice) return
+  // The branches in the question are that repository's; checkout, merge and rebase act on the one in front.
+  if (!choice || !app.stillOn(id)) return
   if (target !== current) {
     await app.checkout(target)
     if (app.status?.branch !== target) return

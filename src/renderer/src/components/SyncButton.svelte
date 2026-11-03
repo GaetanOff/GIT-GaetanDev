@@ -48,8 +48,9 @@
       {
         label: 'Force push (with lease)…', icon: 'push', danger: true, disabled: !app.status?.upstream,
         run: async () => {
+          const id = app.repo?.id
           const ok = await confirm({ title: 'Force push?', message: 'This overwrites the remote branch with your local one. It fails safely if someone else pushed in the meantime.', confirmLabel: 'Force push', danger: true })
-          if (ok) app.push(true)
+          if (ok && app.stillOn(id)) app.push(true)
         },
       },
       { label: 'Add remote…', icon: 'cloud', run: () => openDialog({ kind: 'remote' }) },
