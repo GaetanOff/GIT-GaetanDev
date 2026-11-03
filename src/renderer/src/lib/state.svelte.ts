@@ -506,6 +506,8 @@ class AppState {
    * get a helpful follow-up instead of a raw error.
    */
   async run<T>(label: string, fn: () => Promise<T>, opts: { refresh?: boolean; quiet?: boolean; success?: string } = {}): Promise<T | undefined> {
+    // The repository the operation runs on: another tab may be in front when it fails.
+    const id = this.repo?.id
     const end = this.beginBusy(label)
     try {
       const r = await fn()
@@ -513,7 +515,7 @@ class AppState {
       return r
     } catch (e) {
       const err = asError(e)
-      if (!opts.quiet) this.reportError(err)
+      if (!opts.quiet) this.reportError(err, id)
       return undefined
     } finally {
       end()
@@ -521,11 +523,11 @@ class AppState {
     }
   }
 
-  private reportError(err: AppError): void {
-    const id = this.repo?.id
+  /** `id`: the repository the failed operation ran on, so a follow-up never lands on another one. */
+  private reportError(err: AppError, id: string | undefined): void {
     switch (err.code) {
       case 'CONFLICTS':
-        this.view = 'changes'
+        if (this.repo?.id === id) this.view = 'changes'
         toast('error', 'Conflicts need your attention. Resolve them in the Changes view, then continue.')
         break
       case 'AUTH_FAILED':
@@ -600,7 +602,7 @@ class AppState {
         })
         return
       }
-      this.reportError(err)
+      this.reportError(err, id)
     } finally {
       end()
       await this.refreshAll()
@@ -619,7 +621,7 @@ class AppState {
 
   async checkout(branch: string): Promise<void> {
     if (!this.repo) return
-    const repo = this.repo.path
+    const { id, path: repo } = this.repo
     const end = this.beginBusy(`Switching to ${branch}`)
     try {
       await api['git:checkout'](repo, branch)
@@ -639,7 +641,7 @@ class AppState {
         }
         return
       }
-      this.reportError(err)
+      this.reportError(err, id)
     } finally {
       end()
       this.selected = null

@@ -208,7 +208,8 @@ export async function gitOut(cwd: string, args: string[], opts?: ExecOptions): P
 
 const PATTERNS: [RegExp, GitErrorCode][] = [
   [/would be overwritten by (checkout|merge)|Please commit your changes or stash them/i, 'LOCAL_CHANGES_OVERWRITTEN'],
-  [/\[rejected\].*\((non-fast-forward|fetch first)\)|Updates were rejected because/i, 'NON_FAST_FORWARD'],
+  // Not a tag that already exists on the remote: pulling would not help there.
+  [/\[rejected\].*\((non-fast-forward|fetch first)\)|Updates were rejected because (?!the tag already exists)/i, 'NON_FAST_FORWARD'],
   [/has no upstream branch|no tracking information/i, 'NO_UPSTREAM'],
   [/Authentication failed|could not read Username|Permission denied \(publickey|terminal prompts disabled|HTTP Basic: Access denied|returned error: 40[13]/i, 'AUTH_FAILED'],
   [/CONFLICT \(|Merge conflict|fix conflicts|could not apply|after resolving the conflicts/i, 'CONFLICTS'],

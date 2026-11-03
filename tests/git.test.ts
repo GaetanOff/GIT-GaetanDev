@@ -390,6 +390,20 @@ describe('history', () => {
     expect(sh(repo, 'log', '--format=%s', '-4').split('\n')).toEqual(['c3', 'c2', 'c1', 'base'])
   })
 
+  it('does not read a tag that already exists on the remote as commits to pull', async () => {
+    const remote = makeRepo('remote.git')
+    sh(remote, 'config', 'receive.denyCurrentBranch', 'ignore')
+    commit(remote, 'base', { 'a.txt': 'a\n' })
+    sh(remote, 'tag', 'v1')
+    const repo = makeRepo()
+    commit(repo, 'other', { 'b.txt': 'b\n' })
+    sh(repo, 'remote', 'add', 'origin', remote)
+    sh(repo, 'tag', 'v1')
+    const err = await ops.pushTag(repo, 'origin', 'v1', () => undefined).then(() => null, (e: { code?: string }) => e)
+    expect(err).not.toBeNull()
+    expect(err?.code).not.toBe('NON_FAST_FORWARD')
+  })
+
   it('lists remotes whose URL has spaces', async () => {
     const repo = makeRepo()
     commit(repo, 'base')
