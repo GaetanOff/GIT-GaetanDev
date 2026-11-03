@@ -3,6 +3,8 @@
   import VirtualList from '@/components/VirtualList.svelte'
   import Resizer from '@/components/Resizer.svelte'
   import DiffView from '@/components/DiffView.svelte'
+  import Code from '@/components/Code.svelte'
+  import { langFor } from '@/lib/syntax'
   import type { Blame, BlameCommit, FileCommit } from '@shared/types'
   import { api, asError } from '@/lib/api'
   import { basename, dirname, fullDate, initials, relativeTime, shortSha, statusStyle, tone } from '@/lib/format'
@@ -10,7 +12,10 @@
   import { contextMenu, toast, type MenuItem } from '@/lib/ui.svelte'
 
   const PAGE = 300
-  const target = $derived(app.fileTarget!)
+  let last = app.fileTarget!
+  const target = $derived(app.fileTarget ?? last)
+  $effect(() => { if (app.fileTarget) last = app.fileTarget })
+  const lang = $derived(langFor(target.path))
 
   /* ─── History ─────────────────────────────────────────────────────────────── */
 
@@ -219,7 +224,7 @@
             {/if}
           </button>
           <span class="no">{i + 1}</span>
-          <span class="code">{l.text}</span>
+          <span class="code"><Code text={l.text} {lang} /></span>
         </div>
       {/snippet}
     </VirtualList>

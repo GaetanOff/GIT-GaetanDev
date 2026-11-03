@@ -81,6 +81,9 @@
         <div class="field">
           <label class="check"><input type="checkbox" checked={app.settings.confirmDiscard} onchange={e => app.updateSettings({ confirmDiscard: (e.target as HTMLInputElement).checked })} />Ask before discarding changes</label>
         </div>
+        <div class="field">
+          <label class="check"><input type="checkbox" checked={app.settings.syntaxHighlight} onchange={e => app.updateSettings({ syntaxHighlight: (e.target as HTMLInputElement).checked })} />Syntax highlighting in diffs, blame and conflicts</label>
+        </div>
       {:else if tab === 'git'}
         <p class="intro">Who your commits are attributed to. Most providers match this email to your account.</p>
         <div class="field"><span class="label">Name</span><input class="input" bind:value={gName} placeholder="Jane Doe" /></div>

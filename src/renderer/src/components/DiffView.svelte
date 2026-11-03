@@ -1,6 +1,8 @@
 <script lang="ts">
   import Icon from './Icon.svelte'
+  import Code from './Code.svelte'
   import VirtualList from './VirtualList.svelte'
+  import { langFor } from '@/lib/syntax'
   import type { DiffLine, DiffSource, FileDiff, LineSelection } from '@shared/types'
   import { api, asError } from '@/lib/api'
   import { longestLine, splitRows, unifiedRows, type DiffRow } from '@/lib/diffrows'
@@ -12,6 +14,7 @@
   let { source, area }: { source: DiffSource; area: 'staged' | 'unstaged' | 'conflicted' | 'commit' } = $props()
 
   const ROW = 20
+  const lang = $derived(langFor(source.path))
 
   let diff = $state.raw<FileDiff | null>(null)
   let error = $state<string | null>(null)
@@ -137,9 +140,7 @@
 
 <svelte:window onpointerup={() => (drag = null)} />
 
-{#snippet code(segs: Segment[] | undefined, text: string)}
-  {#if segs}{#each segs as s}{#if s.changed}<mark>{s.text}</mark>{:else}{s.text}{/if}{/each}{:else}{text}{/if}
-{/snippet}
+{#snippet code(segs: Segment[] | undefined, text: string)}<Code {text} {lang} {segs} />{/snippet}
 
 <div class="diff">
   <div class="toolbar">

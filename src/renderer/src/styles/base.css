@@ -146,3 +146,16 @@ kbd, .kbd {
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; }
 }
+
+/* ─── Syntax colours (design palette, tuned for dark diff backgrounds) ──────── */
+.sx-kw { color: #c792ff; }
+.sx-str { color: #8ee6a8; }
+.sx-num { color: #f6c86b; }
+.sx-com { color: #6b7684; font-style: italic; }
+.sx-fn { color: #7dd8f0; }
+.sx-type { color: #5eead4; }
+.sx-tag { color: #93c5fd; }
+.sx-attr { color: #fbd38d; }
+.sx-prop { color: #9ec5fe; }
+.sx-lit { color: #f9a8d4; }
+.sx-meta { color: #a5b4fc; }

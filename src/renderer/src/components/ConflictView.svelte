@@ -9,6 +9,8 @@
   import { tick } from 'svelte'
   import Icon from './Icon.svelte'
   import DiffView from './DiffView.svelte'
+  import Code from './Code.svelte'
+  import { langFor } from '@/lib/syntax'
   import type { ConflictChunk, ConflictFile } from '@shared/types'
   import { api, asError } from '@/lib/api'
   import { basename, dirname } from '@/lib/format'
@@ -16,6 +18,7 @@
   import { confirm, toast } from '@/lib/ui.svelte'
 
   let { path }: { path: string } = $props()
+  const lang = $derived(langFor(path))
 
   let file = $state.raw<ConflictFile | null>(null)
   let error = $state<string | null>(null)
@@ -223,13 +226,13 @@
             {@const long = chunk.lines.length > FOLD * 2 + 2 && !expanded.has(i)}
             <div class="common mono">
               {#if long}
-                {#each chunk.lines.slice(0, i === 0 ? 0 : FOLD) as l}<div class="ln">{l || ' '}</div>{/each}
+                {#each chunk.lines.slice(0, i === 0 ? 0 : FOLD) as l}<div class="ln">{#if l}<Code text={l} {lang} />{:else}{' '}{/if}</div>{/each}
                 <button class="fold" onclick={() => (expanded = new Set([...expanded, i]))}>
                   <Icon name="more" size={12} />{chunk.lines.length - (i === 0 ? 0 : FOLD) - (i === file.chunks.length - 1 ? 0 : FOLD)} unchanged lines
                 </button>
-                {#each chunk.lines.slice(i === file.chunks.length - 1 ? chunk.lines.length : -FOLD) as l}<div class="ln">{l || ' '}</div>{/each}
+                {#each chunk.lines.slice(i === file.chunks.length - 1 ? chunk.lines.length : -FOLD) as l}<div class="ln">{#if l}<Code text={l} {lang} />{:else}{' '}{/if}</div>{/each}
               {:else}
-                {#each chunk.lines as l}<div class="ln">{l || ' '}</div>{/each}
+                {#each chunk.lines as l}<div class="ln">{#if l}<Code text={l} {lang} />{:else}{' '}{/if}</div>{/each}
               {/if}
             </div>
           {:else}
@@ -247,17 +250,17 @@
               <div class="sides" class:three={showBase && file.hasBase}>
                 <button class="side ours" class:picked={r?.pick === 'ours'} onclick={() => pick(i, 'ours')}>
                   <span class="side-head"><span class="label">Ours</span><span class="who truncate">{file.oursLabel}</span><span class="use">Use ours</span></span>
-                  <span class="code mono">{#each chunk.ours as l}<span class="ln">{l || ' '}</span>{:else}<span class="nothing">(no lines)</span>{/each}</span>
+                  <span class="code mono">{#each chunk.ours as l}<span class="ln">{#if l}<Code text={l} {lang} />{:else}{' '}{/if}</span>{:else}<span class="nothing">(no lines)</span>{/each}</span>
                 </button>
                 {#if showBase && file.hasBase}
                   <button class="side base" class:picked={r?.pick === 'base'} onclick={() => pick(i, 'base')}>
                     <span class="side-head"><span class="label">Base</span><span class="who">common ancestor</span><span class="use">Use base</span></span>
-                    <span class="code mono">{#each chunk.base as l}<span class="ln">{l || ' '}</span>{:else}<span class="nothing">(no lines)</span>{/each}</span>
+                    <span class="code mono">{#each chunk.base as l}<span class="ln">{#if l}<Code text={l} {lang} />{:else}{' '}{/if}</span>{:else}<span class="nothing">(no lines)</span>{/each}</span>
                   </button>
                 {/if}
                 <button class="side theirs" class:picked={r?.pick === 'theirs'} onclick={() => pick(i, 'theirs')}>
                   <span class="side-head"><span class="label">Theirs</span><span class="who truncate">{file.theirsLabel}</span><span class="use">Use theirs</span></span>
-                  <span class="code mono">{#each chunk.theirs as l}<span class="ln">{l || ' '}</span>{:else}<span class="nothing">(no lines)</span>{/each}</span>
+                  <span class="code mono">{#each chunk.theirs as l}<span class="ln">{#if l}<Code text={l} {lang} />{:else}{' '}{/if}</span>{:else}<span class="nothing">(no lines)</span>{/each}</span>
                 </button>
               </div>
               {#if editing === i}
@@ -272,7 +275,7 @@
               {:else if r && (r.pick === 'custom' || r.pick.includes('+'))}
                 <div class="result">
                   <div class="result-head"><span class="label">Result</span></div>
-                  <div class="code mono">{#each linesFor(chunk, r) as l}<div class="ln">{l || ' '}</div>{:else}<span class="nothing">(empty)</span>{/each}</div>
+                  <div class="code mono">{#each linesFor(chunk, r) as l}<div class="ln">{#if l}<Code text={l} {lang} />{:else}{' '}{/if}</div>{:else}<span class="nothing">(empty)</span>{/each}</div>
                 </div>
               {/if}
             </section>
