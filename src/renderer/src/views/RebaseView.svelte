@@ -32,16 +32,20 @@
   let dropAt = $state<number | null>(null)
   let running = $state(false)
   let listEl = $state<HTMLDivElement>()
+  let planToken = 0
 
   $effect(() => {
     const repo = app.repo?.path
     const base = target.base
     if (!repo || !app.rebaseTarget) return
+    // Only the latest request may fill the view: an older plan would come with another repo's commits.
+    const t = ++planToken
     plan = null
     error = null
     api['git:rebasePlan'](repo, base)
       .catch(e => (base === 'HEAD~10' ? api['git:rebasePlan'](repo, null) : Promise.reject(e)))
       .then(p => {
+        if (t !== planToken) return
         plan = p
         const row = (c: RebasePlan['commits'][number]): Row => ({ sha: c.sha, action: 'pick', subject: c.subject, body: c.body, author: c.author, date: c.date, merge: c.parents.length > 1 })
         rows = p.structure
@@ -50,7 +54,7 @@
         original = rows.map(r => r.sha).join(',')
         selected = Math.max(0, rows.map(r => !r.line).lastIndexOf(true))
       })
-      .catch(e => (error = asError(e).message))
+      .catch(e => { if (t === planToken) error = asError(e).message })
   })
 
   /** With merges in range, git's plan is followed: commits move and squash within their own stretch. */
@@ -155,10 +159,13 @@
 
   async function start() {
     if (!plan || invalid || !app.repo) return
-    if (plan.pushed) {
+    // The plan and the repo it was made for, whatever is in front once the dialog closes.
+    const repo = app.repo.path
+    const p = plan
+    if (p.pushed) {
       const ok = await confirm({
         title: 'Rewrite pushed commits?',
-        message: `${plan.pushed} of these commits are already on the remote. After the rebase you will need to force push, and anyone who pulled them must reset.`,
+        message: `${p.pushed} of these commits are already on the remote. After the rebase you will need to force push, and anyone who pulled them must reset.`,
         confirmLabel: 'Rebase anyway',
         danger: true,
       })
@@ -171,8 +178,7 @@
       return { sha: r.sha, action: r.action, message }
     })
     running = true
-    const repo = app.repo.path
-    const ok = await app.run('Rebasing', () => api['git:rebaseRun'](repo, plan!.base, steps).then(() => true))
+    const ok = await app.run('Rebasing', () => api['git:rebaseRun'](repo, p.base, steps, p.head).then(() => true))
     running = false
     if (ok) {
       toast('success', `History rewritten: ${commitRows.length} commits → ${resulting}.`, { label: 'Undo', run: () => { app.view = 'undo' } })

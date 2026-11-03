@@ -167,7 +167,7 @@
       Object.assign(d, { ...splitTemplate(template), amend: false, coAuthors: [] })
       amendBackup = null
       app.saveDrafts()
-      toast('success', `Committed ${sha.slice(0, 7)} to ${target}.`, { label: 'Undo', run: () => undoLastCommit({ repoId }) })
+      toast('success', `Committed ${sha.slice(0, 7)} to ${target}.`, { label: 'Undo', run: () => undoLastCommit({ repoId, sha }) })
     } catch (e) {
       const err = asError(e) as { message: string; code?: string; details?: string }
       // Hook output (linters, tests…) deserves more than a toast.

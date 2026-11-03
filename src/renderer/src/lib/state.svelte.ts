@@ -417,6 +417,17 @@ class AppState {
   }
 
   private pruneSelection(): void {
+    // A file that left its area (staged, discarded) leaves the multi-selection too, so a
+    // later Space or Delete never acts on files that are no longer shown there.
+    if (this.multi.size) {
+      const shown = new Set([
+        ...this.staged.map(f => `staged\0${f.path}`),
+        ...this.unstaged.map(f => `unstaged\0${f.path}`),
+        ...this.conflicted.map(f => `conflicted\0${f.path}`),
+      ])
+      const kept = new Set([...this.multi].filter(k => shown.has(k)))
+      if (kept.size !== this.multi.size) this.multi = kept
+    }
     if (!this.selected) return
     const { path, area } = this.selected
     const list = area === 'staged' ? this.staged : area === 'conflicted' ? this.conflicted : this.unstaged

@@ -11,18 +11,21 @@
   )
 
   async function skip() {
+    // The repo the question is about, even if another is opened while it is up.
+    const repo = app.repo!.path
     const ok = await confirm({
       title: 'Skip this commit?',
       message: `The commit ${op === 'rebase' ? 'being replayed' : 'being applied'} is left out, along with any resolution made for it. The ${op} then goes on with the next one.`,
       confirmLabel: 'Skip commit',
       danger: true,
     })
-    if (ok) await app.run('Skipping', () => api['git:skip'](app.repo!.path))
+    if (ok) await app.run('Skipping', () => api['git:skip'](repo))
   }
 
   async function abort() {
+    const repo = app.repo!.path
     const ok = await confirm({ title: `Abort ${op}?`, message: 'The repository goes back to how it was before it started. Resolutions made so far are lost.', confirmLabel: 'Abort', danger: true })
-    if (ok) await app.run('Aborting', () => api['git:abort'](app.repo!.path))
+    if (ok) await app.run('Aborting', () => api['git:abort'](repo))
   }
 </script>
 

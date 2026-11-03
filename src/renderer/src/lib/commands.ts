@@ -30,6 +30,8 @@ export async function pickAndInitRepo(): Promise<void> {
 
 export async function discardAll(): Promise<void> {
   if (!app.repo) return
+  // The paths belong to this repo: never discard them in another one opened meanwhile.
+  const repo = app.repo.path
   const paths = app.files.filter(f => !f.conflicted).map(f => f.path)
   if (!paths.length) return
   const ok = await confirm({
@@ -38,20 +40,26 @@ export async function discardAll(): Promise<void> {
     confirmLabel: 'Discard all',
     danger: true,
   })
-  if (ok) await app.run('Discarding', () => api['git:discard'](app.repo!.path, paths))
+  if (ok) await app.run('Discarding', () => api['git:discard'](repo, paths))
 }
 
 /**
  * Soft-resets the last commit. `ask` confirms first (the keyboard shortcut,
  * which is easy to press by accident); `repoId` ties the call to the repo a
- * toast was shown for, so it never undoes a commit in another tab.
+ * toast was shown for, so it never undoes a commit in another tab; `sha` is the
+ * commit it named, so a commit made after it is never the one taken back.
  */
-export async function undoLastCommit(opts: { ask?: boolean; repoId?: string } = {}): Promise<void> {
+export async function undoLastCommit(opts: { ask?: boolean; repoId?: string; sha?: string } = {}): Promise<void> {
   if (!app.repo || !app.status?.hasCommits) return
+  // The commit the user means: the toast's, or HEAD as shown before any dialog opens.
+  const expect = opts.sha ?? app.status.head ?? undefined
   if (opts.repoId && opts.repoId !== app.repo.id) {
     toast('info', 'That commit was made in another tab. Switch back to it to undo it.')
     return
   }
+  // This repo and its draft, even if another tab is in front once the dialog closes or git answers.
+  const repo = app.repo.path
+  const draft = app.draft
   const ahead = app.status.upstream ? app.status.ahead : 1
   if (!ahead) {
     const ok = await confirm({
@@ -62,18 +70,15 @@ export async function undoLastCommit(opts: { ask?: boolean; repoId?: string } = 
     })
     if (!ok) return
   } else if (opts.ask) {
-    const last = await api['git:lastCommitMessage'](app.repo.path).catch(() => '')
+    const last = await api['git:lastCommitMessage'](repo).catch(() => '')
     const ok = await confirm({
       title: 'Undo the last commit?',
       message: `“${last.split('\n')[0]}” is removed from the branch. Its changes stay staged.`,
       confirmLabel: 'Undo commit',
     })
-    if (!ok || !app.repo) return
+    if (!ok) return
   }
-  const repo = app.repo.path
-  // This repo's draft, even if another tab is in front when git answers.
-  const draft = app.draft
-  const message = await app.run('Undoing commit', () => api['git:undoCommit'](repo))
+  const message = await app.run('Undoing commit', () => api['git:undoCommit'](repo, expect))
   if (message === undefined) return
   // Never replace a message being written; otherwise bring the commit's back.
   const writing = !!(draft.summary.trim() || draft.body.trim())
@@ -90,8 +95,9 @@ export async function undoLastCommit(opts: { ask?: boolean; repoId?: string } = 
 export async function renameCurrentBranch(): Promise<void> {
   const b = app.status?.branch
   if (!b || !app.repo) return
+  const repo = app.repo.path
   const name = await prompt({ title: 'Rename branch', label: 'New name', value: b, confirmLabel: 'Rename', mono: true, validate: validateBranchName })
-  if (name && name !== b) await app.run('Renaming branch', () => api['git:renameBranch'](app.repo!.path, b, name))
+  if (name && name !== b) await app.run('Renaming branch', () => api['git:renameBranch'](repo, b, name))
 }
 
 export function validateBranchName(name: string): string | null {

@@ -116,7 +116,7 @@ export function registerIpc(watcher: RepoWatcher): void {
     'git:commitSetup': async repo => ops.commitSetup(repo),
     'git:lastCommitMessage': async repo => ops.lastCommitMessage(repo),
     'git:preparedMessage': async repo => ops.preparedMessage(repo),
-    'git:undoCommit': async repo => ops.undoCommit(repo),
+    'git:undoCommit': async (repo, expect) => ops.undoCommit(repo, expect),
     'git:resolve': async (repo, path, side) => ops.resolve(repo, path, side),
     'git:continue': async repo => ops.continueOp(repo),
     'git:abort': async repo => ops.abortOp(repo),
@@ -141,7 +141,7 @@ export function registerIpc(watcher: RepoWatcher): void {
     'git:remoteSearch': async (repo, branches) => remoteSearch(repo, branches, progress),
     'git:restore': async (repo, target) => restore(repo, target),
     'git:rebasePlan': async (repo, base) => rebasePlan(repo, base),
-    'git:rebaseRun': async (repo, base, steps) => rebaseRun(repo, base, steps),
+    'git:rebaseRun': async (repo, base, steps, head) => rebaseRun(repo, base, steps, head),
 
     'git:refs': async repo => refs(repo),
     'git:extras': async repo => extras(repo),
@@ -252,7 +252,7 @@ function serial<T>(repo: string, fn: () => Promise<T>): Promise<T> {
 /** Arguments, by position, that name a revision, branch, tag or remote. */
 const REF_ARGS: Record<string, number[]> = {
   'git:cherryPick': [1], 'git:revert': [1], 'git:reset': [1], 'git:checkoutCommit': [1], 'git:commit:detail': [1],
-  'git:blame': [2], 'git:compare': [1, 2], 'git:rebasePlan': [1], 'git:rebaseRun': [1],
+  'git:blame': [2], 'git:compare': [1, 2], 'git:rebasePlan': [1], 'git:rebaseRun': [1, 3], 'git:undoCommit': [1],
   'git:checkout': [1], 'git:createBranch': [1, 2], 'git:renameBranch': [1, 2], 'git:deleteBranch': [1], 'git:restoreBranch': [1, 2],
   'git:deleteRemoteBranch': [1, 2], 'git:merge': [1], 'git:rebase': [1], 'git:createTag': [1, 2], 'git:deleteTag': [1],
   'git:pushTag': [1, 2], 'git:addRemote': [1, 2], 'git:removeRemote': [1], 'git:worktreeAdd': [2, 4],

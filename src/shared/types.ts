@@ -291,7 +291,10 @@ export interface RebaseStep {
 export type RebaseTodoItem = { kind: 'pick'; sha: string } | { kind: 'line'; text: string }
 
 export interface RebasePlan {
+  /** The base resolved to a commit when the plan was made, so a moving `HEAD~10` or upstream cannot shift it. */
   base: string | null
+  /** HEAD when the plan was made: the rebase is refused if it moved since (a commit made elsewhere would be dropped). */
+  head: string
   commits: (Commit & { body: string })[]
   hasMerges: boolean
   /** How many of these commits are already on the upstream (a force push follows). */
@@ -355,6 +358,8 @@ export interface ConflictFile {
   finalNewline: boolean
   /** The file on disk has no conflict markers left: it was resolved elsewhere. */
   resolvedOnDisk: boolean
+  /** Blob ids of the base, ours and theirs stages: the same file in another merge is another conflict. */
+  stages: string
 }
 
 /* ─── Refs ──────────────────────────────────────────────────────────────────── */

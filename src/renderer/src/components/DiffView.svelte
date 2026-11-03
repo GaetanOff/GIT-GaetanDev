@@ -54,13 +54,16 @@
     try {
       const d = await api['git:diff'](repo, $state.snapshot(src) as DiffSource, opts)
       if (t !== token) return
+      const before = diff
       diff = d
       error = null
-      // Drop selections that no longer exist after a refresh.
+      // After a refresh, a key keeps its selection only if it still names the same line: a hunk
+      // added above (an editor autosave) shifts positions, and the old key would select another line.
       if (selected.size) {
-        const valid = new Set<string>()
-        d.hunks.forEach((h, hi) => h.lines.forEach((l, li) => l.type !== 'ctx' && valid.add(`${hi}:${li}`)))
-        const next = new Set([...selected].filter(k => valid.has(k)))
+        const next = new Set([...selected].filter(k => {
+          const was = lineAt(before, k)
+          return !!was && was.type !== 'ctx' && lineId(was) === lineId(lineAt(d, k))
+        }))
         if (next.size !== selected.size) selected = next
       }
     } catch (e) {
@@ -83,6 +86,12 @@
       diff.encoding !== 'utf16le' && diff.encoding !== 'utf16be',
   )
   const untracked = $derived(source.kind === 'worktree' && !!source.untracked)
+
+  function lineAt(d: FileDiff | null, k: string): DiffLine | undefined {
+    const [hi, li] = k.split(':').map(Number)
+    return d?.hunks[hi]?.lines[li]
+  }
+  const lineId = (l: DiffLine | undefined) => (l ? `${l.type} ${l.oldNo ?? ''}/${l.newNo ?? ''} ${l.text}` : '')
 
   function toSelection(keys: Iterable<string>): LineSelection {
     const sel: LineSelection = {}

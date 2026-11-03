@@ -180,8 +180,16 @@ export async function lastCommitMessage(repo: string): Promise<string> {
   return (await gitOut(repo, ['log', '-1', '--format=%B'])).trim()
 }
 
-/** Moves HEAD back one commit and keeps its changes staged; returns its message. */
-export async function undoCommit(repo: string): Promise<string> {
+/**
+ * Moves HEAD back one commit and keeps its changes staged; returns its message.
+ * With `expect`, only that commit is undone: a toast's Undo must not take back
+ * a commit made after it.
+ */
+export async function undoCommit(repo: string, expect?: string): Promise<string> {
+  if (expect) {
+    const head = (await git(repo, ['rev-parse', '-q', '--verify', 'HEAD'], { okCodes: [1] })).stdout.trim()
+    if (head !== expect) throw new GitError('That commit is no longer the last one on this branch, so it was not undone.')
+  }
   const message = await lastCommitMessage(repo)
   const hasParent = await git(repo, ['rev-parse', '--verify', '-q', 'HEAD~1'], { okCodes: [1] }).then(r => r.code === 0)
   if (hasParent) await git(repo, ['reset', '--soft', 'HEAD~1'])

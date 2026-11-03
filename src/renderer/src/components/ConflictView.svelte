@@ -15,7 +15,7 @@
 </script>
 
 <script lang="ts">
-  import { tick, untrack } from 'svelte'
+  import { tick } from 'svelte'
   import Icon from './Icon.svelte'
   import DiffView from './DiffView.svelte'
   import Code from './Code.svelte'
@@ -36,12 +36,16 @@
   let draft = $state('')
   let showBase = $state(loadShowBase())
   let tab = $state<'resolve' | 'result' | 'diff'>('resolve')
-  /** This view is mounted per repository and file (see ChangesView), so the key is fixed. */
-  const resultKey = untrack(() => `${app.repo?.path}\0${path}`)
+  /**
+   * Repo, path and index stages of the conflict shown: choices and Result text are
+   * remembered under it, so an aborted merge's picks never apply to the next merge
+   * of the same file. Null while the conflict loads.
+   */
+  let memKey = $state<string | null>(null)
   /** The whole result file, edited freely; null until the Result tab is opened. */
-  let resultText = $state<string | null>(results.get(resultKey) ?? null)
+  let resultText = $state<string | null>(null)
   $effect(() => {
-    if (resultText !== null) keep(results, resultKey, resultText)
+    if (memKey && resultText !== null) keep(results, memKey, resultText)
   })
   let gutter = $state<HTMLDivElement>()
   let saving = $state(false)
@@ -64,17 +68,26 @@
     error = null
     editing = null
     expanded = new Set()
-    picks = memory.get(`${repo}\0${p}`) ?? {}
+    memKey = null
+    picks = {}
+    resultText = null
     api['git:conflict'](repo, p)
-      .then(f => { if (t === token) file = f })
+      .then(f => {
+        if (t !== token) return
+        const key = `${repo}\0${p}\0${f.stages}`
+        memKey = key
+        picks = memory.get(key) ?? {}
+        resultText = results.get(key) ?? null
+        file = f
+      })
       .catch(e => { if (t === token) error = asError(e).message })
   })
 
   $effect(() => {
-    if (!app.repo) return
+    if (!memKey) return
     // A file with no choice made yet has nothing worth remembering.
-    if (Object.keys(picks).length) keep(memory, `${app.repo.path}\0${path}`, $state.snapshot(picks))
-    else memory.delete(`${app.repo.path}\0${path}`)
+    if (Object.keys(picks).length) keep(memory, memKey, $state.snapshot(picks))
+    else memory.delete(memKey)
   })
 
   /** Lexer state at the start of every rendered line, keyed "chunk:side:line". */
@@ -243,17 +256,18 @@
 
   async function saveResult() {
     if (!file || resultText === null || !app.repo) return
+    // This file's repo, even if another one is opened while the dialog is up.
+    const repo = app.repo.path
     if (markersLeft) {
       const ok = await confirm({ title: 'Conflict markers remain', message: 'The result still contains <<<<<<< / ======= / >>>>>>> lines. Save and mark resolved anyway?', confirmLabel: 'Save anyway', danger: true })
-      if (!ok) return
+      if (!ok || !file || resultText === null) return
     }
     saving = true
     try {
       // The editor works with \n; write the file back with its own line endings and encoding.
       const text = file.eol === '\r\n' ? resultText.replace(/\r?\n/g, '\r\n') : resultText
-      await api['git:resolveContent'](app.repo.path, path, text, file.encoding)
-      memory.delete(`${app.repo.path}\0${path}`)
-      results.delete(resultKey)
+      await api['git:resolveContent'](repo, path, text, file.encoding)
+      forget()
       toast('success', `${basename(path)} resolved and staged.`)
     } catch (e) {
       toast('error', asError(e).message)
@@ -268,8 +282,7 @@
     saving = true
     try {
       await api['git:resolveContent'](app.repo.path, path, content(), file.encoding)
-      memory.delete(`${app.repo.path}\0${path}`)
-      results.delete(resultKey)
+      forget()
       toast('success', `${basename(path)} resolved and staged.`)
     } catch (e) {
       toast('error', asError(e).message)
@@ -281,11 +294,20 @@
 
   async function whole(choice: 'ours' | 'theirs' | 'delete' | 'disk') {
     if (!app.repo) return
+    const repo = app.repo.path
     if (choice === 'delete') {
       const ok = await confirm({ title: `Delete ${basename(path)}?`, message: 'The file is removed and the deletion staged.', confirmLabel: 'Delete', danger: true })
       if (!ok) return
     }
-    await app.run('Resolving', () => api['git:resolveWhole'](app.repo!.path, path, choice), { success: `${basename(path)} resolved.` })
+    const done = await app.run('Resolving', () => api['git:resolveWhole'](repo, path, choice).then(() => true), { success: `${basename(path)} resolved.` })
+    if (done) forget()
+  }
+
+  /** The conflict is resolved: its choices and Result text have nothing left to restore. */
+  function forget() {
+    if (!memKey) return
+    memory.delete(memKey)
+    results.delete(memKey)
   }
 
   function toggleBase() {

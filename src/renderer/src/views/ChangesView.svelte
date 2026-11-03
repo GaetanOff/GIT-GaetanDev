@@ -110,6 +110,8 @@
       // Keep the cursor on the next file of the same area after staging.
       const next = files[pos + 1]?.r
       toggleStage(area, selectedPathsIn(area))
+      // The selected files move away: the next key acts on the file under the cursor alone.
+      app.multi = new Set()
       if (next && next.kind === 'file' && next.area === area) app.selected = { path: next.file.path, area }
     } else if (e.key === 'Delete' && app.selected && app.selected.area !== 'conflicted') {
       e.preventDefault()
