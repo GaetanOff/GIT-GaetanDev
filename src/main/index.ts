@@ -98,6 +98,8 @@ function createWindow(): BrowserWindow {
     titleBarStyle: 'hidden',
     titleBarOverlay: process.platform === 'darwin' ? undefined : { color: '#00000000', symbolColor: '#9ca3af', height: 44 },
     trafficLightPosition: { x: 14, y: 14 },
+    // An installed build takes its icon from the executable; run from a checkout, Electron's would show.
+    icon: dev ? join(app.getAppPath(), 'build', process.platform === 'win32' ? 'icon.ico' : 'icon.png') : undefined,
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,

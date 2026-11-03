@@ -9,6 +9,7 @@
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
+    "app": "node scripts/launch.cjs",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",

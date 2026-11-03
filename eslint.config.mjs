@@ -31,6 +31,10 @@ export default ts.config(
     // Build scripts run as CommonJS.
     files: ['scripts/**/*.cjs'],
     languageOptions: { sourceType: 'commonjs' },
-    rules: { '@typescript-eslint/no-require-imports': 'off' },
+    rules: {
+      '@typescript-eslint/no-require-imports': 'off',
+      // The Svelte plugin's version of this rule crashes on CommonJS files; they hold no Svelte code.
+      'svelte/no-inner-declarations': 'off',
+    },
   },
 )
