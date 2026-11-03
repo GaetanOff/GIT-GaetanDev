@@ -62,6 +62,9 @@ async function extractTodo(repo: string, base: string | null, shas: string[]): P
   const noHooks = join(dir, 'no-hooks')
   await mkdir(noHooks, { recursive: true })
   const index = { GIT_INDEX_FILE: join(dir, 'plan-index') }
+  // Only this function uses that index, one call at a time per repository (the write queue): a lock
+  // file left by a git killed mid-way (the app quit) would otherwise refuse every later plan.
+  await rm(`${index.GIT_INDEX_FILE}.lock`, { force: true })
   // In a sparse checkout git clears skip-worktree from files present on disk, and the throwaway
   // index would read as changed: for these commands the checkout is not sparse.
   const notSparse = ['-c', 'core.sparseCheckout=false']

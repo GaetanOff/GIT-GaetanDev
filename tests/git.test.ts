@@ -201,6 +201,19 @@ describe('edit history', () => {
     expect(sh(repo, 'stash', 'list')).toBe('')
   })
 
+  it('reads the plan despite a lock file left by an earlier run', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': '1\n' })
+    sh(repo, 'checkout', '-q', '-b', 'side')
+    commit(repo, 'side', { 's.txt': 's\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'main', { 'm.txt': 'm\n' })
+    sh(repo, 'merge', '-q', '--no-edit', 'side')
+    mkdirSync(join(repo, '.git', 'gdg-rebase'), { recursive: true })
+    writeFileSync(join(repo, '.git', 'gdg-rebase', 'plan-index.lock'), '')
+    expect((await rebasePlan(repo, 'HEAD~2')).structure?.length).toBeGreaterThan(0)
+  })
+
   it('reads the plan of a sparse checkout with a change inside its cone', async () => {
     const repo = makeRepo()
     for (const dir of ['in', 'out']) mkdirSync(join(repo, dir))
