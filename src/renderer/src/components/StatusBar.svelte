@@ -2,6 +2,7 @@
   import Icon from './Icon.svelte'
   import { app } from '@/lib/state.svelte'
   import { openDialog } from '@/lib/ui.svelte'
+  import { api } from '@/lib/api'
 
   const st = $derived(app.status)
 </script>
@@ -17,6 +18,16 @@
     {/if}
     {#if st.operation}<span class="item warn"><Icon name="alert" size={12} />{st.operation} in progress</span>{/if}
     {#if app.provider}<span class="item dim">{app.provider.label}</span>{/if}
+    {#if app.refs.lfs.used}
+      {#if app.refs.lfs.installed}
+        <button class="item link" title="Git LFS is used here. Click to download LFS objects." onclick={() => app.run('Downloading LFS objects', () => api['git:lfsPull'](app.repo!.path))}><Icon name="cloud" size={12} />LFS</button>
+      {:else}
+        <span class="item warn" title="This repository uses Git LFS but git-lfs is not installed: large files show as pointers. Install it from git-lfs.com."><Icon name="alert" size={12} />LFS missing</span>
+      {/if}
+    {/if}
+    {#if app.refs.submodules.some(s => s.state !== 'ok')}
+      <button class="item link warn" title="Some submodules are not cloned or not at the recorded commit. Click to update them." onclick={() => app.run('Updating submodules', () => api['git:submoduleUpdate'](app.repo!.path, null))}><Icon name="repo" size={12} />Submodules out of date</button>
+    {/if}
   {/if}
   <span class="grow"></span>
   {#if app.busy}

@@ -3,7 +3,8 @@
   import Icon from './Icon.svelte'
   import type { Branch } from '@shared/types'
   import type { IconName } from '@/lib/icons'
-  import { branchMenu, stashMenu, tagMenu } from '@/lib/actions'
+  import { branchMenu, dropBranch, stashMenu, tagMenu } from '@/lib/actions'
+  import type { Submodule, Worktree } from '@shared/types'
   import { api } from '@/lib/api'
   import { relativeTime } from '@/lib/format'
   import { app } from '@/lib/state.svelte'
@@ -61,6 +62,49 @@
     if (ok) await app.run('Removing remote', () => api['git:removeRemote'](app.repo!.path, name))
   }
 
+  /* Drag a branch onto another to merge or rebase. */
+  let dragBranch = $state<string | null>(null)
+  let dropTarget = $state<string | null>(null)
+
+  const sep = $derived(app.platform === 'win32' ? '\\' : '/')
+  const subPath = (s: Submodule) => `${app.repo!.path}${sep}${s.path.replace(/\//g, sep)}`
+  const SUB_STATE: Record<Submodule['state'], { label: string; cls: string }> = {
+    ok: { label: '', cls: '' },
+    uninitialized: { label: 'not cloned', cls: 'amber' },
+    modified: { label: 'moved', cls: 'blue' },
+    conflict: { label: 'conflict', cls: 'red' },
+  }
+
+  function submoduleMenu(e: MouseEvent, s: Submodule) {
+    contextMenu(e, [
+      { label: s.state === 'uninitialized' ? 'Clone (init & update)' : 'Update to recorded commit', icon: 'download', run: () => app.run(`Updating ${s.path}`, () => api['git:submoduleUpdate'](app.repo!.path, s.path)) },
+      { label: 'Open as repository', icon: 'repo', disabled: s.state === 'uninitialized', run: () => app.addRepo(subPath(s)) },
+      { label: 'Show in Explorer', icon: 'folder', run: () => api['shell:reveal'](app.repo!.path, s.path) },
+      'sep',
+      { label: 'Copy URL', icon: 'copy', disabled: !s.url, run: () => app.copy(s.url, 'URL copied') },
+    ])
+  }
+
+  function worktreeMenu(e: MouseEvent, w: Worktree) {
+    contextMenu(e, [
+      { label: 'Open as repository', icon: 'repo', disabled: w.current, run: () => app.addRepo(w.path) },
+      { label: 'Show in Explorer', icon: 'folder', run: () => api['shell:reveal'](w.path) },
+      { label: 'Open in terminal', icon: 'terminal', run: () => api['shell:terminal'](w.path) },
+      'sep',
+      { label: 'Remove worktree…', icon: 'trash', danger: true, disabled: w.current || w.bare, run: async () => {
+        const ok = await confirm({ title: 'Remove this worktree?', message: `The folder ${w.path} is deleted. Its branch ${w.branch ?? ''} stays.`, confirmLabel: 'Remove', danger: true })
+        if (!ok) return
+        try {
+          await api['git:worktreeRemove'](app.repo!.path, w.path, false)
+        } catch (err) {
+          const force = await confirm({ title: 'Worktree has changes', message: `${(err as { message: string }).message}\n\nRemove it anyway and lose them?`, confirmLabel: 'Remove anyway', danger: true })
+          if (force) await app.run('Removing worktree', () => api['git:worktreeRemove'](app.repo!.path, w.path, true))
+        }
+        await app.refreshRefs()
+      } },
+    ])
+  }
+
   const providerIcon = (kind?: string): IconName => (kind === 'github' || kind === 'gitlab' || kind === 'azure' || kind === 'bitbucket' ? 'cloud' : 'globe')
 </script>
 
@@ -90,10 +134,16 @@
   <div class="refs">
     {#snippet branchRow(b: Branch, label: string, depth: number)}
       <button
-        class="ref" class:current={b.current} style="padding-left:{10 + depth * 14}px"
-        title="{b.name}{b.subject ? `\n${b.subject}` : ''}\n{relativeTime(b.date)}"
+        class="ref" class:current={b.current} class:droptarget={dropTarget === b.name} style="padding-left:{10 + depth * 14}px"
+        title="{b.name}{b.subject ? `\n${b.subject}` : ''}\n{relativeTime(b.date)}\nDrag onto another branch to merge or rebase"
         onclick={() => showBranch(b)} ondblclick={() => !b.current && app.checkout(b.name)}
         oncontextmenu={e => contextMenu(e, branchMenu(b))}
+        draggable="true"
+        ondragstart={e => { dragBranch = b.name; e.dataTransfer!.effectAllowed = 'move'; e.dataTransfer!.setData('text/plain', b.name) }}
+        ondragend={() => { dragBranch = null; dropTarget = null }}
+        ondragover={e => { if (dragBranch && !b.remote && dragBranch !== b.name) { e.preventDefault(); dropTarget = b.name } }}
+        ondragleave={() => { if (dropTarget === b.name) dropTarget = null }}
+        ondrop={e => { e.preventDefault(); const d = dragBranch; dragBranch = null; dropTarget = null; if (d && !b.remote) dropBranch(d, b.name) }}
       >
         {#if b.current}<span class="dot"></span>{:else}<Icon name="branch" size={13} class="ri" />{/if}
         <span class="grow truncate">{label}</span>
@@ -194,6 +244,44 @@
       {/each}
       {#if !app.refs.stashes.length}<div class="muted">Nothing stashed</div>{/if}
     {/if}
+
+    {#if app.refs.submodules.length}
+      {#snippet updateAll()}
+        <button class="icon-btn sm" title="Init & update all submodules" onclick={() => app.run('Updating submodules', () => api['git:submoduleUpdate'](app.repo!.path, null))}><Icon name="download" size={13} /></button>
+      {/snippet}
+      {@render section('submodules', 'Submodules', app.refs.submodules.length, updateAll)}
+      {#if !collapsed.submodules || f}
+        {#each app.refs.submodules.filter(s => match(s.path)) as sm (sm.path)}
+          {@const st = SUB_STATE[sm.state]}
+          <button class="ref" style="padding-left:10px" title="{sm.path}\n{sm.url}\n{sm.sha.slice(0, 10)} {sm.describe}"
+            ondblclick={() => sm.state !== 'uninitialized' && app.addRepo(subPath(sm))}
+            oncontextmenu={e => submoduleMenu(e, sm)} onclick={e => submoduleMenu(e, sm)}>
+            <Icon name="repo" size={13} class="ri" />
+            <span class="grow truncate">{sm.path}</span>
+            {#if st.label}<span class="badge {st.cls}">{st.label}</span>{/if}
+          </button>
+        {/each}
+      {/if}
+    {/if}
+
+    {#if app.refs.worktrees.length > 1 || app.localBranches.length}
+      {#snippet addWorktree()}
+        <button class="icon-btn sm" title="New worktree" onclick={() => openDialog({ kind: 'worktree' })}><Icon name="plus" size={13} /></button>
+      {/snippet}
+      {@render section('worktrees', 'Worktrees', app.refs.worktrees.length, addWorktree)}
+      {#if !collapsed.worktrees || f}
+        {#each app.refs.worktrees as w (w.path)}
+          <button class="ref" class:current={w.current} style="padding-left:10px" title={w.path}
+            ondblclick={() => !w.current && app.addRepo(w.path)} oncontextmenu={e => worktreeMenu(e, w)}>
+            {#if w.current}<span class="dot"></span>{:else}<Icon name="tree" size={13} class="ri" />{/if}
+            <span class="grow truncate">{w.branch ?? (w.bare ? 'bare' : `detached ${w.head.slice(0, 7)}`)}</span>
+            {#if w.locked}<span class="badge">locked</span>{/if}
+            {#if w.prunable}<span class="badge amber">missing</span>{/if}
+            <span class="when truncate wt">{w.path.split(/[\\/]/).pop()}</span>
+          </button>
+        {/each}
+      {/if}
+    {/if}
   </div>
 </aside>
 
@@ -246,4 +334,6 @@
   .prov { font-size: 10px; color: var(--text-dim); }
   .when { font-size: 10.5px; color: var(--text-dim); flex-shrink: 0; }
   .muted { padding: 3px 12px 3px 28px; font-size: 11.5px; color: var(--text-dim); }
+  .ref.droptarget { background: var(--green-soft); box-shadow: inset 0 0 0 1px var(--green-ring); color: #fff; }
+  .wt { max-width: 90px; }
 </style>

@@ -1,12 +1,19 @@
 import type { Branch, Refs, Remote, Stash, Tag } from '@shared/types'
 import { detectProvider } from '../provider'
+import { lfs, submodules, worktrees } from './modules'
 import { git, gitOut } from './exec'
 
 const US = '\x1f'
 
 export async function refs(repo: string): Promise<Refs> {
   const [branches, tags, remotes, stashes] = await Promise.all([listBranches(repo), listTags(repo), listRemotes(repo), listStashes(repo)])
-  return { branches, tags, remotes, stashes }
+  return { branches, tags, remotes, stashes, submodules: [], worktrees: [], lfs: { used: false, installed: true } }
+}
+
+/** The slower extras, loaded after the refs so branches never wait for them. */
+export async function extras(repo: string): Promise<Pick<Refs, 'submodules' | 'worktrees' | 'lfs'>> {
+  const [subs, trees, lfsInfo] = await Promise.all([submodules(repo).catch(() => []), worktrees(repo).catch(() => []), lfs(repo)])
+  return { submodules: subs, worktrees: trees, lfs: lfsInfo }
 }
 
 async function listBranches(repo: string): Promise<Branch[]> {
