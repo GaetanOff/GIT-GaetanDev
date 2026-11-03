@@ -340,7 +340,9 @@ export async function push(repo: string, opts: { force?: boolean; setUpstream?: 
   if (!branch) throw new GitError('You are not on a branch (detached HEAD).')
   const upstream = await upstreamOf(repo, branch)
   const args = ['push', '--progress']
-  if (opts.force) args.push('--force-with-lease')
+  // The background fetch keeps origin/x current, which alone would satisfy the lease even
+  // for commits nobody here has seen: --force-if-includes also requires them to be in HEAD's history.
+  if (opts.force) args.push('--force-with-lease', '--force-if-includes')
   if (!upstream) {
     const remote = await defaultRemote(repo)
     if (!remote) throw new GitError('This repository has no remote. Add one in the sidebar first.')

@@ -487,7 +487,7 @@ class AppState {
         this.busy = null
         const choice = await choose({
           title: 'Push rejected',
-          message: 'The remote branch has commits you do not have. Pull them first, or overwrite the remote with a force push (with lease: it fails if someone pushed meanwhile).',
+          message: 'The remote branch has commits you do not have. Pull them first, or overwrite the remote with a force push (refused if it would drop commits you have not seen).',
           options: [
             { label: 'Pull', value: 'pull', variant: 'primary' },
             { label: 'Force push', value: 'force', variant: 'danger' },
@@ -495,6 +495,13 @@ class AppState {
         })
         if (choice === 'pull') await this.pull()
         if (choice === 'force') await this.push(true)
+        return
+      }
+      if (err.code === 'NON_FAST_FORWARD' && force) {
+        // The lease held, but the remote has commits that never reached this branch's history.
+        toast('error', 'Force push refused: the remote has commits you have not seen in this branch, so they would be lost. Pull or look at them first.', {
+          label: 'Pull now', run: () => this.pull(),
+        })
         return
       }
       this.reportError(err)
