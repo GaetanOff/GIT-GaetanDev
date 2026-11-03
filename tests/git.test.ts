@@ -201,6 +201,23 @@ describe('edit history', () => {
     expect(sh(repo, 'stash', 'list')).toBe('')
   })
 
+  it('lists "fixup!" commits as picks even with rebase.autoSquash', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': '1\n' })
+    sh(repo, 'checkout', '-q', '-b', 'side')
+    commit(repo, 'side', { 's.txt': 's\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'feature', { 'm.txt': 'm\n' })
+    commit(repo, 'fixup! feature', { 'm.txt': 'm2\n' })
+    sh(repo, 'merge', '-q', '--no-edit', 'side')
+    sh(repo, 'config', 'rebase.autoSquash', 'true')
+    const plan = await rebasePlan(repo, 'HEAD~3')
+    expect(plan.structure?.filter(s => s.kind === 'pick')).toHaveLength(3)
+    const steps = plan.structure!.map(s => (s.kind === 'pick' ? { sha: s.sha, action: 'pick' as const } : { sha: '', action: 'line' as const, line: s.text }))
+    await rebaseRun(repo, plan.base, steps, plan.head)
+    expect(sh(repo, 'log', '--format=%s', '-5').split('\n')).toContain('fixup! feature')
+  })
+
   it('refuses steps that would run a command', async () => {
     const repo = makeRepo()
     for (const i of [1, 2]) commit(repo, `c${i}`, { 'f.txt': `${i}\n` })

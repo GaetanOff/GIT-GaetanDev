@@ -56,7 +56,9 @@ async function extractTodo(repo: string, base: string | null, shas: string[]): P
   await mkdir(dir, { recursive: true })
   const out = join(dir, 'generated-todo')
   await rm(out, { force: true })
-  // No hooks for this dry run (pre-rebase could refuse or act), and full command names whatever the user's config.
+  // No hooks for this dry run (pre-rebase could refuse or act), full command names and no autosquash
+  // (rebase.autoSquash turns "fixup!" commits into fixup lines) whatever the user's config: the plan
+  // lists every commit as a pick, and squashing is the user's to do here.
   const noHooks = join(dir, 'no-hooks')
   await mkdir(noHooks, { recursive: true })
   const index = { GIT_INDEX_FILE: join(dir, 'plan-index') }
@@ -65,7 +67,7 @@ async function extractTodo(repo: string, base: string | null, shas: string[]): P
     const files = await git(repo, ['ls-files', '-z'], { env: index })
     if (files.raw.length) await git(repo, ['update-index', '-z', '--skip-worktree', '--stdin'], { env: index, input: files.raw })
     await git(repo, ['-c', `core.hooksPath=${posix(noHooks)}`, '-c', 'rebase.abbreviateCommands=false',
-      'rebase', '-i', '--rebase-merges', '--no-autostash', ...(base ? [base] : ['--root'])], {
+      'rebase', '-i', '--rebase-merges', '--no-autostash', '--no-autosquash', ...(base ? [base] : ['--root'])], {
       env: { ...index, GIT_SEQUENCE_EDITOR: `f() { cp "$1" ${quote(out)}; : > "$1"; }; f`, GIT_EDITOR: 'true' },
       okCodes: [1],
     })
