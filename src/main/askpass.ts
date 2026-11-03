@@ -1,6 +1,6 @@
 import { app } from 'electron'
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { writeFileSync, chmodSync } from 'node:fs'
+import { chmodSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:net'
 import { join } from 'node:path'
 import type { AskPassRequest } from '@shared/types'
@@ -46,15 +46,14 @@ export function startAskPass(ask: Ask): NodeJS.ProcessEnv {
   const client = join(dir, 'askpass.js')
   writeFileSync(client, CLIENT, 'utf8')
 
-  let script: string
-  if (process.platform === 'win32') {
-    script = join(dir, 'askpass.cmd')
-    writeFileSync(script, `@echo off\r\nset ELECTRON_RUN_AS_NODE=1\r\n"${process.execPath}" "${client}" %*\r\n`, 'utf8')
-  } else {
-    script = join(dir, 'askpass.sh')
-    writeFileSync(script, `#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec "${process.execPath}" "${client}" "$@"\n`, 'utf8')
-    chmodSync(script, 0o755)
-  }
+  // A shell script on every platform, run the way git runs hooks: Git for Windows reads its
+  // "#!/bin/sh" line, and so does its ssh. The paths travel in the environment, not in the file:
+  // a .cmd was read in the OEM code page ("Gaëtan" in the profile path broke every prompt), a "%"
+  // in it was expanded, and cmd cut a multi-line prompt (a host key and its fingerprint) short.
+  const script = join(dir, 'askpass.sh')
+  writeFileSync(script, '#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec "$GDG_ASKPASS_EXE" "$GDG_ASKPASS_JS" "$@"\n', 'utf8')
+  if (process.platform !== 'win32') chmodSync(script, 0o755)
+  rmSync(join(dir, 'askpass.cmd'), { force: true }) // written by earlier versions
 
   const pipe = process.platform === 'win32'
     ? `\\\\.\\pipe\\gaetandev-git-askpass-${randomUUID()}`
@@ -92,6 +91,8 @@ export function startAskPass(ask: Ask): NodeJS.ProcessEnv {
     DISPLAY: process.env.DISPLAY ?? ':0',
     GDG_ASKPASS_PIPE: pipe,
     GDG_ASKPASS_TOKEN: secret,
+    GDG_ASKPASS_EXE: process.execPath,
+    GDG_ASKPASS_JS: client,
   }
   return env
 }
