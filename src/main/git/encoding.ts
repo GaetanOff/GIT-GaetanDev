@@ -56,12 +56,16 @@ export function encode(text: string, encoding: TextEncoding): Buffer {
       return Buffer.concat([Buffer.from([0xfe, 0xff]), body])
     }
     case 'windows-1252': {
-      const out = Buffer.alloc(text.length)
-      for (let i = 0; i < text.length; i++) {
-        const c = text.charCodeAt(i)
-        out[i] = c < 0x100 ? c : CP1252_REVERSE.get(c) ?? 0x3f
+      // A character Windows-1252 has no byte for (text a merge brought in from a UTF-8 side) keeps
+      // its UTF-8 bytes instead of becoming "?": the file then mixes encodings, but nothing is lost.
+      const out: number[] = []
+      for (const ch of text) {
+        const c = ch.codePointAt(0)!
+        const b = c < 0x100 ? c : CP1252_REVERSE.get(c)
+        if (b !== undefined) out.push(b)
+        else out.push(...Buffer.from(ch, 'utf8'))
       }
-      return out
+      return Buffer.from(out)
     }
   }
 }
