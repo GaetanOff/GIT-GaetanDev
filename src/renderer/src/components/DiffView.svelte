@@ -38,6 +38,9 @@
       selected = new Set()
       force = false
       opts.force = false
+      // Never show the previous file under the new one's name, with the new one's actions.
+      diff = null
+      error = null
     }
     lastKey = key
     load(source, opts)
@@ -255,6 +258,7 @@
   {:else}
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <div class="lines-wrap" style="--sx:{splitX}px" onwheel={onSplitWheel}>
+    {#key sourceKey}<!-- each file opens scrolled to the top -->
     <VirtualList items={rows} rowHeight={ROW} {width} class="lines {mode}" overscan={30}>
       {#snippet row(r: DiffRow)}
         {#if r.kind === 'hunk'}
@@ -302,6 +306,7 @@
         {/if}
       {/snippet}
     </VirtualList>
+    {/key}
     {#if mode === 'split' && splitOverflow > 0}
       <div class="hbar" bind:this={hbar} onscroll={() => (splitX = hbar!.scrollLeft)}><div style="width:calc(50% + {splitOverflow}px)"></div></div>
     {/if}

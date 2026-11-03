@@ -30,21 +30,28 @@
     try { return +(localStorage.getItem('file-history-width') ?? 440) } catch { return 440 }
   }
 
+  let historyToken = 0
+
+  /**
+   * A first page always starts (a new target supersedes whatever is loading);
+   * a next page waits for the current load. Answers for a superseded target
+   * are dropped by the token.
+   */
   async function loadHistory(more = false) {
     const repo = app.repo?.path
-    if (!repo || loading || (more && done)) return
+    if (!repo || (more && (loading || done))) return
+    const t = more ? historyToken : ++historyToken
     loading = true
-    const key = `${repo}\0${target.path}`
     try {
       const page = await api['git:fileLog'](repo, target.path, more ? commits.length : 0, PAGE)
-      if (key !== `${app.repo?.path}\0${app.fileTarget?.path}`) return
+      if (t !== historyToken) return
       commits = more ? [...commits, ...page] : page
       done = page.length < PAGE
       if (!more) selected = target.rev && page.some(c => c.sha === target.rev) ? target.rev : page[0]?.sha ?? null
     } catch (e) {
-      toast('error', asError(e).message)
+      if (t === historyToken) toast('error', asError(e).message)
     } finally {
-      loading = false
+      if (t === historyToken) loading = false
     }
   }
 
