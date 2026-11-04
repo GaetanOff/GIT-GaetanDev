@@ -93,10 +93,12 @@
     else memory.delete(memKey)
   })
 
+  /** As a value of its own: saving any setting replaces app.settings, which would lex the file again. */
+  const highlight = $derived(app.settings.syntaxHighlight)
   /** Lexer state at the start of every rendered line, keyed "chunk:side:line". */
   const states = $derived.by(() => {
     const map = new Map<string, LexState>()
-    if (!file || !app.settings.syntaxHighlight || !lang) return map
+    if (!file || !highlight || !lang) return map
     let st: LexState = null
     const run = (key: string, lines: string[], from: LexState) => {
       let s = from
@@ -221,7 +223,7 @@
   const last = $derived(Math.min(resultLines, Math.ceil((resultScroll + editorHeight) / ROW) + 40))
   /** The overlay also shows conflict markers and regions, so it stays on even without a language. */
   const highlightResult = $derived(resultArr.length <= HL_MAX_LINES)
-  const codeLang = $derived(app.settings.syntaxHighlight ? lang : null)
+  const codeLang = $derived(highlight ? lang : null)
 
   type Marker = 'start' | 'base' | 'mid' | 'end'
   const markerOf = (l: string): Marker | null =>

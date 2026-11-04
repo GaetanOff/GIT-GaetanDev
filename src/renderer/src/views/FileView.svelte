@@ -119,7 +119,10 @@
       .catch(e => { if (t === token) blameError = asError(e).message })
   })
 
-  const blameStates = $derived(blame && app.settings.syntaxHighlight ? lineStates(blame.lines.map(l => l.text), lang) : [])
+  // Through a value of its own: saving any setting replaces app.settings, and reading it here ran
+  // lineStates over the whole file again (300-400 ms for 50,000 lines) at every save.
+  const highlight = $derived(app.settings.syntaxHighlight)
+  const blameStates = $derived(blame && highlight ? lineStates(blame.lines.map(l => l.text), lang) : [])
 
   /** One annotation per run of consecutive lines from the same commit. */
   const runStart = $derived(blame ? blame.lines.map((l, i) => i === 0 || blame!.lines[i - 1].sha !== l.sha) : [])
