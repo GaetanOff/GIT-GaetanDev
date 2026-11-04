@@ -1,9 +1,9 @@
 import { app } from 'electron'
 import { spawnSync } from 'node:child_process'
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { chmodSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:net'
-import { join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import type { AskPassRequest } from '@shared/types'
 
 /**
@@ -75,14 +75,12 @@ export function startAskPass(ask: Ask): NodeJS.ProcessEnv {
   const script = join(dir, 'askpass.sh')
   writeFileSync(script, '#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec "$GDG_ASKPASS_EXE" "$GDG_ASKPASS_JS" "$@"\n', 'utf8')
   if (process.platform !== 'win32') chmodSync(script, 0o755)
-  // Windows' own OpenSSH starts SSH_ASKPASS with CreateProcess, which runs no shell script: it
-  // gets this .cmd instead (see windowsOpenSsh). Plain ASCII, paths from the environment; cmd
-  // still cuts a prompt at its first line break, which classify() allows for.
-  let cmd = join(dir, 'askpass.cmd')
-  if (process.platform === 'win32') {
-    writeFileSync(cmd, '@echo off\r\nsetlocal\r\nset ELECTRON_RUN_AS_NODE=1\r\n"%GDG_ASKPASS_EXE%" "%GDG_ASKPASS_JS%" %*\r\n', 'ascii')
-    cmd = asciiPath(dir, 'askpass.cmd')
-  }
+  // Windows' own OpenSSH starts SSH_ASKPASS with CreateProcess, which runs no shell script (see
+  // windowsOpenSsh): it gets a small executable of its own (src/askpass/askpass.cs). A .cmd did
+  // not do: cmd.exe reads the whole command line, prompt included, before the batch starts, and a
+  // server's prompt holding `" & <command> & "` ran that command.
+  rmSync(join(dir, 'askpass.cmd'), { force: true }) // written by earlier versions
+  const helper = helperExe()
 
   // A Unix socket path holds at most 104 bytes on macOS, and its temp folder (/var/folders/…)
   // with a UUID went past it: listen failed and every prompt with it. A short name in /tmp, only
@@ -133,13 +131,24 @@ export function startAskPass(ask: Ask): NodeJS.ProcessEnv {
     GDG_ASKPASS_TOKEN: secret,
     GDG_ASKPASS_EXE: process.execPath,
     GDG_ASKPASS_JS: client,
-    ...(process.platform === 'win32' ? { GDG_ASKPASS_CMD: cmd } : {}),
+    ...(helper ? { GDG_ASKPASS_HELPER_EXE: helper } : {}),
   }
   return env
 }
 
+/**
+ * The prompt helper of Windows' OpenSSH, built with the app (scripts/build-askpass.cjs) and
+ * installed next to it. Missing (another system, a checkout never built), prompts of Windows'
+ * OpenSSH fail as declined; Git's own ssh still runs the shell script.
+ */
+function helperExe(): string | null {
+  if (process.platform !== 'win32') return null
+  const file = app.isPackaged ? join(process.resourcesPath, 'gdg-askpass.exe') : join(app.getAppPath(), 'out', 'askpass', 'gdg-askpass.exe')
+  return existsSync(file) ? asciiPath(dirname(file), basename(file)) : null
+}
+
 export function classify(prompt: string): AskPassRequest['kind'] {
-  // A host key question cut after its first line (the .cmd helper) is still one.
+  // A host key question cut after its first line is still one.
   if (/\(yes\/no/i.test(prompt) || /^The authenticity of host .* can't be established\.?\s*$/i.test(prompt)) return 'confirm'
   if (/password|passphrase|token|PIN/i.test(prompt)) return 'password'
   return 'text'

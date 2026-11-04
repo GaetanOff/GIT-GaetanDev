@@ -161,7 +161,7 @@ const NETWORK_COMMANDS = new Set(['fetch', 'pull', 'push', 'clone', 'ls-remote',
 /**
  * Whether the ssh git runs is Windows' own OpenSSH (System32\OpenSSH), which
  * starts SSH_ASKPASS with CreateProcess: it cannot run a "#!/bin/sh" script
- * ("error:193"), so it gets a .cmd. Git's own ssh reads the script. A bare
+ * ("error:193"), so it gets an executable. Git's own ssh reads the script. A bare
  * "ssh" is Git's when Git for Windows ships one (usr\bin\ssh.exe, absent
  * with its "Use external OpenSSH" option), else the one on PATH.
  */
@@ -187,7 +187,7 @@ function bundledSsh(): boolean {
  * byte/s for five minutes, SSH after two minutes of unanswered keepalives. A
  * server preparing a pack or running a push hook still sends progress, so
  * only a silent connection trips them. Settings of the user's own (git config
- * or environment) are left alone. Windows' OpenSSH gets the .cmd prompt helper.
+ * or environment) are left alone. Windows' OpenSSH gets its own prompt helper.
  */
 export async function stallGuards(cwd: string): Promise<NodeJS.ProcessEnv> {
   const r = await run(cwd, ['config', '--get-regexp', '^(http\\.lowspeed(limit|time)|core\\.sshcommand)$'], { okCodes: [1] })
@@ -200,7 +200,7 @@ export async function stallGuards(cwd: string): Promise<NodeJS.ProcessEnv> {
   if (!http) Object.assign(env, { GIT_HTTP_LOW_SPEED_LIMIT: '1', GIT_HTTP_LOW_SPEED_TIME: '300' })
   const sshCommand = process.env.GIT_SSH_COMMAND || process.env.GIT_SSH || values.get('core.sshcommand') || null
   if (!sshCommand) env.GIT_SSH_COMMAND = 'ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=8'
-  if (baseEnv.GDG_ASKPASS_CMD && windowsOpenSsh(sshCommand, bundledSsh())) env.SSH_ASKPASS = baseEnv.GDG_ASKPASS_CMD
+  if (baseEnv.GDG_ASKPASS_HELPER_EXE && windowsOpenSsh(sshCommand, bundledSsh())) env.SSH_ASKPASS = baseEnv.GDG_ASKPASS_HELPER_EXE
   return env
 }
 

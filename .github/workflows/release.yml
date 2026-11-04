@@ -67,7 +67,9 @@ jobs:
       # The installed app starts and shows its interface (see src/main/smoke.ts).
       - name: Start the packaged app
         shell: bash
-        run: timeout 120 "release/win-unpacked/GaetanDev Git.exe" --smoke
+        run: |
+          timeout 120 "release/win-unpacked/GaetanDev Git.exe" --smoke
+          test -f release/win-unpacked/resources/gdg-askpass.exe
       - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
           name: release

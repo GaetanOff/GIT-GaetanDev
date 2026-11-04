@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -6,7 +7,7 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
 // Made when the tests run, not on import: filtered out, they left the folder behind.
 let dir = ''
-vi.mock('electron', () => ({ app: { getPath: () => dir } }))
+vi.mock('electron', () => ({ app: { getPath: () => dir, getAppPath: () => dir } }))
 const { onAbandon, registerPending, startAskPass, stopAskPass } = await import('../src/main/askpass')
 
 beforeAll(() => { dir = mkdtempSync(join(tmpdir(), 'gdg-askpass-')) })
@@ -56,5 +57,39 @@ describe('credential prompts', () => {
     await vi.waitFor(() => expect(asked).not.toBe(''))
     sock.destroy()
     await vi.waitFor(() => expect(withdrawn).toEqual([asked]))
+  })
+})
+
+describe('the prompt helper of Windows\' OpenSSH', () => {
+  it('is no batch file, which cmd.exe would read prompt and all', () => {
+    stopAskPass()
+    // Written by an earlier version: removed, never used.
+    writeFileSync(join(dir, 'askpass.cmd'), '@echo off\r\n')
+    const env = startAskPass(async () => null)
+    expect(existsSync(join(dir, 'askpass.cmd'))).toBe(false)
+    expect(Object.values(env).some(v => /\.(cmd|bat)$/i.test(v ?? ''))).toBe(false)
+  })
+
+  it.runIf(process.platform === 'win32')('passes on a hostile prompt as text, and the answer back', async () => {
+    stopAskPass()
+    // Built where a checkout's app looks for it (see helperExe).
+    const built = spawnSync(process.execPath, ['scripts/build-askpass.cjs', join(dir, 'out', 'askpass')], { encoding: 'utf8' })
+    expect(built.status, built.stderr).toBe(0)
+    let asked = ''
+    const env = startAskPass(async req => {
+      asked = req.prompt
+      return 'hunter2 é'
+    })
+    expect(env.GDG_ASKPASS_HELPER_EXE).toMatch(/gdg-askpass\.exe$/)
+    const marker = join(dir, 'pwned.txt')
+    const prompt = `(git@evil.example) Code" & echo PWNED> "${marker}" & "`
+    const child = spawn(env.GDG_ASKPASS_HELPER_EXE!, [prompt], { env: { ...process.env, ...env }, stdio: ['ignore', 'pipe', 'ignore'] })
+    let out = ''
+    child.stdout.on('data', d => { out += d })
+    const code = await new Promise(resolve => child.on('exit', resolve))
+    expect(code).toBe(0)
+    expect(out).toBe('hunter2 é\n')
+    expect(asked).toBe(prompt)
+    expect(existsSync(marker)).toBe(false)
   })
 })

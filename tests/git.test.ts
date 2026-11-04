@@ -30,7 +30,7 @@ const { rebasePlan, rebaseRun } = await import('../src/main/git/rebase')
 const { restore } = await import('../src/main/git/reflog')
 const { newerTips } = await import('../src/main/git/recovery')
 const { fsmonitorInfo, setFsmonitor } = await import('../src/main/git/perf')
-const { git, assertRefName, gitVersion, killRunning, readGitVersion, stallGuards, windowsOpenSsh } = await import('../src/main/git/exec')
+const { git, assertRefName, gitVersion, killRunning, readGitVersion, setGitEnv, stallGuards, windowsOpenSsh } = await import('../src/main/git/exec')
 const { classify } = await import('../src/main/askpass')
 const { ignoreLiteral } = await import('../src/renderer/src/lib/gitignore')
 
@@ -1124,9 +1124,24 @@ describe('history', () => {
     expect(windowsOpenSsh('C:/Windows/System32/OpenSSH/ssh.exe', true)).toBe(true)
     expect(windowsOpenSsh('"C:\\Windows\\System32\\OpenSSH\\ssh.exe" -i key', true)).toBe(true)
     expect(windowsOpenSsh('plink -batch', false)).toBe(false)
-    // Its helper cuts a host key question after the first line, which is still asked as one.
+    // A host key question cut after its first line is still asked as one.
     expect(classify("The authenticity of host 'h (1.2.3.4)' can't be established.")).toBe('confirm')
     expect(classify('Enter passphrase for key /c/Users/me/.ssh/id_ed25519: ')).toBe('password')
+  })
+
+  it.runIf(process.platform === 'win32')('gives Windows\' OpenSSH its own prompt helper program, never a batch file', async () => {
+    const repo = makeRepo()
+    const helper = 'C:/Apps/GaetanDev Git/resources/gdg-askpass.exe'
+    sh(repo, 'config', 'core.sshCommand', 'C:/Windows/System32/OpenSSH/ssh.exe')
+    setGitEnv({ GDG_ASKPASS_HELPER_EXE: helper })
+    try {
+      expect(await stallGuards(repo)).toEqual({ GIT_HTTP_LOW_SPEED_LIMIT: '1', GIT_HTTP_LOW_SPEED_TIME: '300', SSH_ASKPASS: helper })
+      // Any other ssh runs the shell script.
+      sh(repo, 'config', 'core.sshCommand', 'plink -batch')
+      expect(await stallGuards(repo)).toEqual({ GIT_HTTP_LOW_SPEED_LIMIT: '1', GIT_HTTP_LOW_SPEED_TIME: '300' })
+    } finally {
+      setGitEnv({})
+    }
   })
 
   it('works on the repository it runs in, whatever GIT_DIR or GIT_INDEX_FILE the app inherited', async () => {
