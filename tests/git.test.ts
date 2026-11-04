@@ -457,6 +457,15 @@ describe('conflicts', () => {
     expect(f.encoding).toBe('windows-1252')
     expect(f.chunks[0]).toEqual({ kind: 'conflict', ours: ['name = cafe'], base: ['name = x'], theirs: ['name = café'] })
   })
+
+  it('writes only a file that is in conflict', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'a\n', 'hooks.txt': 'kept\n' })
+    await expect(resolveContent(repo, 'hooks.txt', 'overwritten\n')).rejects.toThrow(/not in conflict/)
+    await expect(resolveContent(repo, 'new.txt', 'created\n')).rejects.toThrow(/not in conflict/)
+    expect(readFileSync(join(repo, 'hooks.txt'), 'utf8')).toBe('kept\n')
+    expect(existsSync(join(repo, 'new.txt'))).toBe(false)
+  })
 })
 
 describe('file history', () => {

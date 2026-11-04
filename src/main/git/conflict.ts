@@ -1,9 +1,9 @@
-import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { lstat, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join, sep } from 'node:path'
 import type { ConflictFile, TextEncoding } from '@shared/types'
 import { decode, detect, encode } from './encoding'
-import { git } from './exec'
+import { git, GitError } from './exec'
 import { gitDir, operation } from './status'
 
 /**
@@ -171,9 +171,24 @@ export async function conflict(repo: string, path: string): Promise<ConflictFile
   return result
 }
 
-/** Writes the resolved content and marks the file resolved. */
+/**
+ * Writes the resolved content and marks the file resolved. Only a file git
+ * lists as unmerged, and never through a symbolic link: this is the one
+ * place the app writes a file of the repository itself, so it writes no
+ * other (a hook, a config read through a link to .git).
+ */
 export async function resolveContent(repo: string, path: string, content: string, encoding: TextEncoding = 'utf8'): Promise<void> {
-  await writeFile(join(repo, path), encode(content, encoding))
+  const unmerged = (await git(repo, ['ls-files', '-u', '-z', '--', path])).stdout
+  if (!unmerged.split('\0').some(l => l.split('\t')[1] === path.replace(/\\/g, '/'))) {
+    throw new GitError(`${path} is not in conflict, so nothing was written.`)
+  }
+  const file = join(repo, path)
+  const [root, parent] = await Promise.all([realpath(repo), realpath(dirname(file))])
+  const link = await lstat(file).then(s => s.isSymbolicLink(), () => false)
+  if (link || (parent !== root && !parent.startsWith(root.endsWith(sep) ? root : root + sep))) {
+    throw new GitError(`${path} is reached through a symbolic link, so it was not written. Resolve it from the command line.`)
+  }
+  await writeFile(file, encode(content, encoding))
   await git(repo, ['add', '--', path])
 }
 
