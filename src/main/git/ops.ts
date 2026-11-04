@@ -581,7 +581,7 @@ export async function removeRemote(repo: string, name: string): Promise<void> {
  * an include. `scope` is "local" when the repository sets one of its own.
  */
 export async function identity(repo: string | null): Promise<{ name: string; email: string; scope: 'local' | 'global' | 'none' }> {
-  const cwd = repo ?? process.cwd()
+  const cwd = repo ?? homedir()
   const read = async (key: string) => {
     const r = await git(cwd, ['config', ...(repo ? ['--show-scope'] : ['--global', '--includes']), '--get', key], { okCodes: [1] })
     const out = r.stdout.trim()
@@ -611,7 +611,7 @@ export async function identity(repo: string | null): Promise<{ name: string; ema
  */
 export async function setIdentity(repo: string | null, id: { name: string; email: string } | null): Promise<void> {
   const scope = repo ? '--local' : '--global'
-  const cwd = repo ?? process.cwd()
+  const cwd = repo ?? homedir()
   for (const [key, value] of [['user.name', id?.name.trim()], ['user.email', id?.email.trim()]] as const) {
     // Exit 5: the key was not set, nothing to remove.
     if (value) await git(cwd, ['config', scope, key, value])

@@ -1,4 +1,5 @@
 import { app, BrowserWindow, dialog, Menu, net, protocol, screen, session, shell } from 'electron'
+import { homedir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { folderArg as launchFolder } from './args'
@@ -50,6 +51,9 @@ else start()
 function start(): void {
   const watcher = new RepoWatcher(e => send('repo:changed', e))
   setLaunchPath(folderArg(process.argv))
+  // Read as given, the folder the app was started from is let go: Windows keeps a process's working
+  // folder locked, and "gaetandev-git ." made it impossible to rename or delete while the app ran.
+  try { process.chdir(homedir()) } catch { /* stays where it was */ }
 
   /** Credential prompts in the app; without them (the helper could not be written) git still runs. */
   const askpass = () => {
