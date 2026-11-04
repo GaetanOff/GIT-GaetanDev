@@ -102,18 +102,25 @@
   /** What git would propose: the head message followed by every squashed message. */
   const defaultGroupMessage = (i: number) => messageAfterSquash({}, fullMessage(rows[i]), squashedInto(i), '')
 
+  /**
+   * The message row `i` is rewritten with: what the user typed, else git's proposal built from the
+   * rows as they are now. Stored when proposed, it kept the message of a commit squashed then set
+   * back to pick, dropped or moved away, and that text went into the rewritten history.
+   */
+  const messageOf = (i: number) => (rows[i].edited && rows[i].message !== undefined ? rows[i].message : defaultGroupMessage(i))
+
   function setAction(i: number, action: RebaseAction) {
-    if (rows[i].merge || rows[i].line) return
+    // Again on a row already so: a squash pressed twice added its message twice to a typed one.
+    if (rows[i].merge || rows[i].line || rows[i].action === action) return
     rows[i].action = action
-    if (action === 'reword' && rows[i].message === undefined) rows[i].message = fullMessage(rows[i])
     if (action === 'pick' && !members(i).some(m => m.action === 'squash')) {
       rows[i].message = undefined
       rows[i].edited = false
     }
-    // A squash makes the receiving commit's message editable, prefilled like git does.
+    // A message the user typed for the receiving commit gets the newly squashed one added below.
     if (action === 'squash') {
       const o = owner[i]
-      if (o >= 0) rows[o].message = messageAfterSquash(rows[o], fullMessage(rows[o]), squashedInto(o), fullMessage(rows[i]))
+      if (o >= 0 && rows[o].edited) rows[o].message = messageAfterSquash(rows[o], fullMessage(rows[o]), squashedInto(o), fullMessage(rows[i]))
     }
   }
 
@@ -179,7 +186,7 @@
     const steps: RebaseStep[] = rows.map((r, i) => {
       if (r.line) return { sha: '', action: 'line', line: r.line }
       const hasSquash = members(i).some(m => m.action === 'squash')
-      const message = r.action === 'reword' || ((r.action === 'pick') && hasSquash) ? r.message ?? defaultGroupMessage(i) : undefined
+      const message = r.action === 'reword' || ((r.action === 'pick') && hasSquash) ? messageOf(i) : undefined
       return { sha: r.sha, action: r.action, message }
     })
     running = true
@@ -274,7 +281,7 @@
       <aside class="side">
         {#if editing >= 0 && rows[editing]}
           <div class="label">{rows[editing].action === 'reword' ? 'New message' : `Message of the combined commit (${members(editing).length + 1} commits)`}</div>
-          <textarea class="input msg" bind:value={rows[editing].message} oninput={() => editing !== null && (rows[editing].edited = true)} spellcheck="true"></textarea>
+          <textarea class="input msg" value={messageOf(editing)} oninput={e => { rows[editing].message = e.currentTarget.value; rows[editing].edited = true }} spellcheck="true"></textarea>
           <p class="hint">The first line is the summary. Lines starting with # are removed.</p>
         {:else if sel}
           <div class="label">Selected commit</div>
