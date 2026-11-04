@@ -284,9 +284,22 @@ async function currentOp(repo: string): Promise<RepoStatus['operation']> {
   return (await status(repo)).operation
 }
 
-export async function continueOp(repo: string): Promise<void> {
+/**
+ * Goes on with the operation in progress. With `message`, the one written in
+ * the commit box, a merge, cherry-pick or revert is committed with it: "Commit
+ * merge" used git's prepared message and ignored the one corrected there. A
+ * cherry-pick or revert of several commits then goes on with the next ones.
+ */
+export async function continueOp(repo: string, message?: string): Promise<void> {
   const op = await currentOp(repo)
   if (!op) return
+  if (message?.trim() && (op === 'merge' || op === 'cherry-pick' || op === 'revert')) {
+    // The commit of a picked or reverted commit keeps its author, read by git from CHERRY_PICK_HEAD.
+    const pending = (await git(repo, ['rev-parse', '-q', '--verify', op === 'merge' ? 'MERGE_HEAD' : op === 'revert' ? 'REVERT_HEAD' : 'CHERRY_PICK_HEAD'], { okCodes: [1] })).code === 0
+    if (pending) await git(repo, ['commit', '-F', '-', '--cleanup=whitespace'], { ...NO_EDITOR, input: message })
+    if (op !== 'merge' && (await currentOp(repo)) === op) await git(repo, [op, '--continue'], NO_EDITOR)
+    return
+  }
   if (op === 'merge') await git(repo, ['commit', '--no-edit'], NO_EDITOR)
   else await git(repo, [op, '--continue'], NO_EDITOR)
 }

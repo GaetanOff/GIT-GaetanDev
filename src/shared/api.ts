@@ -52,7 +52,8 @@ export interface Api {
   /** `expect`: the commit to undo; refused if HEAD is another one by now. */
   'git:undoCommit'(repo: string, expect?: string): Promise<string>
   'git:resolve'(repo: string, path: string, side: 'ours' | 'theirs'): Promise<void>
-  'git:continue'(repo: string): Promise<void>
+  /** `message`: the commit message the user wrote, for a merge, cherry-pick or revert; git's own otherwise. */
+  'git:continue'(repo: string, message?: string): Promise<void>
   'git:abort'(repo: string): Promise<void>
   'git:skip'(repo: string): Promise<void>
   'git:conflict'(repo: string, path: string): Promise<ConflictFile>

@@ -210,7 +210,7 @@ export function registerIpc(watcher: RepoWatcher): void {
     'git:preparedMessage': async repo => ops.preparedMessage(repo),
     'git:undoCommit': async (repo, expect) => ops.undoCommit(repo, expect),
     'git:resolve': async (repo, path, side) => ops.resolve(repo, path, side),
-    'git:continue': async repo => ops.continueOp(repo),
+    'git:continue': async (repo, message) => ops.continueOp(repo, message),
     'git:abort': async repo => ops.abortOp(repo),
     'git:skip': async repo => ops.skipOp(repo),
     'git:conflict': async (repo, path) => conflict(repo, path),
