@@ -27,6 +27,7 @@ const { compare } = await import('../src/main/git/compare')
 const { log } = await import('../src/main/git/log')
 const { fileLog, parseFileLog, unquote } = await import('../src/main/git/blame')
 const { rebasePlan, rebaseRun } = await import('../src/main/git/rebase')
+const { restore } = await import('../src/main/git/reflog')
 const { git, assertRefName, gitVersion, killRunning, readGitVersion, stallGuards, windowsOpenSsh } = await import('../src/main/git/exec')
 const { classify } = await import('../src/main/askpass')
 
@@ -312,6 +313,49 @@ describe('refs', () => {
     const feature = (await refs(repo)).branches.find(b => b.name === 'feature')!
     await ops.merge(repo, feature.fullRef)
     expect(existsSync(join(repo, 'f.txt'))).toBe(true)
+  })
+})
+
+describe('undo and force push', () => {
+  it('goes back before an operation without losing uncommitted work, and redoes it', async () => {
+    const repo = makeRepo()
+    commit(repo, 'one', { 'a.txt': '1\n', 'b.txt': 'b\n' })
+    const one = sh(repo, 'rev-parse', 'HEAD')
+    commit(repo, 'two', { 'a.txt': '2\n' })
+    const two = sh(repo, 'rev-parse', 'HEAD')
+    // A change in a file the undo would rewrite: reset --keep refuses rather than lose it.
+    write(repo, 'a.txt', 'mine\n')
+    await expect(restore(repo, { sha: one, branch: 'main' })).rejects.toThrow()
+    expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('mine\n')
+    expect(sh(repo, 'rev-parse', 'HEAD')).toBe(two)
+    // A change elsewhere comes along.
+    sh(repo, 'checkout', '--', 'a.txt')
+    write(repo, 'b.txt', 'kept\n')
+    const redo = await restore(repo, { sha: one, branch: 'main' })
+    expect(sh(repo, 'rev-parse', 'HEAD')).toBe(one)
+    expect(readFileSync(join(repo, 'b.txt'), 'utf8')).toBe('kept\n')
+    await restore(repo, redo)
+    expect(sh(repo, 'rev-parse', 'HEAD')).toBe(two)
+  })
+
+  it('never force pushes over a remote commit that was fetched but never looked at', async () => {
+    const bare = join(makeRepo(), '..', 'remote.git')
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare])
+    const repo = makeRepo()
+    sh(repo, 'remote', 'add', 'origin', bare)
+    commit(repo, 'base', { 'a.txt': 'a\n' })
+    await ops.push(repo, {}, () => undefined)
+    // Someone else pushes; the background fetch brings their commit in, nobody here sees it.
+    const other = makeRepo()
+    sh(other, 'remote', 'add', 'origin', bare)
+    sh(other, 'fetch', '-q', 'origin')
+    sh(other, 'checkout', '-q', '-B', 'main', 'origin/main')
+    commit(other, 'theirs', { 't.txt': 't\n' })
+    sh(other, 'push', '-q', 'origin', 'main')
+    sh(repo, 'fetch', '-q', 'origin')
+    commit(repo, 'amended locally', { 'a.txt': 'mine\n' })
+    await expect(ops.push(repo, { force: true }, () => undefined)).rejects.toThrow()
+    expect(execFileSync('git', ['-C', bare, 'log', '-1', '--format=%s', 'main'], { encoding: 'utf8' }).trim()).toBe('theirs')
   })
 })
 
