@@ -7,6 +7,7 @@
   import type { Commit } from '@shared/types'
   import { commitMenu, commitsMenu } from '@/lib/actions'
   import { initials, relativeTime, shortSha, tone } from '@/lib/format'
+  import { MAX_LANES } from '@/lib/graph'
   import { app } from '@/lib/state.svelte'
   import { contextMenu, isMenuKey, menuAt, overlayOpen } from '@/lib/ui.svelte'
   import type { SearchMode } from '@shared/types'
@@ -22,7 +23,7 @@
     try { return +(localStorage.getItem('history-width') ?? 560) } catch { return 560 }
   }
 
-  const lanes = $derived(Math.min(12, app.graph.reduce((m, r) => Math.max(m, r.width), 1)))
+  const lanes = $derived(Math.min(MAX_LANES, app.graph.reduce((m, r) => Math.max(m, r.width), 1)))
   const selectedIndex = $derived(app.commits.findIndex(c => c.sha === app.selectedCommit))
   const headSha = $derived(app.status?.head)
 
