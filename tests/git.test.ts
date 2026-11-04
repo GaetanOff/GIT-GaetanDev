@@ -421,6 +421,39 @@ describe('refs', () => {
   })
 })
 
+describe('changes kept across a pull or a rebase', () => {
+  it('gives staged changes back staged after a pull and after editing history', async () => {
+    const bare = join(makeRepo(), '..', 'remote.git')
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare])
+    const repo = makeRepo()
+    sh(repo, 'remote', 'add', 'origin', bare)
+    commit(repo, 'base', { 'a.txt': '1\n', 'b.txt': '1\n' })
+    await ops.push(repo, {}, () => undefined)
+    const other = makeRepo()
+    sh(other, 'remote', 'add', 'origin', bare)
+    sh(other, 'fetch', '-q', 'origin')
+    sh(other, 'checkout', '-q', '-B', 'main', 'origin/main')
+    commit(other, 'theirs', { 'c.txt': 'c\n' })
+    sh(other, 'push', '-q', 'origin', 'main')
+    write(repo, 'a.txt', 'staged\n')
+    sh(repo, 'add', 'a.txt')
+    write(repo, 'b.txt', 'unstaged\n')
+    const kept = () => [sh(repo, 'diff', '--cached', '--name-only'), sh(repo, 'diff', '--name-only')]
+    await ops.pull(repo, 'rebase', () => undefined)
+    expect(existsSync(join(repo, 'c.txt'))).toBe(true)
+    expect(kept()).toEqual(['a.txt', 'b.txt'])
+    // A commit of its own file only: the changes stay as they are.
+    write(repo, 'd.txt', 'd\n')
+    sh(repo, 'add', 'd.txt')
+    sh(repo, 'commit', '-q', '-m', 'two', '--', 'd.txt')
+    const plan = await rebasePlan(repo, 'HEAD~1')
+    await rebaseRun(repo, plan.base, [{ sha: plan.commits[0].sha, action: 'reword', message: 'two, reworded' }], plan.head)
+    expect(sh(repo, 'log', '-1', '--format=%s')).toBe('two, reworded')
+    expect(kept()).toEqual(['a.txt', 'b.txt'])
+    expect(sh(repo, 'stash', 'list')).toBe('')
+  })
+})
+
 describe('undo and force push', () => {
   it('goes back before an operation without losing uncommitted work, and redoes it', async () => {
     const repo = makeRepo()

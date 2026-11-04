@@ -2,6 +2,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { RebasePlan, RebaseStep, RebaseTodoItem } from '@shared/types'
 import { git, gitOut, GitError } from './exec'
+import { keepingIndex } from './ops'
 import { upstreamOf, currentBranch } from './refs'
 import { gitDir, operation } from './status'
 
@@ -187,7 +188,9 @@ export async function rebaseRun(repo: string, base: string | null, steps: Rebase
   const merges = steps.some(s => s.action === 'line')
   const todoFile = join(dir, 'todo')
   await writeFile(todoFile, `${todo.join('\n')}\n`, 'utf8')
-  await git(repo, ['rebase', '-i', ...(merges ? ['--rebase-merges'] : []), '--autostash', ...(base ? [base] : ['--root'])], {
-    env: { GIT_SEQUENCE_EDITOR: `cp ${quote(todoFile)}`, GIT_EDITOR: 'true' },
-  })
+  // Staged changes come back staged afterwards (see keepingIndex), not all unstaged.
+  await keepingIndex(repo, 'Changes set aside by GaetanDev Git before editing history', autostash =>
+    git(repo, ['rebase', '-i', ...(merges ? ['--rebase-merges'] : []), autostash ? '--autostash' : '--no-autostash', ...(base ? [base] : ['--root'])], {
+      env: { GIT_SEQUENCE_EDITOR: `cp ${quote(todoFile)}`, GIT_EDITOR: 'true' },
+    }))
 }

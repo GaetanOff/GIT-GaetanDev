@@ -502,10 +502,44 @@ export async function pull(repo: string, mode: PullMode, report: Reporter): Prom
   if (!(await upstreamOf(repo, branch))) throw new GitError(`Branch "${branch}" has no upstream to pull from. Push it first.`, 'NO_UPSTREAM')
   const flag = mode === 'rebase' ? '--rebase' : mode === 'ff-only' ? '--ff-only' : '--no-rebase'
   try {
-    await withPruneJournal(repo, () => git(repo, ['pull', flag, '--autostash', '--progress'], { ...NO_EDITOR, onStderrLine: progressHandler('pull', 'Pulling', report) }))
+    await keepingIndex(repo, 'Changes set aside by GaetanDev Git before a pull', autostash =>
+      withPruneJournal(repo, () => git(repo, ['pull', flag, autostash ? '--autostash' : '--no-autostash', '--progress'], { ...NO_EDITOR, onStderrLine: progressHandler('pull', 'Pulling', report) })))
   } finally {
     report(null)
   }
+}
+
+/**
+ * Runs an operation that needs a clean working tree (a pull, a rebase) and
+ * gives the changes back as they were. Git's --autostash re-applies them
+ * without --index: everything staged, lines picked one by one included,
+ * came back unstaged. With staged changes the app stashes them itself and
+ * restores them with the index; without, git's --autostash does (`run`
+ * receives which). An operation that stops on a conflict leaves the stash
+ * for later, and says so.
+ */
+export async function keepingIndex<T>(repo: string, label: string, run: (autostash: boolean) => Promise<T>): Promise<T> {
+  const staged = (await git(repo, ['diff', '--cached', '--quiet'], { okCodes: [1, 128] })).code === 1
+  if (!staged) return run(true)
+  const top = () => git(repo, ['rev-parse', '-q', '--verify', 'refs/stash'], { okCodes: [1] }).then(r => r.stdout.trim())
+  const before = await top()
+  await git(repo, ['stash', 'push', '-q', '-m', label])
+  const mine = await top()
+  if (!mine || mine === before) return run(true)
+  let result: T
+  try {
+    result = await run(false)
+  } catch (e) {
+    if (await currentOp(repo)) {
+      if (e instanceof GitError) e.message += `\nYour uncommitted changes are kept in the stash “${label}”: apply it once this is finished.`
+    } else {
+      // Nothing started: the changes go back where they were.
+      await git(repo, ['stash', 'pop', '-q', '--index']).catch(() => undefined)
+    }
+    throw e
+  }
+  if ((await top()) === mine) await stashApply(repo, 0, true, mine)
+  return result
 }
 
 export async function push(repo: string, opts: { force?: boolean; setUpstream?: boolean }, report: Reporter): Promise<void> {
