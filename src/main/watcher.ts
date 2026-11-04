@@ -101,6 +101,10 @@ export class RepoWatcher {
     for (const w of this.extra.splice(0)) w.close() // start() watches them again
     this.overflow = true
     this.schedule()
+    this.retryLater(repo)
+  }
+
+  private retryLater(repo: string): void {
     if (this.retry) clearTimeout(this.retry)
     const wait = Math.min(RETRY_MS * 2 ** this.failures, 60_000)
     this.failures++
@@ -108,6 +112,9 @@ export class RepoWatcher {
       this.retry = null
       if (this.repo !== repo) return
       this.start(repo)
+      // Still away (a network share during a VPN reconnect, a folder renamed and back): try again
+      // later. Given up after one try, the repository stayed unwatched until it was opened again.
+      if (!this.watcher) return this.retryLater(repo)
       // Still watching a while later: the failures in a row are over.
       const started = this.watcher
       setTimeout(() => { if (started && this.watcher === started) this.failures = 0 }, 30_000).unref()
