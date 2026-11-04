@@ -116,7 +116,7 @@ export async function newerTips(repo: string, branches: { name: string; sha: str
     ...journal.filter(p => sameName(p.ref, name)).map((p): Candidate => ({ sha: p.sha, via: 'pruned', ref: p.ref })),
   ])
   const rest = branches.filter(b => !named.some(n => n.name === b.name))
-  const dangling = fsck.split('\n').map(l => /^unreachable commit ([0-9a-f]{40})$/.exec(l)?.[1]).filter((s): s is string => !!s).slice(0, 3000)
+  const dangling = fsck.split('\n').map(l => /^unreachable commit ([0-9a-f]{40}(?:[0-9a-f]{24})?)$/.exec(l)?.[1]).filter((s): s is string => !!s).slice(0, 3000)
   const unnamed = await bestDescendants(repo, rest, () => dangling.map((sha): Candidate => ({ sha, via: 'unreferenced' })))
   return [...named, ...unnamed]
 }

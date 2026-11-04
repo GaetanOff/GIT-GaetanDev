@@ -9,7 +9,21 @@ import { git, gitOut, GitError } from './exec'
 /** Beyond this many diff lines the UI asks before rendering. */
 const LINE_BUDGET = 25_000
 const MAX_DIFF_BYTES = 40 * 1024 * 1024
-const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+/**
+ * The empty tree of the repository's object format: SHA-1's
+ * 4b825dc… written in full made every diff of a root commit, of an
+ * untracked stash part or of the index before the first commit fail in a
+ * SHA-256 repository ("bad revision").
+ */
+const emptyTrees = new Map<string, string>()
+async function emptyTree(repo: string): Promise<string> {
+  let tree = emptyTrees.get(repo)
+  if (!tree) {
+    tree = (await git(repo, ['hash-object', '-t', 'tree', '--stdin'], { input: '' })).stdout.trim()
+    emptyTrees.set(repo, tree)
+  }
+  return tree
+}
 
 const IMAGE_TYPES: Record<string, string> = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
@@ -76,16 +90,16 @@ async function rawDiff(repo: string, source: DiffSource, opts: DiffOptions): Pro
       return run(['diff', ...real, ...paths(source.path)])
     case 'index': {
       const hasHead = await git(repo, ['rev-parse', '--verify', '-q', 'HEAD'], { okCodes: [1] }).then(r => r.code === 0)
-      return run(['diff', ...real, '--cached', ...(hasHead ? [] : [EMPTY_TREE]), ...paths(source.path, source.oldPath)])
+      return run(['diff', ...real, '--cached', ...(hasHead ? [] : [await emptyTree(repo)]), ...paths(source.path, source.oldPath)])
     }
     case 'commit': {
       const parents = (await gitOut(repo, ['rev-list', '--parents', '-n', '1', source.sha])).trim().split(' ').slice(1)
-      const base = parents[0] ?? EMPTY_TREE
+      const base = parents[0] ?? await emptyTree(repo)
       return run(['diff', ...args, base, source.sha, ...paths(source.path, source.oldPath)])
     }
     case 'stash': {
       const ref = `stash@{${source.index}}`
-      if (source.untracked) return run(['diff', ...args, EMPTY_TREE, `${ref}^3`, '--', source.path])
+      if (source.untracked) return run(['diff', ...args, await emptyTree(repo), `${ref}^3`, '--', source.path])
       return run(['diff', ...args, `${ref}^1`, ref, '--', source.path])
     }
     case 'range':

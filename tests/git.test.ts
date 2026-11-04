@@ -25,7 +25,7 @@ const { conflict, resolveContent, resolveWhole } = await import('../src/main/git
 const { refs, upstreamOf } = await import('../src/main/git/refs')
 const { compare } = await import('../src/main/git/compare')
 const { log } = await import('../src/main/git/log')
-const { fileLog, parseFileLog, unquote } = await import('../src/main/git/blame')
+const { blame, fileLog, parseFileLog, unquote } = await import('../src/main/git/blame')
 const { rebasePlan, rebaseRun } = await import('../src/main/git/rebase')
 const { restore } = await import('../src/main/git/reflog')
 const { newerTips } = await import('../src/main/git/recovery')
@@ -858,6 +858,21 @@ describe('conflicts', () => {
 })
 
 describe('file history', () => {
+  it('diffs and blames in a SHA-256 repository', async () => {
+    const root = join(makeRepo(), '..', 'sha256')
+    execFileSync('git', ['init', '-q', '-b', 'main', '--object-format=sha256', root])
+    for (const [k, v] of [['user.name', 'Test'], ['user.email', 'test@example.com']]) sh(root, 'config', k, v)
+    write(root, 'a.txt', 'one\n')
+    sh(root, 'add', 'a.txt')
+    expect((await diff(root, { kind: 'index', path: 'a.txt' }, OPTS)).hunks[0].lines.map(l => l.text)).toEqual(['one'])
+    sh(root, 'commit', '-q', '-m', 'first')
+    const sha = sh(root, 'rev-parse', 'HEAD')
+    expect(sha).toHaveLength(64)
+    expect((await diff(root, { kind: 'commit', sha, path: 'a.txt' }, OPTS)).additions).toBe(1)
+    const b = await blame(root, 'a.txt', null)
+    expect(b.lines.map(l => l.sha)).toEqual([sha])
+  })
+
   it('follows a file across a rename, paths kept as they are', async () => {
     const repo = makeRepo()
     commit(repo, 'one', { 'a.txt': 'x\ny\nz\n' })

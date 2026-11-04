@@ -32,7 +32,7 @@ export async function log(repo: string, q: LogQuery): Promise<Commit[]> {
   const commits = parseLog(r.stdout)
 
   // A hash typed in the search box should find the commit even if no message matches.
-  if (q.search && q.skip === 0 && /^[0-9a-f]{4,40}$/i.test(q.search.trim()) && !commits.length) {
+  if (q.search && q.skip === 0 && /^[0-9a-f]{4,64}$/i.test(q.search.trim()) && !commits.length) {
     const one = await git(repo, ['log', `--format=${LOG_FORMAT}`, '-n1', q.search.trim(), '--decorate=full'], { okCodes: [128] })
     return one.code === 0 ? parseLog(one.stdout) : []
   }
