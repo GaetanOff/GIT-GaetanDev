@@ -1149,6 +1149,16 @@ describe('history', () => {
     expect(existsSync(join(elsewhere, '.git', 'other-index'))).toBe(false)
   })
 
+  it('writes the commit-graph when fetching, unless the repository says not to', async () => {
+    const source = makeRepo()
+    for (const i of [1, 2, 3]) commit(source, `c${i}`)
+    const repo = makeRepo()
+    sh(repo, 'remote', 'add', 'origin', source)
+    await ops.fetchAll(repo, () => undefined)
+    const info = join(repo, '.git', 'objects', 'info')
+    expect(existsSync(join(info, 'commit-graph')) || existsSync(join(info, 'commit-graphs'))).toBe(true)
+  })
+
   it('cancels a clone and leaves no half-filled folder', async () => {
     const source = makeRepo()
     commit(source, 'base', { 'a.txt': 'a\n' })

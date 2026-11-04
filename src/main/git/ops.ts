@@ -488,9 +488,16 @@ function progressHandler(op: string, title: string, report: Reporter) {
   }
 }
 
+/**
+ * Fetches every remote. Unless the repository says otherwise, git also
+ * writes its commit-graph file: without one (a fresh clone), the history's
+ * --topo-order walked the whole history for every page loaded.
+ */
 export async function fetchAll(repo: string, report: Reporter): Promise<void> {
+  const setByUser = (await git(repo, ['config', '--get', 'fetch.writeCommitGraph'], { okCodes: [1] })).code === 0
+  const graph = setByUser ? [] : ['-c', 'fetch.writeCommitGraph=true']
   try {
-    await withPruneJournal(repo, () => git(repo, ['fetch', '--all', '--prune', '--progress'], { onStderrLine: progressHandler('fetch', 'Fetching', report) }))
+    await withPruneJournal(repo, () => git(repo, [...graph, 'fetch', '--all', '--prune', '--progress'], { onStderrLine: progressHandler('fetch', 'Fetching', report) }))
   } finally {
     report(null)
   }
