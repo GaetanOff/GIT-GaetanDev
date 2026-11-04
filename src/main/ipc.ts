@@ -19,7 +19,7 @@ import { commitDetail, log, stashDetail } from './git/log'
 import * as ops from './git/ops'
 import { defaultBranch, defaultRemote, extras, refs } from './git/refs'
 import { isRepo, status, topLevel } from './git/status'
-import { openEditor, openTerminal } from './integrations'
+import { openEditor, openTerminal, resolveProgram } from './integrations'
 import { logDir } from './log'
 import { detectProvider, providerUrl } from './provider'
 import { installUpdate, updateReady } from './updater'
@@ -125,14 +125,17 @@ export function registerIpc(watcher: RepoWatcher): void {
       const current = getState().settings
       const commands = (['editorCommand', 'terminalCommand'] as const).filter(k => patch[k] && patch[k] !== current[k])
       if (commands.length) {
-        const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
-        const opts = {
-          type: 'question' as const, buttons: ['Use them', 'Cancel'], defaultId: 0, cancelId: 1,
-          message: 'GaetanDev Git will run these commands to open your editor or terminal.',
-          detail: commands.map(k => `${k === 'editorCommand' ? 'Editor' : 'Terminal'}: ${patch[k]}`).join('\n'),
+        // One line each, shown with the program it runs: line breaks or a run of spaces could push
+        // the real end of a command out of sight, and Enter (Cancel now) agreed to what was seen.
+        const lines = commands.map(k => {
+          const command = patch[k]!
+          if ([...command].some(c => c.charCodeAt(0) < 0x20)) throw new GitError('A command cannot hold line breaks or other control characters.')
+          const program = resolveProgram(command).line.replace(/^"([^"]+)".*$/s, '$1')
+          return `${k === 'editorCommand' ? 'Editor' : 'Terminal'}: ${command.replace(/ {2,}/g, ' ')}\n    runs ${program}`
+        })
+        if (!(await ask('GaetanDev Git will run these commands to open your editor or terminal.', lines.join('\n'), 'Use them'))) {
+          throw new GitError('Integrations were not changed.', 'CANCELLED')
         }
-        const { response } = win ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts)
-        if (response !== 0) throw new GitError('Integrations were not changed.', 'CANCELLED')
       }
       return updateSettings(patch)
     },
