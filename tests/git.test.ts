@@ -291,6 +291,15 @@ describe('commit', () => {
     expect((await ops.identity(makeRepo())).scope).toBe('local')
   })
 
+  it('removes a repository identity instead of writing empty values', async () => {
+    const repo = makeRepo()
+    await ops.setIdentity(repo, { name: 'Work Name', email: '' })
+    expect(sh(repo, 'config', '--local', 'user.name')).toBe('Work Name')
+    expect(() => sh(repo, 'config', '--local', 'user.email')).toThrow()
+    await ops.setIdentity(repo, null)
+    expect(() => sh(repo, 'config', '--local', 'user.name')).toThrow()
+  })
+
   it('undoes only the commit it was asked for', async () => {
     const repo = makeRepo()
     commit(repo, 'base')

@@ -113,7 +113,8 @@ export interface Api {
 
   /* Config & integrations */
   'git:identity'(repo: string | null): Promise<GitIdentity & { scope: 'local' | 'global' | 'none' }>
-  'git:setIdentity'(repo: string | null, identity: GitIdentity): Promise<void>
+  /** `identity` null, or an empty field: that identity, or that part of it, is removed instead of written empty. */
+  'git:setIdentity'(repo: string | null, identity: GitIdentity | null): Promise<void>
   'provider:url'(repo: string, link: ProviderLink): Promise<string | null>
   'shell:openUrl'(url: string): Promise<void>
   'shell:reveal'(repo: string, path?: string): Promise<void>

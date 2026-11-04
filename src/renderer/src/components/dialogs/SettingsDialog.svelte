@@ -34,7 +34,8 @@
   async function saveIdentity() {
     try {
       await api['git:setIdentity'](null, { name: gName.trim(), email: gEmail.trim() })
-      if (app.repo && localScope && lName.trim()) await api['git:setIdentity'](app.repo.path, { name: lName.trim(), email: lEmail.trim() })
+      // Unticked: the repository's own identity goes, and the global one applies again.
+      if (app.repo) await api['git:setIdentity'](app.repo.path, localScope ? { name: lName.trim(), email: lEmail.trim() } : null)
       toast('success', 'Git identity saved.')
     } catch (e) {
       toast('error', asError(e).message)

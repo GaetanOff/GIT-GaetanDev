@@ -599,9 +599,19 @@ export async function identity(repo: string | null): Promise<{ name: string; ema
   return { name, email, scope }
 }
 
-export async function setIdentity(repo: string | null, id: { name: string; email: string }): Promise<void> {
+/**
+ * Sets the repository's own identity, or the global one. Null, or a field
+ * left empty, removes it instead: unticking "a different identity for this
+ * repository" wrote the global one only, the local one stayed in use (and
+ * the box came back ticked), and empty fields wrote `user.name ""`, which
+ * every commit then refused.
+ */
+export async function setIdentity(repo: string | null, id: { name: string; email: string } | null): Promise<void> {
   const scope = repo ? '--local' : '--global'
   const cwd = repo ?? process.cwd()
-  await git(cwd, ['config', scope, 'user.name', id.name])
-  await git(cwd, ['config', scope, 'user.email', id.email])
+  for (const [key, value] of [['user.name', id?.name.trim()], ['user.email', id?.email.trim()]] as const) {
+    // Exit 5: the key was not set, nothing to remove.
+    if (value) await git(cwd, ['config', scope, key, value])
+    else await git(cwd, ['config', scope, '--unset-all', key], { okCodes: [5] })
+  }
 }
