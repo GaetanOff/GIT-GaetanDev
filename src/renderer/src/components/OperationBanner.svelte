@@ -6,8 +6,12 @@
 
   const op = $derived(app.status?.operation)
   const conflicts = $derived(app.conflicted.length)
+  const step = $derived(app.status?.operationStep ? ` · ${app.status.operationStep}` : '')
   const title = $derived(
-    op === 'merge' ? 'Merge in progress' : op === 'rebase' ? `Rebase in progress${app.status?.operationStep ? ` · ${app.status.operationStep}` : ''}` : op === 'cherry-pick' ? 'Cherry-pick in progress' : 'Revert in progress',
+    op === 'merge' ? 'Merge in progress'
+      : op === 'rebase' ? `Rebase in progress${step}`
+      : op === 'am' ? `Applying patches (git am)${step}`
+      : op === 'cherry-pick' ? 'Cherry-pick in progress' : 'Revert in progress',
   )
 
   async function skip() {
@@ -15,7 +19,7 @@
     const repo = app.repo!.path
     const ok = await confirm({
       title: 'Skip this commit?',
-      message: `The commit ${op === 'rebase' ? 'being replayed' : 'being applied'} is left out, along with any resolution made for it. The ${op} then goes on with the next one.`,
+      message: `The ${op === 'am' ? 'patch' : 'commit'} ${op === 'rebase' ? 'being replayed' : 'being applied'} is left out, along with any resolution made for it. The ${op === 'am' ? 'git am session' : op} then goes on with the next one.`,
       confirmLabel: 'Skip commit',
       danger: true,
     })

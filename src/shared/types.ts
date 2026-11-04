@@ -91,7 +91,8 @@ export interface FileChange {
   submodule?: boolean
 }
 
-export type RepoOperation = 'merge' | 'rebase' | 'cherry-pick' | 'revert' | null
+/** The operation in progress; its name is also the git command that continues or aborts it (but merge). */
+export type RepoOperation = 'merge' | 'rebase' | 'am' | 'cherry-pick' | 'revert' | null
 
 export interface RepoStatus {
   branch: string | null

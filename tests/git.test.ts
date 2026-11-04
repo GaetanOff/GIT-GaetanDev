@@ -397,6 +397,22 @@ describe('conflicts', () => {
   })
 })
 
+describe('operations in progress', () => {
+  it('tells a git am session from a rebase, and aborts it with am', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'base\n' })
+    commit(repo, 'change', { 'a.txt': 'patched\n' })
+    const patch = sh(repo, 'format-patch', '-1', '--stdout') + '\n'
+    sh(repo, 'reset', '-q', '--hard', 'HEAD~1')
+    commit(repo, 'conflicting', { 'a.txt': 'other\n' })
+    await git(repo, ['am'], { input: patch, okCodes: [128] })
+    expect((await status(repo)).operation).toBe('am')
+    await ops.abortOp(repo)
+    expect((await status(repo)).operation).toBeNull()
+    expect(sh(repo, 'log', '-1', '--format=%s')).toBe('conflicting')
+  })
+})
+
 describe('history', () => {
   it('cherry-picks several commits in history order even with equal dates', async () => {
     const repo = makeRepo()
