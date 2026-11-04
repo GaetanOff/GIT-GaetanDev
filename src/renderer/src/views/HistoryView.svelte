@@ -32,9 +32,15 @@
     if (app.historyStale) app.reloadHistory(true)
   })
 
-  // Reveal a commit selected from elsewhere (a branch or tag click in the sidebar).
+  // Reveal a commit selected from elsewhere (a branch or tag click in the sidebar), once: run
+  // whenever its index moved (a fetch adding commits on top), it scrolled the list back to it
+  // while reading thousands of rows further down.
+  let revealed: string | null = null
   $effect(() => {
-    if (selectedIndex >= 0) list?.reveal(selectedIndex)
+    const sha = app.selectedCommit
+    if (!sha || sha === revealed || selectedIndex < 0) return
+    revealed = sha
+    list?.reveal(selectedIndex)
   })
 
   const MODES: { id: SearchMode; label: string; icon: IconName; hint: string; placeholder: string }[] = [
