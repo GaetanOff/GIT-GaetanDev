@@ -39,6 +39,16 @@
   })
 
   const set = (patch: Partial<typeof target>) => (app.compareTarget = { ...target, ...patch })
+
+  /**
+   * The branch a pull request targets on the server: a remote branch loses its remote's name
+   * ("origin/release/2.0" → "release/2.0"), a local one keeps its whole name ("release/2.0",
+   * which lost its first part and opened a pull request against "2.0").
+   */
+  function prBase(base: string): string {
+    const remote = app.remoteBranches.find(b => b.name === base)?.remoteName
+    return remote ? base.slice(remote.length + 1) : base
+  }
   const current = $derived(result?.files.find(f => f.path === file) ?? null)
   const totals = $derived(result?.files.reduce((a, f) => ({ add: a.add + f.additions, del: a.del + f.deletions }), { add: 0, del: 0 }))
 
@@ -64,7 +74,7 @@
     <span class="grow"></span>
     {#if loading}<span class="spinner"></span>{/if}
     {#if result && app.provider && app.localBranches.some(b => b.name === target.head)}
-      <button class="btn btn-secondary sm" onclick={() => app.openProvider({ type: 'pr', branch: target.head, base: target.base.replace(/^[^/]+\//, '') })}><Icon name="pr" size={13} />Open PR</button>
+      <button class="btn btn-secondary sm" onclick={() => app.openProvider({ type: 'pr', branch: target.head, base: prBase(target.base) })}><Icon name="pr" size={13} />Open PR</button>
     {/if}
   </div>
 
