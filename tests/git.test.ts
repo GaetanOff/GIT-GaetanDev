@@ -20,7 +20,7 @@ vi.mock('electron', () => ({
 
 const ops = await import('../src/main/git/ops')
 const { status } = await import('../src/main/git/status')
-const { diff } = await import('../src/main/git/diff')
+const { diff, parseDiff } = await import('../src/main/git/diff')
 const { conflict, resolveContent, resolveWhole } = await import('../src/main/git/conflict')
 const { refs } = await import('../src/main/git/refs')
 const { compare } = await import('../src/main/git/compare')
@@ -550,6 +550,17 @@ describe('line operations', () => {
     await ops.stageLines(repo, 'a.txt', sel, false, undefined, selectionFingerprint(d, sel))
     expect(execFileSync('git', ['-C', repo, 'show', ':a.txt'], { encoding: 'utf8' })).toBe('a\n\nb\nc\n')
     expect((await log(repo, { scope: 'current', skip: 0, limit: 5 })).map(c => c.subject)).toEqual(['base'])
+  })
+
+  // A symbolic link needs privileges on Windows: git's output for a file turned into one is given as is.
+  it('reads a file turned into a link as two parts, not one hunk with headers inside', () => {
+    const raw = [
+      'diff --git a/x b/x', 'deleted file mode 100644', 'index 1111111..0000000', '--- a/x', '+++ /dev/null', '@@ -1 +0,0 @@', '-content',
+      'diff --git a/x b/x', 'new file mode 120000', 'index 0000000..2222222', '--- /dev/null', '+++ b/x', '@@ -0,0 +1 @@', '+target', '\\ No newline at end of file', '',
+    ].join('\n')
+    const d = parseDiff(raw, 'x', true)
+    expect(d).toMatchObject({ typeChange: true, isDeleted: false, isNew: false, modeChange: '100644 → 120000', additions: 1, deletions: 1 })
+    expect(d.hunks.map(h => h.lines.map(l => `${l.type}:${l.text}`))).toEqual([['del:content'], ['add:target']])
   })
 
   it('stages the real lines of a file a textconv filter shows differently', async () => {

@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { extname, join } from 'node:path'
 import type { DiffHunk, DiffLine, DiffOptions, DiffSource, FileDiff, LineSelection, TextEncoding } from '@shared/types'
 import { decode, decodeOutput, detect, encode } from './encoding'
-import { git, gitOut } from './exec'
+import { git, gitOut, GitError } from './exec'
 
 /** Beyond this many diff lines the UI asks before rendering. */
 const LINE_BUDGET = 25_000
@@ -117,6 +117,18 @@ export function parseDiff(raw: string, path: string, force = false): FileDiff {
   let newNo = 0
   for (; i < lines.length; i++) {
     const l = lines[i]
+    // A type change (file ↔ symbolic link or submodule) is a deletion then a creation: its second
+    // header was read as diff lines ("-- /dev/null" removed, "++ b/x" added) in the first one's hunk.
+    if (l.startsWith('diff --git ')) {
+      const old = result.header.find(h => h.startsWith('deleted file mode '))?.slice(18)
+      const mode = lines.slice(i, i + 4).find(h => h.startsWith('new file mode '))?.slice(14)
+      result.typeChange = true
+      result.isDeleted = false
+      result.isNew = false
+      if (old && mode) result.modeChange = `${old} → ${mode}`
+      hunk = null
+      continue
+    }
     const m = HUNK_RE.exec(l)
     if (m) {
       oldNo = +m[1]
@@ -266,6 +278,7 @@ function lfsPointer(d: FileDiff): FileDiff['lfs'] {
  * as context; unselected deletions are dropped.
  */
 export function buildPartialPatch(d: FileDiff, selection: LineSelection, direction: 'forward' | 'reverse'): string | null {
+  if (d.typeChange) throw new GitError('This file became a link or a submodule (or the reverse): stage it whole.')
   const out: string[] = []
   let partial = false
 

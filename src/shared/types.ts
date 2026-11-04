@@ -155,6 +155,8 @@ export interface FileDiff {
   /** Git LFS pointer: the real content lives on the LFS server. */
   lfs?: { oid: string; size: number; before?: { oid: string; size: number } }
   submodule?: { before?: string; after?: string }
+  /** A file replaced by a link or a submodule, or the reverse: git gives two diffs, shown together; no line operations. */
+  typeChange?: boolean
 }
 
 export type DiffSource =
