@@ -25,7 +25,10 @@
   }
 
   const lanes = $derived(Math.min(MAX_LANES, app.graph.reduce((m, r) => Math.max(m, r.width), 1)))
-  const selectedIndex = $derived(app.commits.findIndex(c => c.sha === app.selectedCommit))
+  // Built once per list loaded: looking the selection up by scanning took a pass over up to
+  // 100,000 commits at every arrow key.
+  const indexBySha = $derived(new Map(app.commits.map((c, i) => [c.sha, i])))
+  const selectedIndex = $derived(app.selectedCommit ? indexBySha.get(app.selectedCommit) ?? -1 : -1)
   const headSha = $derived(app.status?.head)
 
   // Refs moved while another view was shown: catch up now, keeping the depth and the selection.
