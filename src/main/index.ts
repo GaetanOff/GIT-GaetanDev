@@ -6,6 +6,7 @@ import { killRunning, setGitEnv } from './git/exec'
 import { devShot } from './devshot'
 import { askRenderer, openFolder, queuesBusy, registerIpc, send, setLaunchPath, settleQueues } from './ipc'
 import { flush, getState, save } from './store'
+import { sweepImportCopies } from './importers'
 import { startUpdates } from './updater'
 import { RepoWatcher } from './watcher'
 
@@ -58,6 +59,7 @@ function start(): void {
     registerIpc(watcher)
     createWindow()
     startUpdates(version => send('update:ready', version))
+    setTimeout(sweepImportCopies, 5_000).unref()
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
         askpass()
