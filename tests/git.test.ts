@@ -371,6 +371,18 @@ describe('edit history', () => {
   })
 })
 
+describe('staging', () => {
+  it('unstages both sides of a staged rename', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'old.txt': '1\n2\n3\n' })
+    sh(repo, 'mv', 'old.txt', 'new.txt')
+    await ops.unstage(repo, ['new.txt'])
+    expect(sh(repo, 'diff', '--cached', '--name-only')).toBe('')
+    expect(changed(repo).sort()).toEqual(['new.txt', 'old.txt'])
+    expect(sh(repo, 'ls-files')).toBe('old.txt')
+  })
+})
+
 describe('line operations', () => {
   it('stages only the selected line, and refuses a stale selection', async () => {
     const repo = makeRepo()

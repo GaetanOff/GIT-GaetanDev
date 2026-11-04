@@ -22,6 +22,11 @@ export async function stage(repo: string, paths: string[]): Promise<void> {
 
 export async function unstage(repo: string, paths: string[]): Promise<void> {
   if (!paths.length) return
+  // A staged rename is two index entries: unstaging only the new path left the old one staged as
+  // deleted, and a commit then recorded the deletion without the file under its new name.
+  const wanted = new Set(paths)
+  const renamed = (await status(repo)).files.filter(f => f.index === 'R' && f.oldPath && wanted.has(f.path)).map(f => f.oldPath!)
+  paths = [...paths, ...renamed.filter(p => !wanted.has(p))]
   const hasHead = await git(repo, ['rev-parse', '--verify', '-q', 'HEAD'], { okCodes: [1] }).then(r => r.code === 0)
   if (hasHead) await git(repo, ['reset', '-q', 'HEAD', '--pathspec-from-file=-', '--pathspec-file-nul'], viaStdin(paths))
   else await git(repo, ['rm', '--cached', '-r', '-q', '--pathspec-from-file=-', '--pathspec-file-nul'], viaStdin(paths))
