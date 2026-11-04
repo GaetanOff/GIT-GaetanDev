@@ -22,7 +22,7 @@ const ops = await import('../src/main/git/ops')
 const { status } = await import('../src/main/git/status')
 const { diff, parseDiff } = await import('../src/main/git/diff')
 const { conflict, resolveContent, resolveWhole } = await import('../src/main/git/conflict')
-const { refs } = await import('../src/main/git/refs')
+const { refs, upstreamOf } = await import('../src/main/git/refs')
 const { compare } = await import('../src/main/git/compare')
 const { log } = await import('../src/main/git/log')
 const { fileLog, parseFileLog, unquote } = await import('../src/main/git/blame')
@@ -330,6 +330,12 @@ describe('refs', () => {
     await ops.push(repo, {}, () => undefined)
     expect(execFileSync('git', ['-C', bare, 'for-each-ref', '--format=%(refname)', 'refs/heads'], { encoding: 'utf8' }).trim()).toBe('refs/heads/release')
     expect((await refs(repo)).branches.find(b => b.name === 'release')?.upstream).toBe('origin/release')
+    // The next push and a pull go through that upstream.
+    expect(await upstreamOf(repo, 'release')).toBe('origin/release')
+    commit(repo, 'second')
+    await ops.push(repo, {}, () => undefined)
+    await ops.pull(repo, 'ff-only', () => undefined)
+    expect(execFileSync('git', ['-C', bare, 'log', '-1', '--format=%s', 'release'], { encoding: 'utf8' }).trim()).toBe('second')
   })
 
   it('merges and compares the branch, not an older tag of the same name', async () => {

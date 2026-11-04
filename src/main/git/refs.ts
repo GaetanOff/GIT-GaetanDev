@@ -100,9 +100,10 @@ export async function currentBranch(repo: string): Promise<string | null> {
   return r.code === 0 ? strip(r.stdout.trim()) : null
 }
 
+/** The branch's upstream, read from the branch's own ref: "x@{upstream}" takes no full ref name. */
 export async function upstreamOf(repo: string, branch: string): Promise<string | null> {
-  const r = await git(repo, ['rev-parse', '--symbolic-full-name', `refs/heads/${branch}@{upstream}`], { okCodes: [128] })
-  return r.code === 0 && r.stdout.trim() ? strip(r.stdout.trim()) : null
+  const out = (await gitOut(repo, ['for-each-ref', '--format=%(upstream)', `refs/heads/${branch}`])).trim()
+  return out ? strip(out) : null
 }
 
 export async function defaultRemote(repo: string): Promise<string | null> {
