@@ -155,7 +155,6 @@ export interface ApiEvents {
   'repo:changed': RepoChangeEvent
   'progress': Progress | null
   'askpass': AskPassRequest
-  /** A credential prompt git stopped waiting for (it timed out): its dialog closes. */
   /** A credential prompt withdrawn: unanswered for five minutes, or git stopped waiting (`gone`). */
   'askpass:cancel': { id: string; reason: 'timeout' | 'gone' }
   'menu': string
@@ -164,6 +163,12 @@ export interface ApiEvents {
   /** A newer version was downloaded; it installs on quit. */
   'update:ready': string
 }
+
+/** The events the page may listen to: the bridge subscribes to these channels and no other. */
+export const API_EVENTS = ['repo:changed', 'progress', 'askpass', 'askpass:cancel', 'menu', 'open:path', 'update:ready'] as const satisfies readonly (keyof ApiEvents)[]
+type MissingEvent = Exclude<keyof ApiEvents, (typeof API_EVENTS)[number]>
+/** A compile error here names an event of ApiEvents left out of API_EVENTS. */
+export const EVENTS_COMPLETE: MissingEvent extends never ? true : MissingEvent = true
 
 /** Errors cross IPC as plain data so the renderer gets a clean message. */
 export interface IpcEnvelope<T> {
