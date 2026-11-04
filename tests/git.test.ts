@@ -586,6 +586,18 @@ describe('conflicts', () => {
     expect(f.chunks[0]).toEqual({ kind: 'conflict', ours: ['name = cafe'], base: ['name = x'], theirs: ['name = café'] })
   })
 
+  it('resolves a conflict on a Git LFS file by picking a side', async () => {
+    const repo = makeRepo()
+    const pointer = (oid: string) => `version https://git-lfs.github.com/spec/v1\noid sha256:${oid.repeat(64)}\nsize 1234\n`
+    commit(repo, 'base', { 'big.psd': pointer('a') })
+    sh(repo, 'checkout', '-q', '-b', 'other')
+    commit(repo, 'theirs', { 'big.psd': pointer('b') })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'ours', { 'big.psd': pointer('c') })
+    await git(repo, ['merge', 'other'], { okCodes: [1] })
+    expect((await conflict(repo, 'big.psd')).mode).toBe('whole')
+  })
+
   it('writes only a file that is in conflict', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a.txt': 'a\n', 'hooks.txt': 'kept\n' })

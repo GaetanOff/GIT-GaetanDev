@@ -44,6 +44,7 @@ async function readDisk(file: string): Promise<Buffer | null> {
 }
 
 const isBinary = (b: Buffer | null) => !!b && b.subarray(0, 8000).includes(0)
+const isLfsPointer = (b: Buffer | null) => !!b && b.length < 1024 && b.subarray(0, 40).toString('utf8').startsWith('version https://git-lfs.github.com/spec/')
 
 /** "branch · subject" for a revision in one git call, using its decorations for the name. */
 async function describe(repo: string, rev: string): Promise<string> {
@@ -117,7 +118,10 @@ export async function conflict(repo: string, path: string): Promise<ConflictFile
     path, mode: 'text', oursLabel: lbl.ours, theirsLabel: lbl.theirs, hasBase: !!base,
     oursExists: !!ours, theirsExists: !!theirs, chunks: [], eol: '\n', finalNewline: true, resolvedOnDisk, encoding: 'utf8', stages: ids,
   }
-  if (large || !ours || !theirs || isBinary(ours) || isBinary(theirs) || isBinary(base)) {
+  // Git LFS keeps pointers in the index: mixing their lines makes an invalid pointer, and the
+  // file written back would be the pointer's text instead of the real content.
+  const lfs = [base, ours, theirs].some(isLfsPointer)
+  if (large || lfs || !ours || !theirs || isBinary(ours) || isBinary(theirs) || isBinary(base)) {
     result.mode = 'whole'
     return result
   }
