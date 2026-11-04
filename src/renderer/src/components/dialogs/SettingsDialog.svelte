@@ -42,9 +42,21 @@
     }
   }
 
+  /** The box shows what is in effect: if git refuses the change, it goes back and says why. */
+  async function setFsmonitor(box: HTMLInputElement) {
+    const on = box.checked
+    try {
+      await api['repo:setFsmonitor'](app.repo!.path, on)
+      perf = { ...perf!, enabled: on }
+    } catch (e) {
+      box.checked = !on
+      toast('error', asError(e).message)
+    }
+  }
+
   async function saveIntegrations() {
     try {
-      await app.updateSettings({ editorCommand: editor.trim(), terminalCommand: terminal.trim() })
+      await app.updateSettings({ editorCommand: editor.trim(), terminalCommand: terminal.trim() }, { rethrow: true })
       toast('success', 'Integrations saved.')
     } catch (e) {
       // Not confirmed in the dialog the app showed: the fields go back to what is in use.
@@ -101,7 +113,7 @@
             <span class="label">Performance · {app.repo.name}</span>
             <label class="check" title={perf.supported ? '' : 'Needs Git 2.36+ on Windows or macOS'}>
               <input type="checkbox" checked={perf.enabled} disabled={!perf.supported}
-                onchange={async e => { const on = (e.target as HTMLInputElement).checked; await api['repo:setFsmonitor'](app.repo!.path, on); perf = { ...perf!, enabled: on } }} />
+                onchange={e => setFsmonitor(e.target as HTMLInputElement)} />
               Git file system monitor and untracked cache
             </label>
             <span class="hint">{perf.files.toLocaleString('en')} tracked files. Recommended above ~20,000: status stops scanning the whole tree.</span>

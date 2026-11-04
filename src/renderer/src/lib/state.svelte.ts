@@ -40,6 +40,8 @@ interface TabMemory {
 
 class AppState {
   ready = $state(false)
+  /** Why the app could not start (its state unreadable from the main process): shown instead of a spinner forever. */
+  bootError = $state<string | null>(null)
   repos = $state<RepoEntry[]>([])
   repo = $state<RepoEntry | null>(null)
   settings = $state<Settings>({ ...DEFAULT_SETTINGS })
@@ -211,17 +213,24 @@ class AppState {
     try { localStorage.setItem('drafts', JSON.stringify(this.drafts)) } catch { /* storage unavailable */ }
   }
 
-  /** Shown at once; put back if the main process refuses it (a command change not confirmed). */
-  async updateSettings(patch: Partial<Settings>): Promise<void> {
+  /**
+   * Shown at once; put back if the main process refuses it (a command change not confirmed,
+   * a settings file that cannot be written), and then said. Twelve callers never caught the
+   * error: the value went back without a word. `rethrow`: the caller reports it itself.
+   */
+  async updateSettings(patch: Partial<Settings>, opts: { rethrow?: boolean } = {}): Promise<boolean> {
     const before = { ...this.settings }
     Object.assign(this.settings, patch)
     try {
       this.settings = await api['app:settings'](patch)
     } catch (e) {
       this.settings = before
-      throw e
+      if (opts.rethrow) throw e
+      toast('error', `The setting was not saved: ${asError(e).message}`)
+      return false
     }
     if ('autoFetchMinutes' in patch) this.scheduleAutoFetch()
+    return true
   }
 
   private scheduleAutoFetch(): void {
@@ -758,8 +767,10 @@ class AppState {
   }
 
   copy(text: string, what = 'Copied'): void {
-    api['clipboard:write'](text)
-    toast('success', `${what} to clipboard.`, undefined, 1800)
+    api['clipboard:write'](text).then(
+      () => toast('success', `${what} to clipboard.`, undefined, 1800),
+      e => toast('error', `Could not copy: ${asError(e).message}`),
+    )
   }
 }
 

@@ -6,8 +6,9 @@
   import { COMMANDS, keyLabels } from '@/lib/commands'
   import { rank } from '@/lib/fuzzy'
   import { basename } from '@/lib/format'
+  import { asError } from '@/lib/api'
   import { app } from '@/lib/state.svelte'
-  import { overlays } from '@/lib/ui.svelte'
+  import { overlays, toast } from '@/lib/ui.svelte'
 
   interface Item {
     id: string
@@ -61,7 +62,7 @@
     if (mode === 'all' || mode === 'repos') {
       for (const r of app.repos) {
         if (r.id === app.repo?.id) continue
-        out.push({ id: `repo:${r.id}`, group: 'Open repository', title: r.name, sub: r.path, icon: 'repo', run: () => app.openRepo(r.id) })
+        out.push({ id: `repo:${r.id}`, group: 'Open repository', title: r.name, sub: r.path, icon: 'repo', run: () => app.openRepo(r.id).catch(e => toast('error', asError(e).message)) })
       }
     }
     return out
