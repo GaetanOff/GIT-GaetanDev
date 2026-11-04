@@ -50,8 +50,10 @@ class AppState {
   version = $state('')
   home = $state('')
 
-  status = $state<RepoStatus | null>(null)
-  refs = $state<Refs>(emptyRefs())
+  // Replaced whole at each refresh, never changed in place: raw, they are read without going through
+  // a proxy for each of their (tens of thousands of) files and refs.
+  status = $state.raw<RepoStatus | null>(null)
+  refs = $state.raw<Refs>(emptyRefs())
   /** Open repositories, as tabs, in order. */
   tabs = $state<string[]>([])
   view = $state<View>('changes')
@@ -105,15 +107,11 @@ class AppState {
   get files(): FileChange[] {
     return this.status?.files ?? []
   }
-  get staged(): FileChange[] {
-    return this.files.filter(f => !f.conflicted && !f.untracked && f.index !== '.' && f.index !== '?')
-  }
-  get unstaged(): FileChange[] {
-    return this.files.filter(f => !f.conflicted && (f.untracked || f.worktree !== '.'))
-  }
-  get conflicted(): FileChange[] {
-    return this.files.filter(f => f.conflicted)
-  }
+  // Filtered once per status, not at each of the ten or so reads a refresh makes: with 50,000
+  // untracked files (an unignored node_modules) that was seconds of work per watcher event.
+  readonly staged: FileChange[] = $derived(this.files.filter(f => !f.conflicted && !f.untracked && f.index !== '.' && f.index !== '?'))
+  readonly unstaged: FileChange[] = $derived(this.files.filter(f => !f.conflicted && (f.untracked || f.worktree !== '.')))
+  readonly conflicted: FileChange[] = $derived(this.files.filter(f => f.conflicted))
   get currentBranch() {
     return this.refs.branches.find(b => b.current) ?? null
   }
