@@ -1,16 +1,20 @@
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { launch, resolveProgram } from '../src/main/integrations'
 
-const bin = mkdtempSync(join(tmpdir(), 'gdg-bin-'))
-writeFileSync(join(bin, 'myeditor.cmd'), '@echo off\r\n')
+// Made when the tests run, not on import: skipped (another platform, a name filter), they left it behind.
+let bin = ''
 const savedPath = process.env.PATH
-process.env.PATH = `${bin}${delimiter}${savedPath}`
+beforeAll(() => {
+  bin = mkdtempSync(join(tmpdir(), 'gdg-bin-'))
+  writeFileSync(join(bin, 'myeditor.cmd'), '@echo off\r\n')
+  process.env.PATH = `${bin}${delimiter}${savedPath}`
+})
 afterAll(() => {
   process.env.PATH = savedPath
-  rmSync(bin, { recursive: true, force: true })
+  if (bin) rmSync(bin, { recursive: true, force: true })
 })
 
 describe.runIf(process.platform === 'win32')('editor and terminal commands', () => {

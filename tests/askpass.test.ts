@@ -2,15 +2,17 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { connect } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
-const dir = mkdtempSync(join(tmpdir(), 'gdg-askpass-'))
+// Made when the tests run, not on import: filtered out, they left the folder behind.
+let dir = ''
 vi.mock('electron', () => ({ app: { getPath: () => dir } }))
 const { onAbandon, registerPending, startAskPass, stopAskPass } = await import('../src/main/askpass')
 
+beforeAll(() => { dir = mkdtempSync(join(tmpdir(), 'gdg-askpass-')) })
 afterAll(() => {
   stopAskPass()
-  rmSync(dir, { recursive: true, force: true })
+  if (dir) rmSync(dir, { recursive: true, force: true })
 })
 
 /** What a prompt helper gets back for one request on the pipe. */

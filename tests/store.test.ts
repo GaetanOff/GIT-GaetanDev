@@ -1,11 +1,13 @@
 import { mkdirSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, describe, expect, it, vi } from 'vitest'
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
-const userData = mkdtempSync(join(tmpdir(), 'gdg-store-'))
+// Made when the tests run, not on import: filtered out, they left the folder behind.
+let userData = ''
 vi.mock('electron', () => ({ app: { getPath: () => userData } }))
-afterAll(() => rmSync(userData, { recursive: true, force: true }))
+beforeAll(() => { userData = mkdtempSync(join(tmpdir(), 'gdg-store-')) })
+afterAll(() => { if (userData) rmSync(userData, { recursive: true, force: true }) })
 
 describe('saved state', () => {
   it('starts empty without writing over a state.json it cannot read', async () => {
