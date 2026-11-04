@@ -223,8 +223,15 @@ export async function undoCommit(repo: string, expect?: string): Promise<string>
   }
   const message = await lastCommitMessage(repo)
   const hasParent = await git(repo, ['rev-parse', '--verify', '-q', 'HEAD~1'], { okCodes: [1] }).then(r => r.code === 0)
-  if (hasParent) await git(repo, ['reset', '--soft', 'HEAD~1'])
-  else await git(repo, ['update-ref', '-d', 'HEAD'])
+  if (hasParent) {
+    await git(repo, ['reset', '--soft', 'HEAD~1'])
+    return message
+  }
+  // The first commit: its branch goes back to unborn. Never `update-ref -d HEAD`, which on a
+  // detached HEAD deletes .git/HEAD itself and leaves a folder git no longer sees as a repository.
+  const branch = (await git(repo, ['symbolic-ref', '-q', 'HEAD'], { okCodes: [1] })).stdout.trim()
+  if (!branch) throw new GitError('This is the first commit and no branch is checked out, so there is nothing to undo it into.')
+  await git(repo, ['update-ref', '-d', branch])
   return message
 }
 

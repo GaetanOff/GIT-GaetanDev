@@ -195,6 +195,19 @@ describe('commit', () => {
     expect(await ops.undoCommit(repo, sh(repo, 'rev-parse', 'HEAD'))).toBe('second')
     expect(sh(repo, 'log', '-1', '--format=%s')).toBe('first')
   })
+
+  it('undoes the first commit into an unborn branch, and never on a detached HEAD', async () => {
+    const repo = makeRepo()
+    commit(repo, 'root', { 'a.txt': 'a\n' })
+    commit(repo, 'second')
+    sh(repo, 'checkout', '-q', '--detach', 'HEAD~1')
+    await expect(ops.undoCommit(repo)).rejects.toThrow(/no branch is checked out/)
+    expect(sh(repo, 'rev-parse', 'HEAD')).toBe(sh(repo, 'rev-parse', 'main~1'))
+    sh(repo, 'checkout', '-q', '-b', 'only-root')
+    expect(await ops.undoCommit(repo)).toBe('root')
+    expect(sh(repo, 'symbolic-ref', 'HEAD')).toBe('refs/heads/only-root')
+    expect(sh(repo, 'diff', '--cached', '--name-only')).toBe('a.txt')
+  })
 })
 
 describe('edit history', () => {
