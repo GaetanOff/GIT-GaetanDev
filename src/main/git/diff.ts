@@ -347,6 +347,9 @@ export function buildPartialPatch(d: FileDiff, selection: LineSelection, directi
 
   if (!out.length) return null
   let header = d.header.filter(h => !/^(index |similarity|dissimilarity|Binary)/.test(h))
+  // A mode change (chmod +x) is a change of its own, as `git add -p` asks it apart: with only some
+  // lines picked, staging, unstaging or discarding them carried it along. The target keeps its mode.
+  if (partial) header = header.filter(h => !/^(old|new) mode /.test(h))
   // Lines of a renamed (or copied) file change that file only: kept as a rename, the patch
   // would also move it back (unstaging one line undid the whole rename).
   const target = header.find(h => h.startsWith('+++ '))?.slice(4)

@@ -731,6 +731,19 @@ describe('line operations', () => {
     expect(sh(repo, 'show', ':a.txt')).toBe('A\nb\nc\nd\ne\nf\ng\nh')
   })
 
+  it('unstages some lines without the file\'s mode change, a change of its own', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'run.sh': 'a\nb\nc\nd\ne\nf\ng\nh\n' })
+    write(repo, 'run.sh', 'A\nb\nc\nd\ne\nf\ng\nH\n')
+    sh(repo, 'add', 'run.sh')
+    sh(repo, 'update-index', '--chmod=+x', 'run.sh')
+    const d = await diff(repo, { kind: 'index', path: 'run.sh' }, OPTS)
+    const sel = { 0: d.hunks[0].lines.flatMap((l, i) => (l.text === 'H' || l.text === 'h' ? [i] : [])) }
+    await ops.unstageLines(repo, 'run.sh', sel, undefined, selectionFingerprint(d, sel))
+    expect(sh(repo, 'show', ':run.sh')).toBe('A\nb\nc\nd\ne\nf\ng\nh')
+    expect(sh(repo, 'ls-files', '-s', 'run.sh')).toMatch(/^100755 /)
+  })
+
   it('unstages lines of a renamed file without undoing the rename', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'old.txt': '1\n2\n3\n4\n' })
