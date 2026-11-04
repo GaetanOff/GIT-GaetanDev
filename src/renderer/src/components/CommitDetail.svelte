@@ -99,6 +99,16 @@
     el.addEventListener('pointermove', move)
     el.addEventListener('pointerup', up)
   }
+
+  /** Up and Down move the split too (Shift: further), for the keyboard. */
+  function keyFiles(e: KeyboardEvent) {
+    const step = e.shiftKey ? 64 : 16
+    const next = e.key === 'ArrowUp' ? filesHeight - step : e.key === 'ArrowDown' ? filesHeight + step : null
+    if (next === null) return
+    e.preventDefault()
+    filesHeight = Math.max(60, Math.min(600, next))
+    try { localStorage.setItem('detail-files-height', String(filesHeight)) } catch { /* ignore */ }
+  }
 </script>
 
 <div class="detail" class:stale inert={stale}>
@@ -166,7 +176,7 @@
       </VirtualList>
       {#if !detail.files.length}<div class="none">No file changes (empty or merge commit).</div>{/if}
     </div>
-    <div class="hsplit" role="separator" aria-orientation="horizontal" onpointerdown={dragFiles}></div>
+    <div class="hsplit" role="separator" aria-orientation="horizontal" tabindex="0" aria-valuenow={filesHeight} aria-valuemin={60} aria-valuemax={600} onpointerdown={dragFiles} onkeydown={keyFiles}></div>
 
     {#if source}
       <DiffView {source} area="commit" />
