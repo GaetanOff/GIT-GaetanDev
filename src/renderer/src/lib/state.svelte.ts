@@ -198,7 +198,7 @@ class AppState {
     this.ready = true
     this.scheduleAutoFetch()
     if (!s.git) toast('error', 'Git was not found. Install Git for Windows (git-scm.com), then restart the app.', undefined, 30_000)
-    else if (!s.git.supported) toast('error', `Git ${s.git.version} is too old for this app, which needs 2.35 or later: some views will fail. Update Git for Windows.`, undefined, 30_000)
+    else if (!s.git.supported) toast('error', `Git ${s.git.version} is too old for this app, which needs ${s.git.minimum} or later: some views will fail. Update Git for Windows.`, undefined, 30_000)
     else if (!s.git.recommended) toast('info', `Git ${s.git.version} predates fixes for repositories that run code when cloned with submodules. Updating Git for Windows is recommended.`, undefined, 15_000)
     if (s.stateUnreadable) {
       toast('error', 'Your repository list and settings could not be read (another program may hold the file). Nothing is saved until you restart the app.', undefined, 20_000)

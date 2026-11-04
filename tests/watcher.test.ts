@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
 import type { RepoChangeEvent } from '@shared/types'
 import { gitFolders, RepoWatcher } from '../src/main/watcher'
+import { worktrees } from '../src/main/git/modules'
 import { cleanup, commit, makeRepo, sh } from './helpers'
 
 afterAll(cleanup)
@@ -28,6 +29,14 @@ describe('repository watcher', () => {
     expect(real(f?.dir)).toBe(real(join(repo, '.git', 'worktrees', 'wt')))
     expect(real(f?.common)).toBe(real(join(repo, '.git')))
     expect(gitFolders(repo)).toBeNull()
+  })
+
+  it('lists worktrees, paths with spaces included', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'a\n' })
+    sh(repo, 'worktree', 'add', '-q', '-b', 'my-wt', join(repo, '..', 'my wt'))
+    const list = await worktrees(repo)
+    expect(list.map(w => [w.path.endsWith('my wt'), w.branch, w.current])).toEqual([[false, 'main', true], [true, 'my-wt', false]])
   })
 
   it('reports a commit made from the command line in a linked worktree', async () => {

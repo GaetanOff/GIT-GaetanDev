@@ -113,14 +113,15 @@ export async function lfsPull(repo: string, report: Reporter): Promise<void> {
 /* ─── Worktrees ─────────────────────────────────────────────────────────────── */
 
 export async function worktrees(repo: string): Promise<Worktree[]> {
-  const r = await git(repo, ['worktree', 'list', '--porcelain'], { okCodes: [128] })
+  // -z (git 2.36): a path holding a newline would otherwise split its entry in two.
+  const r = await git(repo, ['worktree', 'list', '--porcelain', '-z'], { okCodes: [128] })
   if (r.code !== 0) return []
   // Real paths: Windows short names (GAE~1.FAU) and long ones must compare equal.
   const real = (p: string) => { try { return realpathSync.native(p).toLowerCase() } catch { return normalize(p).toLowerCase() } }
   const here = real(repo)
-  return r.stdout.split(/\n\n+/).filter(b => b.trim()).map(block => {
+  return r.stdout.split('\0\0').filter(b => b.trim()).map(block => {
     const wt: Worktree = { path: '', head: '', branch: null, current: false, locked: false, prunable: false, bare: false }
-    for (const line of block.split('\n')) {
+    for (const line of block.split('\0')) {
       const [key, ...rest] = line.split(' ')
       const value = rest.join(' ')
       if (key === 'worktree') wt.path = normalize(value)

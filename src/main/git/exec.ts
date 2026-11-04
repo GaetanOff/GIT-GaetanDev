@@ -98,8 +98,11 @@ function subcommand(args: string[]): string | undefined {
   return undefined
 }
 
-/** `git status --show-stash` (porcelain v2) appeared in 2.35: older versions fail every refresh. */
-const MINIMUM = [2, 35, 0]
+/**
+ * `git status --show-stash` (porcelain v2) appeared in 2.35, `worktree list -z` and the
+ * built-in fsmonitor in 2.36: older versions fail on every refresh.
+ */
+const MINIMUM = [2, 36, 0]
 /** 2.50.1 fixed the last known ways a cloned repository (with submodules) could run code. */
 const RECOMMENDED = [2, 50, 1]
 
@@ -109,11 +112,11 @@ const atLeast = (v: number[], min: number[]) => {
 }
 
 /** "git version 2.45.0.windows.1" → its version, and whether the app supports it and recommends it. */
-export function readGitVersion(text: string): { version: string; supported: boolean; recommended: boolean } | null {
+export function readGitVersion(text: string): { version: string; supported: boolean; recommended: boolean; minimum: string } | null {
   const m = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(text)
   if (!m) return null
   const v = [+m[1], +m[2], +(m[3] ?? 0)]
-  return { version: v.join('.'), supported: atLeast(v, MINIMUM), recommended: atLeast(v, RECOMMENDED) }
+  return { version: v.join('.'), supported: atLeast(v, MINIMUM), recommended: atLeast(v, RECOMMENDED), minimum: MINIMUM.join('.') }
 }
 
 /** The installed git's version, or null when git cannot be run. */
