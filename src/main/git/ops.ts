@@ -102,6 +102,21 @@ export async function discard(repo: string, paths: string[]): Promise<void> {
   const failed: string[] = []
   const copies: string[] = []
   const aside = join(tmpdir(), 'GaetanDev discarded', String(Date.now()))
+  // A new or renamed file staged, then changed again (AM, RM, AD), or any file before the first
+  // commit: its staged version is neither HEAD's nor the file's, and leaves with the index entry.
+  for (const [i, p] of created.entries()) {
+    const f = byPath.get(p)
+    if (!f || f.untracked || f.conflicted || f.index === '.' || f.worktree === '.') continue
+    try {
+      const dir = join(aside, `new-${i}`)
+      await mkdir(dir, { recursive: true })
+      const stagedCopy = join(dir, `${basename(p)} (staged)`)
+      await writeFile(stagedCopy, (await git(repo, ['show', `:${p}`])).raw)
+      copies.push(stagedCopy)
+    } catch {
+      failed.push(p)
+    }
+  }
   for (const [i, p] of tracked.entries()) {
     // Only regular files: a deleted file has nothing to keep, a submodule is a whole checkout.
     const isFile = await lstat(join(repo, p)).then(s => s.isFile(), () => false)
@@ -129,9 +144,12 @@ export async function discard(repo: string, paths: string[]): Promise<void> {
   if (restore.length) await git(repo, ['restore', '--source=HEAD', '--staged', '--worktree', '--pathspec-from-file=-', '--pathspec-file-nul'], viaStdin(restore))
   const binned: string[] = []
   for (const c of copies) await shell.trashItem(c).catch(() => binned.push(c))
-  const staged = created.filter(p => !byPath.get(p)?.untracked)
-  if (staged.length) await git(repo, ['rm', '--cached', '-q', '-r', '--pathspec-from-file=-', '--pathspec-file-nul'], viaStdin(staged))
-  for (const p of created) await shell.trashItem(join(repo, p)).catch(() => undefined)
+  const dropped = created.filter(p => !failed.includes(p))
+  const staged = dropped.filter(p => !byPath.get(p)?.untracked)
+  // -f: without it git refuses an entry whose staged content differs from both HEAD and the file,
+  // and it would do so after the restore above, leaving a rename half undone. Its copy is kept.
+  if (staged.length) await git(repo, ['rm', '--cached', '-f', '-q', '-r', '--pathspec-from-file=-', '--pathspec-file-nul'], viaStdin(staged))
+  for (const p of dropped) await shell.trashItem(join(repo, p)).catch(() => undefined)
   if (failed.length) throw new GitError(`Could not keep a copy of ${failed.length === 1 ? failed[0] : `${failed.length} files`}, so ${failed.length === 1 ? 'it was' : 'they were'} left as is.`)
   if (binned.length) throw new GitError(`The changes were discarded, but the recycle bin refused the copies: they are in "${aside}".`)
 }

@@ -88,6 +88,38 @@ describe('discard', () => {
     expect(sh(repo, 'ls-files')).toBe('a.txt')
   })
 
+  it('discards a new file staged then changed, keeping both versions', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'a\n' })
+    write(repo, 'new.txt', 'staged\n')
+    sh(repo, 'add', 'new.txt')
+    write(repo, 'new.txt', 'staged, then edited\n')
+    await ops.discard(repo, ['new.txt'])
+    expect(changed(repo).filter(p => !p.endsWith('.trashed'))).toEqual([])
+    expect(binned('new.txt (staged)')).toBe('staged\n')
+    expect(readFileSync(join(repo, 'new.txt.trashed'), 'utf8')).toBe('staged, then edited\n')
+  })
+
+  it('undoes a renamed file changed after the rename in full', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'old.txt': '1\n2\n3\n' })
+    sh(repo, 'mv', 'old.txt', 'new.txt')
+    write(repo, 'new.txt', '1\n2\n3\n4\n')
+    await ops.discard(repo, ['new.txt'])
+    expect(changed(repo).filter(p => !p.endsWith('.trashed'))).toEqual([])
+    expect(readFileSync(join(repo, 'old.txt'), 'utf8')).toBe('1\n2\n3\n')
+  })
+
+  it('discards a changed file of a repository with no commit yet', async () => {
+    const repo = makeRepo()
+    write(repo, 'a.txt', 'staged\n')
+    sh(repo, 'add', 'a.txt')
+    write(repo, 'a.txt', 'edited\n')
+    await ops.discard(repo, ['a.txt'])
+    expect(sh(repo, 'ls-files')).toBe('')
+    expect(existsSync(join(repo, 'a.txt'))).toBe(false)
+  })
+
   it('brings back a file whose deletion was staged while it stays on disk', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a.txt': 'a\n' })
