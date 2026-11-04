@@ -474,7 +474,7 @@ export interface Signature {
 
 /* ─── Providers ─────────────────────────────────────────────────────────────── */
 
-export type ProviderKind = 'github' | 'gitlab' | 'azure' | 'bitbucket' | 'gitea' | 'generic'
+export type ProviderKind = 'github' | 'gitlab' | 'azure' | 'bitbucket' | 'bitbucket-server' | 'gitea' | 'generic'
 
 export interface ProviderInfo {
   kind: ProviderKind
