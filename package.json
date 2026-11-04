@@ -48,7 +48,12 @@
     },
     "files": [
       "out/**/*",
-      "package.json"
+      "package.json",
+      "!**/*.map"
+    ],
+    "electronLanguages": [
+      "en-US",
+      "fr"
     ],
     "win": {
       "target": [
