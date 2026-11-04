@@ -21,6 +21,8 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    # A git or a test waiting for input would otherwise hold the runner for six hours.
+    timeout-minutes: 30
     steps:
       # Actions pinned to a commit: a moved tag cannot change what runs here.
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0

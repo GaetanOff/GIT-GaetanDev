@@ -5,21 +5,27 @@ import { join } from 'node:path'
 
 const made: string[] = []
 
+/**
+ * Each git call of a test ends within a minute: execFileSync blocks the event loop, so the test's own
+ * timeout could never interrupt a git waiting for an editor or a credential, and the run hung.
+ */
+const LIMIT = { timeout: 60_000 }
+
 /** A new repository in a temporary folder, with a local identity and no line-ending conversion. */
 export function makeRepo(name = 'repo'): string {
   const root = mkdtempSync(join(tmpdir(), 'gdg-test-'))
   made.push(root)
   const repo = join(root, name)
-  execFileSync('git', ['init', '-q', '-b', 'main', repo])
+  execFileSync('git', ['init', '-q', '-b', 'main', repo], LIMIT)
   for (const [k, v] of [['user.name', 'Test'], ['user.email', 'test@example.com'], ['core.autocrlf', 'false'], ['commit.gpgsign', 'false']]) {
-    execFileSync('git', ['-C', repo, 'config', k, v])
+    execFileSync('git', ['-C', repo, 'config', k, v], LIMIT)
   }
   return repo
 }
 
 /** Runs git in a repository and returns its trimmed output. */
 export function sh(repo: string, ...args: string[]): string {
-  return execFileSync('git', ['-C', repo, ...args], { encoding: 'utf8', env: { ...process.env, GIT_LITERAL_PATHSPECS: '1' } }).trim()
+  return execFileSync('git', ['-C', repo, ...args], { ...LIMIT, encoding: 'utf8', env: { ...process.env, GIT_LITERAL_PATHSPECS: '1' } }).trim()
 }
 
 export function write(repo: string, path: string, content: string): void {
