@@ -108,11 +108,18 @@ export function detectProvider(url: string): ProviderInfo | null {
     // Azure DevOps Services, and Azure DevOps Server (TFS) on premises: every repository path has /_git/.
     kind = 'azure'
     web = azureWeb(host, path, p.scheme) ?? web
-  } else if (host.includes('bitbucket') || path.startsWith('scm/') || p.port === '7999') {
-    // Bitbucket Server / Data Center: https://host/scm/PROJECT/repo, or ssh on port 7999.
+  } else if (host.includes('bitbucket') || /(^|\/)scm\//.test(path) || p.port === '7999') {
+    // Bitbucket Server / Data Center: https://host[/context]/scm/PROJECT/repo, or ssh on port 7999.
+    // The context path stays ("/bitbucket", Stash's "/stash"), and a personal repository
+    // (scm/~jdoe/repo) lives under users/jdoe, not under a project "~JDOE".
     kind = 'bitbucket-server'
-    const [project, repo] = path.replace(/^scm\//, '').split('/')
-    web = `${p.scheme}://${host}/projects/${encodeURIComponent(project.toUpperCase())}/repos/${encodeURIComponent(repo ?? '')}`
+    const m = /^(?:(.+?)\/)?scm\/(.+)$/.exec(path)
+    const context = m?.[1] ? `/${enc(m[1])}` : ''
+    const [owner = '', repo = ''] = (m ? m[2] : path).split('/')
+    const base = `${p.scheme}://${host}${context}`
+    web = owner.startsWith('~')
+      ? `${base}/users/${encodeURIComponent(owner.slice(1).toLowerCase())}/repos/${encodeURIComponent(repo)}`
+      : `${base}/projects/${encodeURIComponent(owner.toUpperCase())}/repos/${encodeURIComponent(repo)}`
   } else if (host === 'codeberg.org' || host.includes('gitea') || host.includes('forgejo')) kind = 'gitea'
 
   return { kind, label: kind === 'gitea' && host === 'codeberg.org' ? 'Codeberg' : LABELS[kind], host, web }
