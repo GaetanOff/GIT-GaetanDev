@@ -338,6 +338,21 @@ describe('refs', () => {
     expect(execFileSync('git', ['-C', bare, 'log', '-1', '--format=%s', 'release'], { encoding: 'utf8' }).trim()).toBe('second')
   })
 
+  it('pushes a renamed branch under its new name', async () => {
+    const bare = join(makeRepo(), '..', 'remote.git')
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare])
+    const repo = makeRepo()
+    sh(repo, 'remote', 'add', 'origin', bare)
+    commit(repo, 'base')
+    sh(repo, 'checkout', '-q', '-b', 'feature')
+    await ops.push(repo, {}, () => undefined)
+    await ops.renameBranch(repo, 'feature', 'feature-login')
+    commit(repo, 'more')
+    await ops.push(repo, {}, () => undefined)
+    const heads = execFileSync('git', ['-C', bare, 'for-each-ref', '--format=%(refname)', 'refs/heads'], { encoding: 'utf8' }).trim().split('\n')
+    expect(heads).toEqual(['refs/heads/feature', 'refs/heads/feature-login'])
+  })
+
   it('merges and compares the branch, not an older tag of the same name', async () => {
     const repo = makeRepo()
     commit(repo, 'base')

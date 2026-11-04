@@ -375,9 +375,17 @@ export async function createBranch(repo: string, name: string, from: string | nu
   else await git(repo, ['branch', '--no-track', name, ...(from ? [from] : [])])
 }
 
+/**
+ * Renames a local branch. One that tracked a remote branch of its old name
+ * stops tracking it: git refuses to push it there ("the upstream branch of
+ * your current branch does not match the name"), and the next push publishes
+ * it under its new name instead. The remote branch is left as it is.
+ */
 export async function renameBranch(repo: string, from: string, to: string): Promise<void> {
   await assertRefName(repo, 'branch', to)
+  const upstream = await upstreamOf(repo, from)
   await git(repo, ['branch', '-m', from, to])
+  if (upstream && upstream.endsWith(`/${from}`) && from !== to) await git(repo, ['branch', '--unset-upstream', to])
 }
 
 /** Deletes a local branch and returns the commit it pointed to, so it can be restored. */
