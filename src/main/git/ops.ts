@@ -220,12 +220,25 @@ export async function commitSetup(repo: string): Promise<{ template: string; sig
   return { template, signing: gpgsign === 'true' }
 }
 
-/** The message git prepared for an in-progress merge, squash or cherry-pick, without comments. */
+/**
+ * The message git prepared for an in-progress merge, squash or cherry-pick,
+ * without the comments git added at its end ("# Conflicts: …"). Only that
+ * trailing block goes, in git's comment character: dropping every line that
+ * starts with "#" turned the cherry-pick of "#42 Fix login" into "Details
+ * here", and a core.commentChar of ";" left git's own comments in.
+ */
 export async function preparedMessage(repo: string): Promise<string> {
   const dir = await gitDir(repo)
   for (const f of ['MERGE_MSG', 'SQUASH_MSG']) {
     const text = await readFile(join(dir, f), 'utf8').catch(() => '')
-    if (text) return text.split(/\r?\n/).filter(l => !l.startsWith('#')).join('\n').trim()
+    if (!text) continue
+    const lines = text.split(/\r?\n/)
+    const configured = (await git(repo, ['config', '--get', 'core.commentChar'], { okCodes: [1] })).stdout.trim()
+    const last = [...lines].reverse().find(l => l.trim())
+    // "auto": git picked a character no line starts with; its own comments come last.
+    const mark = configured && configured !== 'auto' ? configured : configured === 'auto' && last && '#;@!$%^&|:'.includes(last[0]) ? last[0] : '#'
+    while (lines.length && (!lines[lines.length - 1].trim() || lines[lines.length - 1].startsWith(mark))) lines.pop()
+    return lines.join('\n').trim()
   }
   return ''
 }
