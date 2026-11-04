@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join, sep } from 'node:path'
 import type { ConflictFile, TextEncoding } from '@shared/types'
 import { decode, detect, encode } from './encoding'
-import { git, GitError } from './exec'
+import { git, GitError, literal } from './exec'
 import { gitDir, operation } from './status'
 
 /**
@@ -198,7 +198,7 @@ export async function resolveWhole(repo: string, path: string, choice: 'ours' | 
     await git(repo, ['rm', '-q', '--', path])
     return
   }
-  if (choice !== 'disk') await git(repo, ['checkout', `--${choice}`, '--', path])
+  if (choice !== 'disk') await git(repo, ['checkout', `--${choice}`, '--', literal(path)])
   await git(repo, ['add', '--', path])
 }
 

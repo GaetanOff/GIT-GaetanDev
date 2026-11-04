@@ -5,7 +5,7 @@ import { basename, isAbsolute, join } from 'node:path'
 import { shell } from 'electron'
 import { selectionFingerprint, type Author, type DiffOptions, type FileChange, type FileDiff, type LineSelection, type Progress, type PullMode, type ResetMode, type RepoStatus } from '@shared/types'
 import { applyPatch, buildPartialPatch, diff } from './diff'
-import { assertRefName, git, gitOut, GitError } from './exec'
+import { assertRefName, git, gitOut, GitError, literal } from './exec'
 import { currentBranch, defaultRemote, upstreamOf } from './refs'
 import { gitDir, status } from './status'
 import { withPruneJournal } from './recovery'
@@ -259,7 +259,7 @@ export async function undoCommit(repo: string, expect?: string): Promise<string>
 }
 
 export async function resolve(repo: string, path: string, side: 'ours' | 'theirs'): Promise<void> {
-  await git(repo, ['checkout', `--${side}`, '--', path])
+  await git(repo, ['checkout', `--${side}`, '--', literal(path)])
   await git(repo, ['add', '--', path])
 }
 
@@ -401,7 +401,7 @@ export async function stash(repo: string, message: string, includeUntracked: boo
   if (includeUntracked) args.push('--include-untracked')
   if (message.trim()) args.push('-m', message.trim())
   // stash runs without the literal pathspec mode (see exec): mark each path literal itself.
-  if (paths?.length) args.push('--', ...paths.map(p => `:(literal)${p}`))
+  if (paths?.length) args.push('--', ...paths.map(literal))
   await git(repo, args)
 }
 

@@ -128,6 +128,16 @@ export async function gitVersion(): Promise<ReturnType<typeof readGitVersion>> {
   }
 }
 
+/**
+ * Commands run without GIT_LITERAL_PATHSPECS: stash, and those that run hooks
+ * (pre-commit, post-checkout, pre-push…), whose own git calls would inherit it.
+ * Any path given to them is written ":(literal)path".
+ */
+const GLOB_PATHSPECS = new Set(['stash', 'commit', 'merge', 'pull', 'rebase', 'cherry-pick', 'revert', 'am', 'push', 'switch', 'checkout', 'clone', 'worktree'])
+
+/** A file name as a pathspec that never reads as a pattern, whatever GIT_LITERAL_PATHSPECS says. */
+export const literal = (path: string) => `:(literal)${path}`
+
 /** Commands that talk to a remote. */
 const NETWORK_COMMANDS = new Set(['fetch', 'pull', 'push', 'clone', 'ls-remote', 'submodule', 'lfs'])
 
@@ -176,8 +186,10 @@ function run(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecR
         GIT_PAGER: 'cat',
         // Paths are file names, not patterns: discarding "a[1].txt" must not touch "a1.txt".
         // Except for stash, whose own pathspec magic (":/" to clear stashed untracked files)
-        // breaks in literal mode: callers give it ":(literal)" paths instead.
-        GIT_LITERAL_PATHSPECS: subcommand(args) === 'stash' ? '0' : '1',
+        // breaks in literal mode, and for commands that run hooks, which inherit the variable:
+        // a pre-commit "git diff --cached -- '*.js'" then matched nothing and checked nothing.
+        // Callers give those ":(literal)" paths instead.
+        GIT_LITERAL_PATHSPECS: GLOB_PATHSPECS.has(subcommand(args) ?? '') ? '0' : '1',
         ...opts.env,
       },
     })

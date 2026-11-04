@@ -217,6 +217,29 @@ describe('commit', () => {
     await expect(ops.commit(wt, 'blocked', false)).rejects.toMatchObject({ code: 'HOOK_FAILED' })
   })
 
+  it('lets a hook use pathspec patterns', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'a\n' })
+    writeFileSync(join(repo, '.git', 'hooks', 'pre-commit'), '#!/bin/sh\ngit diff --cached --name-only -- "*.js" > .git/seen\n', { mode: 0o755 })
+    write(repo, 'y.js', 'y\n')
+    await ops.stage(repo, ['y.js'])
+    await ops.commit(repo, 'add y', false)
+    expect(readFileSync(join(repo, '.git', 'seen'), 'utf8').trim()).toBe('y.js')
+  })
+
+  it('takes a side of a conflict for that file only, whatever its name', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a[1].txt': 'base\n', 'a1.txt': 'base\n' })
+    sh(repo, 'checkout', '-q', '-b', 'other')
+    commit(repo, 'theirs', { 'a[1].txt': 'theirs\n', 'a1.txt': 'theirs\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'ours', { 'a[1].txt': 'ours\n', 'a1.txt': 'ours\n' })
+    await git(repo, ['merge', 'other'], { okCodes: [1] })
+    await ops.resolve(repo, 'a[1].txt', 'theirs')
+    expect(readFileSync(join(repo, 'a[1].txt'), 'utf8')).toBe('theirs\n')
+    expect(readFileSync(join(repo, 'a1.txt'), 'utf8')).toMatch(/^<<<<<<< /m)
+  })
+
   it('undoes only the commit it was asked for', async () => {
     const repo = makeRepo()
     commit(repo, 'base')
