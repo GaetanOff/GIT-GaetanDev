@@ -19,6 +19,8 @@ export interface Api {
   'app:state'(): Promise<{
     repos: RepoEntry[]; lastRepo: string | null; settings: Settings; platform: string; version: string; home: string; launchPath: string | null
     stateUnreadable: boolean; git: { version: string; supported: boolean; recommended: boolean; minimum: string } | null
+    /** A version already downloaded, waiting to install. */
+    updateReady: string | null
   }>
   'app:settings'(patch: Partial<Settings>): Promise<Settings>
   'repo:list'(): Promise<RepoEntry[]>

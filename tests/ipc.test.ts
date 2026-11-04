@@ -10,7 +10,7 @@ const registered = vi.hoisted(() => vi.fn((_path: string) => true))
 vi.mock('../src/main/store', () => ({ isRegistered: registered, isInsideRegistered: () => false, foldPath: (p: string) => (process.platform === 'linux' ? p : p.toLowerCase()), getState: () => ({ settings: {} }) }))
 vi.mock('../src/main/updater', () => ({ installUpdate: () => undefined }))
 
-const { checkArgs, confirmDestination, queuesBusy, schedule, settleQueues } = await import('../src/main/ipc')
+const { checkArgs, closeQueues, confirmDestination, queuesBusy, schedule, settleQueues } = await import('../src/main/ipc')
 
 const REPO = 'C:/repos/app'
 
@@ -168,5 +168,14 @@ describe('scheduling', () => {
     release()
     await Promise.all([commit, pull, push])
     expect(order).toEqual(['commit', 'push elsewhere', 'commit done', 'pull'])
+  })
+
+  // Last: once closing, the queues stay closed for the rest of this file.
+  it('starts no write or network command once the app is closing', async () => {
+    closeQueues()
+    await expect(schedule('git:fetch', 'C:/repos/closing', async () => 'ran')).rejects.toThrow(/closing/)
+    await expect(schedule('git:commit', 'C:/repos/closing', async () => 'ran')).rejects.toThrow(/closing/)
+    // Reads still answer the page while it closes.
+    await expect(schedule('git:status', 'C:/repos/closing', async () => 'ran')).resolves.toBe('ran')
   })
 })

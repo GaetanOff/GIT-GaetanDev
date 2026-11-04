@@ -199,9 +199,12 @@ class AppState {
       this.tabs = saved.filter(id => s.repos.some(r => r.id === id))
     } catch { /* no tabs yet */ }
     on('open:path', path => this.addRepo(path))
-    on('update:ready', version => toast('info', `Version ${version} is ready. It installs when you quit.`, {
+    const updateReady = (version: string) => toast('info', `Version ${version} is ready. It installs when you quit.`, {
       label: 'Restart now', run: () => api['app:installUpdate'](),
-    }, 30_000))
+    }, 30_000)
+    on('update:ready', updateReady)
+    // Downloaded before this page listened (a reload, a slow start): said now.
+    if (s.updateReady) updateReady(s.updateReady)
     if (s.launchPath) await this.addRepo(s.launchPath)
     else if (s.lastRepo && s.repos.some(r => r.id === s.lastRepo)) await this.openRepo(s.lastRepo).catch(() => undefined)
     this.ready = true

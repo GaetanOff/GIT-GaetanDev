@@ -22,9 +22,9 @@ import { isRepo, status, topLevel } from './git/status'
 import { openEditor, openTerminal } from './integrations'
 import { logDir } from './log'
 import { detectProvider, providerUrl } from './provider'
-import { installUpdate } from './updater'
+import { installUpdate, updateReady } from './updater'
 import { githubDesktopRepos } from './importers'
-import { addRepoEntry, foldPath, getState, isInsideRegistered, isRegistered, removeRepo, repoById, save, stateUnreadable, updateSettings, upsertRepo } from './store'
+import { addRepoEntry, flush, foldPath, getState, isInsideRegistered, isRegistered, removeRepo, repoById, save, stateUnreadable, updateSettings, upsertRepo } from './store'
 import { gitFolders, type RepoWatcher } from './watcher'
 
 type Handlers = { [K in ApiChannel]: (...args: Parameters<Api[K]>) => ReturnType<Api[K]> }
@@ -117,7 +117,7 @@ export function registerIpc(watcher: RepoWatcher): void {
       const open = launchPath
       launchPath = null
       stateRead = true
-      return { repos: s.repos, lastRepo: s.lastRepo, settings: s.settings, platform: process.platform, version: app.getVersion(), home: homedir(), launchPath: open, stateUnreadable: stateUnreadable(), git: await gitVersion() }
+      return { repos: s.repos, lastRepo: s.lastRepo, settings: s.settings, platform: process.platform, version: app.getVersion(), home: homedir(), launchPath: open, stateUnreadable: stateUnreadable(), git: await gitVersion(), updateReady: updateReady() }
     },
     'app:settings': async patch => {
       // Commands the app runs change only once confirmed in a dialog of the main process, which a
@@ -138,7 +138,11 @@ export function registerIpc(watcher: RepoWatcher): void {
     },
     // "Restart now" during a commit or a checkout: the update waits for it (ten seconds at most).
     'app:installUpdate': async () => {
+      // No new git work starts (an auto-fetch, say), what runs gets ten seconds, and the state is
+      // saved now: the installer may end the app before its own quit handlers have run.
+      closeQueues()
       await settleQueues(10_000)
+      flush()
       installUpdate()
     },
     'repo:list': async () => getState().repos,
@@ -400,7 +404,14 @@ export function settleQueues(ms: number): Promise<void> {
 }
 
 /** Runs a channel's handler on the queues it belongs to (none for reads). */
+/** Set once the app is quitting or installing an update: writes and network commands no longer start. */
+let closing = false
+export function closeQueues(): void {
+  closing = true
+}
+
 export function schedule<T>(channel: string, repo: string, fn: () => Promise<T>): Promise<T> {
+  if (closing && (WRITES.has(channel) || NETWORK.has(channel))) return Promise.reject(new GitError('The app is closing: nothing was started.'))
   const write = WRITES.has(channel) ? () => serial(writeQueues, repo, fn) : fn
   return NETWORK.has(channel) ? serial(networkQueues, sharedGitDir(repo), write) : write()
 }

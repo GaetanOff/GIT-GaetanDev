@@ -6,7 +6,7 @@ import { startAskPass, stopAskPass } from './askpass'
 import { killRunning, setGitEnv } from './git/exec'
 import { devShot } from './devshot'
 import { logToFile } from './log'
-import { askRenderer, openFolder, queuesBusy, registerIpc, send, setLaunchPath, settleQueues } from './ipc'
+import { askRenderer, closeQueues, openFolder, queuesBusy, registerIpc, send, setLaunchPath, settleQueues } from './ipc'
 import { flush, getState, save } from './store'
 import { sweepImportCopies } from './importers'
 import { startUpdates } from './updater'
@@ -108,6 +108,8 @@ function start(): void {
   // a fetch a ref lock: quitting waits for queued git work first, ten seconds at most.
   let waited = false
   app.on('before-quit', e => {
+    // Nothing new starts meanwhile: an auto-fetch begun during the wait would be cut off.
+    closeQueues()
     if (waited || !queuesBusy()) return
     e.preventDefault()
     waited = true
