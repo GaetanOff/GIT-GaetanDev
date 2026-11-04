@@ -99,6 +99,10 @@ export async function confirmDestination(path: string, message: string, button: 
   chosenFolders.add(folderKey(path))
 }
 
+/** A folder macOS opens as a program or an installer rather than in Finder: a bundle, by its extension. */
+export const opensAsProgram = (folder: string, platform = process.platform): boolean =>
+  platform === 'darwin' && /\.(app|appex|bundle|framework|kext|mpkg|pkg|plugin|prefpane|qlgenerator|saver|xpc)[\\/]*$/i.test(folder)
+
 /** Stops the clone under way, if any: a large one or a stalled network no longer leaves only waiting. */
 let cloneAbort: AbortController | null = null
 
@@ -322,6 +326,9 @@ export function registerIpc(watcher: RepoWatcher): void {
     },
     'shell:reveal': async (repo, path) => {
       if (path) shell.showItemInFolder(join(repo, path))
+      // On macOS a folder named like a bundle ("Photos.app", cloned from Photos.app.git) is a program:
+      // opening it ran the code the repository holds. It is shown in its folder instead.
+      else if (opensAsProgram(repo)) shell.showItemInFolder(repo)
       else await shell.openPath(repo)
     },
     'shell:editor': async (repo, path) => openEditor(getState().settings.editorCommand, repo, path ? join(repo, path) : repo),

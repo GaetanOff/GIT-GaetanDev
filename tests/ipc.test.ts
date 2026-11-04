@@ -10,7 +10,7 @@ const registered = vi.hoisted(() => vi.fn((_path: string) => true))
 vi.mock('../src/main/store', () => ({ isRegistered: registered, isInsideRegistered: () => false, foldPath: (p: string) => (process.platform === 'linux' ? p : p.toLowerCase()), getState: () => ({ settings: {} }) }))
 vi.mock('../src/main/updater', () => ({ installUpdate: () => undefined }))
 
-const { checkArgs, closeQueues, confirmDestination, queuesBusy, schedule, settleQueues } = await import('../src/main/ipc')
+const { checkArgs, closeQueues, confirmDestination, opensAsProgram, queuesBusy, schedule, settleQueues } = await import('../src/main/ipc')
 
 const REPO = 'C:/repos/app'
 
@@ -93,6 +93,17 @@ describe('destinations', () => {
     }
     expect(() => checkArgs('repo:clone', ['https://h/r.git', 'relative', 'r'])).toThrow(/Invalid clone/)
     expect(() => checkArgs('repo:clone', ['https://h/r.git', parent, 'my-repo'])).not.toThrow()
+  })
+})
+
+describe('showing a repository', () => {
+  it('never opens a folder macOS would run as a program', () => {
+    expect(opensAsProgram('/Users/me/src/Photos.app', 'darwin')).toBe(true)
+    expect(opensAsProgram('/Users/me/src/Tool.PKG/', 'darwin')).toBe(true)
+    expect(opensAsProgram('/Users/me/src/app', 'darwin')).toBe(false)
+    expect(opensAsProgram('/Users/me/src/my.app.docs', 'darwin')).toBe(false)
+    // Elsewhere a folder is a folder.
+    expect(opensAsProgram('C:/src/Photos.app', 'win32')).toBe(false)
   })
 })
 
