@@ -1,6 +1,7 @@
 import type { FileChange } from '@shared/types'
 import { api } from './api'
 import { basename } from './format'
+import { ignoreLiteral } from './gitignore'
 import { app, type Area } from './state.svelte'
 import { confirm, openDialog, prompt, toast, type MenuItem } from './ui.svelte'
 
@@ -91,9 +92,9 @@ export function fileMenu(file: FileChange, area: Area, selection: string[]): Men
   }
   items.push('sep')
   if (file.untracked) {
-    items.push({ label: `Ignore ${basename(file.path)}`, icon: 'eyeOff', run: () => ignorePattern(`/${file.path}`) })
-    if (ext) items.push({ label: `Ignore all *${ext} files`, icon: 'eyeOff', run: () => ignorePattern(`*${ext}`) })
-    if (dir) items.push({ label: `Ignore folder ${dir}`, icon: 'eyeOff', run: () => ignorePattern(`/${dir}`) })
+    items.push({ label: `Ignore ${basename(file.path)}`, icon: 'eyeOff', run: () => ignorePattern(`/${ignoreLiteral(file.path)}`) })
+    if (ext) items.push({ label: `Ignore all *${ext} files`, icon: 'eyeOff', run: () => ignorePattern(`*${ignoreLiteral(ext)}`) })
+    if (dir) items.push({ label: `Ignore folder ${dir}`, icon: 'eyeOff', run: () => ignorePattern(`/${ignoreLiteral(dir)}`) })
     items.push('sep')
   }
   if (!file.untracked && app.status?.hasCommits) {

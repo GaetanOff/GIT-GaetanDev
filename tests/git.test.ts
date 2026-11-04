@@ -31,6 +31,7 @@ const { restore } = await import('../src/main/git/reflog')
 const { newerTips } = await import('../src/main/git/recovery')
 const { git, assertRefName, gitVersion, killRunning, readGitVersion, stallGuards, windowsOpenSsh } = await import('../src/main/git/exec')
 const { classify } = await import('../src/main/askpass')
+const { ignoreLiteral } = await import('../src/renderer/src/lib/gitignore')
 
 afterAll(cleanup)
 
@@ -146,6 +147,18 @@ describe('discard', () => {
     expect(changed(repo)).toEqual([])
     expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('a\n')
     expect(binned('a.txt')).toBe('changed\n')
+  })
+})
+
+describe('ignore', () => {
+  it('ignores the file named, not others its name reads as a pattern', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base')
+    // check-ignore reads paths, existing or not: "a*b.txt" cannot exist on Windows, a commit made elsewhere can hold it.
+    for (const name of ['data[1].csv', '#notes.md', 'a*b.txt']) await ops.ignore(repo, `/${ignoreLiteral(name)}`)
+    const ignored = (name: string) => execFileSync('git', ['-C', repo, 'check-ignore', '-q', '--no-index', name]) && true
+    for (const name of ['data[1].csv', '#notes.md', 'a*b.txt']) expect(() => ignored(name), name).not.toThrow()
+    for (const name of ['data1.csv', 'axb.txt']) expect(() => ignored(name), name).toThrow()
   })
 })
 
