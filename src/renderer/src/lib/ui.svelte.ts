@@ -19,9 +19,9 @@ const timers = new Map<number, { left: number; started: number; handle: ReturnTy
 /**
  * Shows a toast. One with an action (Undo, Pull now…) stays 10 s by default,
  * long enough to reach it, and is the last to be pushed out when more than
- * four are on screen.
+ * four are on screen. With `ms` Infinity it stays until dismissToast(id).
  */
-export function toast(kind: Toast['kind'], message: string, action?: Toast['action'], ms = action ? 10_000 : kind === 'error' ? 8000 : 3500): void {
+export function toast(kind: Toast['kind'], message: string, action?: Toast['action'], ms = action ? 10_000 : kind === 'error' ? 8000 : 3500): number {
   const t: Toast = { id: ++toastId, kind, message, action }
   toasts.push(t)
   while (toasts.length > 4) {
@@ -29,7 +29,8 @@ export function toast(kind: Toast['kind'], message: string, action?: Toast['acti
     const [gone] = toasts.splice(plain >= 0 ? plain : 0, 1)
     clearTimer(gone.id)
   }
-  timers.set(t.id, { left: ms, started: Date.now(), handle: setTimeout(() => dismissToast(t.id), ms) })
+  if (Number.isFinite(ms)) timers.set(t.id, { left: ms, started: Date.now(), handle: setTimeout(() => dismissToast(t.id), ms) })
+  return t.id
 }
 
 function clearTimer(id: number): void {

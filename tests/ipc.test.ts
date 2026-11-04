@@ -10,7 +10,7 @@ const registered = vi.hoisted(() => vi.fn((_path: string) => true))
 vi.mock('../src/main/store', () => ({ isRegistered: registered, isInsideRegistered: () => false, foldPath: (p: string) => (process.platform === 'linux' ? p : p.toLowerCase()), getState: () => ({ settings: {} }) }))
 vi.mock('../src/main/updater', () => ({ installUpdate: () => undefined }))
 
-const { checkArgs, closeQueues, confirmDestination, queuesBusy, schedule, settleQueues } = await import('../src/main/ipc')
+const { checkArgs, closeQueues, confirmDestination, opensAsProgram, queuesBusy, reopenQueues, schedule, settleQueues } = await import('../src/main/ipc')
 
 const REPO = 'C:/repos/app'
 
@@ -73,15 +73,37 @@ describe('destinations', () => {
     const home = process.platform === 'win32' ? 'C:\\Users\\me' : '/home/me'
     const sep = process.platform === 'win32' ? '\\' : '/'
     showMessageBox.mockResolvedValueOnce({ response: 1 })
-    await expect(confirmDestination(`${home}${sep}.config${sep}git`, 'Create?', 'Create', `${home}${sep}.config${sep}git`)).rejects.toMatchObject({ code: 'CANCELLED' })
+    await expect(confirmDestination(`${home}${sep}.config${sep}git`, 'Create?', 'Create')).rejects.toMatchObject({ code: 'CANCELLED' })
     expect(showMessageBox).toHaveBeenCalledTimes(1)
     // Agreed once for a folder: what goes inside it later asks nothing more.
     showMessageBox.mockResolvedValueOnce({ response: 0 })
-    await confirmDestination(`${home}${sep}repos${sep}a`, 'Clone?', 'Clone', `${home}${sep}repos`)
-    await confirmDestination(`${home}${sep}repos${sep}b`, 'Clone?', 'Clone', `${home}${sep}repos`)
+    await confirmDestination(`${home}${sep}wt-x`, 'Create?', 'Create')
+    await confirmDestination(`${home}${sep}wt-x${sep}inner`, 'Create?', 'Create')
     expect(showMessageBox).toHaveBeenCalledTimes(2)
+    // But only inside it: not the folder around it, here the home folder with git's own config.
     showMessageBox.mockResolvedValueOnce({ response: 1 })
-    await expect(confirmDestination(`${home}${sep}repos-evil${sep}c`, 'Clone?', 'Clone', `${home}${sep}repos-evil`)).rejects.toThrow(/Cancelled/)
+    await expect(confirmDestination(`${home}${sep}.config${sep}git`, 'Create?', 'Create')).rejects.toThrow(/Cancelled/)
+    expect(showMessageBox).toHaveBeenCalledTimes(3)
+  })
+
+  it('clones into a folder of one name, inside the parent shown', () => {
+    const parent = process.platform === 'win32' ? 'C:\\Users\\me\\src' : '/home/me/src'
+    for (const name of ['C:\\Users\\me\\AppData\\Startup\\x', '/etc/x', '..\\x', 'a/b', '..', '.', '', 'x:stream']) {
+      expect(() => checkArgs('repo:clone', ['https://h/r.git', parent, name]), name).toThrow(/not a valid folder name/)
+    }
+    expect(() => checkArgs('repo:clone', ['https://h/r.git', 'relative', 'r'])).toThrow(/Invalid clone/)
+    expect(() => checkArgs('repo:clone', ['https://h/r.git', parent, 'my-repo'])).not.toThrow()
+  })
+})
+
+describe('showing a repository', () => {
+  it('never opens a folder macOS would run as a program', () => {
+    expect(opensAsProgram('/Users/me/src/Photos.app', 'darwin')).toBe(true)
+    expect(opensAsProgram('/Users/me/src/Tool.PKG/', 'darwin')).toBe(true)
+    expect(opensAsProgram('/Users/me/src/app', 'darwin')).toBe(false)
+    expect(opensAsProgram('/Users/me/src/my.app.docs', 'darwin')).toBe(false)
+    // Elsewhere a folder is a folder.
+    expect(opensAsProgram('C:/src/Photos.app', 'win32')).toBe(false)
   })
 })
 
@@ -181,6 +203,21 @@ describe('scheduling', () => {
     release()
     await Promise.all([commit, pull, push])
     expect(order).toEqual(['commit', 'push elsewhere', 'commit done', 'pull'])
+  })
+
+  it('starts no queued work whose turn comes once closing, and starts again if the quit does not happen', async () => {
+    let release!: () => void
+    const first = schedule('git:commit', 'C:/repos/queued', () => new Promise<void>(resolve => { release = resolve }))
+    let ran = false
+    const second = schedule('git:pull', 'C:/repos/queued', async () => { ran = true })
+    await tick()
+    closeQueues()
+    release()
+    await first
+    await expect(second).rejects.toThrow(/closing/)
+    expect(ran).toBe(false)
+    reopenQueues()
+    await expect(schedule('git:commit', 'C:/repos/queued', async () => 'ran')).resolves.toBe('ran')
   })
 
   // Last: once closing, the queues stay closed for the rest of this file.

@@ -20,6 +20,9 @@ export function startUpdates(onReady: (version: string) => void): void {
   autoUpdater.autoInstallOnAppQuit = true
   // Offline, or no release yet: try again at the next check, quietly.
   autoUpdater.on('error', e => console.error('Update check failed:', e.message))
+  // A newer release found while one waits: electron-updater drops the waiting file to download it,
+  // and if that download fails nothing is left to install.
+  autoUpdater.on('update-available', () => { ready = null })
   autoUpdater.on('update-downloaded', info => {
     ready = info.version
     onReady(info.version)

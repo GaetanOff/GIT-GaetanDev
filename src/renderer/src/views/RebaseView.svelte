@@ -1,11 +1,5 @@
-<script lang="ts">
-  import Icon from '@/components/Icon.svelte'
-  import type { RebaseAction, RebasePlan, RebaseStep } from '@shared/types'
-  import { api, asError } from '@/lib/api'
-  import { initials, relativeTime, shortSha, tone } from '@/lib/format'
-  import { app } from '@/lib/state.svelte'
-  import { messageAfterSquash } from '@/lib/squash'
-  import { confirm, toast } from '@/lib/ui.svelte'
+<script lang="ts" module>
+  import type { RebaseAction } from '@shared/types'
 
   interface Row {
     sha: string
@@ -23,6 +17,22 @@
     /** The user typed in that message: it is no longer rebuilt, only added to. */
     edited?: boolean
   }
+
+  /**
+   * Plans being edited, by repository, base and head: the view is left for any other (Ctrl+1, a
+   * sidebar click, another tab), and every reorder, action and message typed was lost with it.
+   */
+  const kept = new Map<string, { original: string; rows: Row[]; selected: number }>()
+</script>
+
+<script lang="ts">
+  import Icon from '@/components/Icon.svelte'
+  import type { RebasePlan, RebaseStep } from '@shared/types'
+  import { api, asError } from '@/lib/api'
+  import { initials, relativeTime, shortSha, tone } from '@/lib/format'
+  import { app } from '@/lib/state.svelte'
+  import { messageAfterSquash } from '@/lib/squash'
+  import { confirm, toast } from '@/lib/ui.svelte'
 
   let last = app.rebaseTarget!
   const target = $derived(app.rebaseTarget ?? last)
@@ -51,11 +61,15 @@
         if (t !== planToken) return
         plan = p
         const row = (c: RebasePlan['commits'][number]): Row => ({ sha: c.sha, action: 'pick', subject: c.subject, body: c.body, author: c.author, date: c.date, merge: c.parents.length > 1 })
-        rows = p.structure
+        const fresh: Row[] = p.structure
           ? p.structure.map((it, k) => (it.kind === 'pick' ? row(p.commits.find(c => c.sha === it.sha)!) : { sha: `line-${k}`, action: 'pick', subject: it.text, body: '', author: '', date: 0, merge: false, line: it.text }))
           : p.commits.map(row)
-        original = rows.map(r => r.sha).join(',')
-        selected = Math.max(0, rows.map(r => !r.line).lastIndexOf(true))
+        original = fresh.map(r => r.sha).join(',')
+        planKey = `${repo}|${base}|${p.head}`
+        // Back to a plan left half edited: as it was, if it still lists the same commits.
+        const before = kept.get(planKey)
+        rows = before?.original === original ? before.rows : fresh
+        selected = before?.original === original ? before.selected : Math.max(0, fresh.map(r => !r.line).lastIndexOf(true))
       })
       .catch(e => { if (t === planToken) error = asError(e).message })
   })
@@ -63,6 +77,17 @@
   /** With merges in range, git's plan is followed: commits move and squash within their own stretch. */
   const mergeMode = $derived(!!plan?.structure)
   let original = ''
+  let planKey = ''
+
+  // Every change is kept for when the view comes back (see `kept`).
+  $effect(() => {
+    if (!plan || !planKey) return
+    const snapshot = $state.snapshot(rows) as Row[]
+    kept.delete(planKey)
+    kept.set(planKey, { original, rows: snapshot, selected })
+    // A few plans at most: the oldest goes.
+    if (kept.size > 10) kept.delete(kept.keys().next().value!)
+  })
 
   /** Stretch index of each row: structural lines split the plan into independent parts. */
   const segOf = (list: Row[], i: number) => list.slice(0, i).filter(r => r.line).length
@@ -102,18 +127,25 @@
   /** What git would propose: the head message followed by every squashed message. */
   const defaultGroupMessage = (i: number) => messageAfterSquash({}, fullMessage(rows[i]), squashedInto(i), '')
 
+  /**
+   * The message row `i` is rewritten with: what the user typed, else git's proposal built from the
+   * rows as they are now. Stored when proposed, it kept the message of a commit squashed then set
+   * back to pick, dropped or moved away, and that text went into the rewritten history.
+   */
+  const messageOf = (i: number) => (rows[i].edited && rows[i].message !== undefined ? rows[i].message : defaultGroupMessage(i))
+
   function setAction(i: number, action: RebaseAction) {
-    if (rows[i].merge || rows[i].line) return
+    // Again on a row already so: a squash pressed twice added its message twice to a typed one.
+    if (rows[i].merge || rows[i].line || rows[i].action === action) return
     rows[i].action = action
-    if (action === 'reword' && rows[i].message === undefined) rows[i].message = fullMessage(rows[i])
     if (action === 'pick' && !members(i).some(m => m.action === 'squash')) {
       rows[i].message = undefined
       rows[i].edited = false
     }
-    // A squash makes the receiving commit's message editable, prefilled like git does.
+    // A message the user typed for the receiving commit gets the newly squashed one added below.
     if (action === 'squash') {
       const o = owner[i]
-      if (o >= 0) rows[o].message = messageAfterSquash(rows[o], fullMessage(rows[o]), squashedInto(o), fullMessage(rows[i]))
+      if (o >= 0 && rows[o].edited) rows[o].message = messageAfterSquash(rows[o], fullMessage(rows[o]), squashedInto(o), fullMessage(rows[i]))
     }
   }
 
@@ -179,13 +211,14 @@
     const steps: RebaseStep[] = rows.map((r, i) => {
       if (r.line) return { sha: '', action: 'line', line: r.line }
       const hasSquash = members(i).some(m => m.action === 'squash')
-      const message = r.action === 'reword' || ((r.action === 'pick') && hasSquash) ? r.message ?? defaultGroupMessage(i) : undefined
+      const message = r.action === 'reword' || ((r.action === 'pick') && hasSquash) ? messageOf(i) : undefined
       return { sha: r.sha, action: r.action, message }
     })
     running = true
     const ok = await app.run('Rebasing', () => api['git:rebaseRun'](repo, p.base, steps, p.head).then(() => true))
     running = false
     if (ok) {
+      kept.delete(planKey)
       toast('success', `History rewritten: ${commitRows.length} commits → ${resulting}.`, { label: 'Undo', run: () => { app.view = 'undo' } })
       app.closeTool()
       app.view = 'history'
@@ -274,7 +307,7 @@
       <aside class="side">
         {#if editing >= 0 && rows[editing]}
           <div class="label">{rows[editing].action === 'reword' ? 'New message' : `Message of the combined commit (${members(editing).length + 1} commits)`}</div>
-          <textarea class="input msg" bind:value={rows[editing].message} oninput={() => editing !== null && (rows[editing].edited = true)} spellcheck="true"></textarea>
+          <textarea class="input msg" value={messageOf(editing)} oninput={e => { rows[editing].message = e.currentTarget.value; rows[editing].edited = true }} spellcheck="true"></textarea>
           <p class="hint">The first line is the summary. Lines starting with # are removed.</p>
         {:else if sel}
           <div class="label">Selected commit</div>

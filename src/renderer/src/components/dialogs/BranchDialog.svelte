@@ -14,10 +14,15 @@
   const base = $derived(fromLabel ?? app.status?.branch ?? 'HEAD')
   const dirty = $derived(app.files.length > 0)
 
+  // The repository the dialog was opened on. Another may be in front by the time it is submitted (a
+  // clone finishing, "Open in" from Explorer): the branch was created and checked out there instead.
+  const opened = app.repo ? { id: app.repo.id, path: app.repo.path } : null
+
   async function create() {
     if (error || exists) return
     onclose()
-    const repo = app.repo!.path
+    if (!opened || !app.stillOn(opened.id)) return
+    const repo = opened.path
     await app.run(`Creating ${name}`, () => api['git:createBranch'](repo, name, from ?? null, checkout), {
       success: checkout ? `Switched to new branch ${name}.` : `Created ${name}.`,
     })

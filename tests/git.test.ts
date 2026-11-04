@@ -19,7 +19,7 @@ vi.mock('electron', () => ({
 }))
 
 const ops = await import('../src/main/git/ops')
-const { status } = await import('../src/main/git/status')
+const { indexRefreshDue, refreshIndex, status } = await import('../src/main/git/status')
 const { diff, parseDiff } = await import('../src/main/git/diff')
 const { conflict, resolveContent, resolveWhole } = await import('../src/main/git/conflict')
 const { refs, upstreamOf } = await import('../src/main/git/refs')
@@ -27,10 +27,10 @@ const { compare } = await import('../src/main/git/compare')
 const { log } = await import('../src/main/git/log')
 const { blame, fileLog, parseFileLog, unquote } = await import('../src/main/git/blame')
 const { rebasePlan, rebaseRun } = await import('../src/main/git/rebase')
-const { restore } = await import('../src/main/git/reflog')
+const { operations, restore } = await import('../src/main/git/reflog')
 const { newerTips } = await import('../src/main/git/recovery')
 const { fsmonitorInfo, setFsmonitor } = await import('../src/main/git/perf')
-const { git, assertRefName, gitVersion, killRunning, readGitVersion, stallGuards, windowsOpenSsh } = await import('../src/main/git/exec')
+const { git, assertRefName, gitVersion, killRunning, readGitVersion, setGitEnv, stallGuards, windowsOpenSsh } = await import('../src/main/git/exec')
 const { classify } = await import('../src/main/askpass')
 const { ignoreLiteral } = await import('../src/renderer/src/lib/gitignore')
 
@@ -182,6 +182,21 @@ describe('stash', () => {
     await expect(ops.checkout(repo, 'no-such-branch', { stash: true })).rejects.toThrow()
     expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('mine\n')
     expect(sh(repo, 'stash', 'list')).toBe('')
+  })
+
+  it('keeps auto-stashed changes stashed when the switch is done but a hook fails', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'base\n' })
+    sh(repo, 'checkout', '-q', '-b', 'other')
+    commit(repo, 'other', { 'a.txt': 'other\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    write(repo, 'a.txt', 'mine\n')
+    writeFileSync(join(repo, '.git', 'hooks', 'post-checkout'), '#!/bin/sh\nexit 2\n', { mode: 0o755 })
+    await expect(ops.checkout(repo, 'other', { stash: true })).rejects.toThrow(/Switched to other/)
+    // Not popped onto the other branch, where it conflicted.
+    expect(sh(repo, 'symbolic-ref', '--short', 'HEAD')).toBe('other')
+    expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('other\n')
+    expect(sh(repo, 'stash', 'list')).toMatch(/Auto-stash before switching to other/)
   })
 
   it('refuses an entry that moved since it was shown', async () => {
@@ -377,6 +392,20 @@ describe('refs', () => {
     expect(execFileSync('git', ['-C', bare, 'log', '-1', '--format=%s', 'release'], { encoding: 'utf8' }).trim()).toBe('second')
   })
 
+  it('deletes a remote branch, never a remote tag of the same name', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base')
+    const bare = join(repo, '..', 'remote.git')
+    execFileSync('git', ['init', '-q', '--bare', bare])
+    sh(repo, 'remote', 'add', 'origin', bare)
+    sh(repo, 'push', '-q', 'origin', 'HEAD:refs/heads/release', 'HEAD:refs/tags/release')
+    sh(repo, 'fetch', '-q', 'origin')
+    // Deleted on the server meanwhile: origin/release here is stale, the tag is still there.
+    execFileSync('git', ['-C', bare, 'update-ref', '-d', 'refs/heads/release'])
+    await ops.deleteRemoteBranch(repo, 'origin', 'release', () => undefined)
+    expect(execFileSync('git', ['-C', bare, 'for-each-ref', '--format=%(refname)'], { encoding: 'utf8' }).trim()).toBe('refs/tags/release')
+  })
+
   it('reads and switches to a branch of a remote whose name holds a slash', async () => {
     const source = makeRepo()
     commit(source, 'base')
@@ -452,6 +481,27 @@ describe('changes kept across a pull or a rebase', () => {
     expect(kept()).toEqual(['a.txt', 'b.txt'])
     expect(sh(repo, 'stash', 'list')).toBe('')
   })
+
+  it('pulls nothing during a merge, which setting its resolved files aside would end', async () => {
+    const bare = join(makeRepo(), '..', 'remote.git')
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare])
+    const repo = makeRepo()
+    sh(repo, 'remote', 'add', 'origin', bare)
+    commit(repo, 'base', { 'a.txt': 'base\n' })
+    await ops.push(repo, { setUpstream: true }, () => undefined)
+    sh(repo, 'checkout', '-q', '-b', 'side')
+    commit(repo, 'side', { 'a.txt': 'side\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'main', { 'a.txt': 'main\n' })
+    await git(repo, ['merge', 'side'], { okCodes: [1] })
+    // Resolved and staged: "Ready to continue", while the sync button still offers a pull.
+    write(repo, 'a.txt', 'resolved\n')
+    sh(repo, 'add', 'a.txt')
+    await expect(ops.pull(repo, 'merge', () => undefined)).rejects.toThrow(/merge is in progress/)
+    expect(existsSync(join(repo, '.git', 'MERGE_HEAD'))).toBe(true)
+    expect(sh(repo, 'diff', '--cached', '--name-only')).toBe('a.txt')
+    expect(sh(repo, 'stash', 'list')).toBe('')
+  })
 })
 
 describe('undo and force push', () => {
@@ -474,6 +524,53 @@ describe('undo and force push', () => {
     expect(readFileSync(join(repo, 'b.txt'), 'utf8')).toBe('kept\n')
     await restore(repo, redo)
     expect(sh(repo, 'rev-parse', 'HEAD')).toBe(two)
+  })
+
+  it('undoes a rebase to where the branch was, whatever its commits say or where it ran from', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'a\n' })
+    sh(repo, 'checkout', '-q', '-b', 'feature')
+    commit(repo, 'f1', { 'f1.txt': '1\n' })
+    commit(repo, 'fix the (start) button', { 'f2.txt': '2\n' })
+    commit(repo, 'f3', { 'f3.txt': '3\n' })
+    const tip = sh(repo, 'rev-parse', 'HEAD')
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'main moves', { 'm.txt': 'm\n' })
+    sh(repo, 'checkout', '-q', 'feature')
+    sh(repo, 'rebase', '-q', 'main')
+    const [rebase] = await operations(repo)
+    expect(rebase).toMatchObject({ kind: 'rebase', before: { sha: tip, branch: 'feature' } })
+
+    // Run from main, as `git rebase main other` does from the command line.
+    sh(repo, 'checkout', '-q', '-b', 'other', 'main~1')
+    commit(repo, 'o1', { 'o.txt': 'o\n' })
+    const otherTip = sh(repo, 'rev-parse', 'HEAD')
+    sh(repo, 'checkout', '-q', 'main')
+    sh(repo, 'rebase', '-q', 'main', 'other')
+    const [second] = await operations(repo)
+    expect(second).toMatchObject({ kind: 'rebase', before: { sha: otherTip, branch: 'other' } })
+  })
+
+  it('pushes the current branch only, even where push.default says "matching"', async () => {
+    const bare = join(makeRepo(), '..', 'remote.git')
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare])
+    const repo = makeRepo()
+    sh(repo, 'remote', 'add', 'origin', bare)
+    commit(repo, 'base', { 'a.txt': 'a\n' })
+    sh(repo, 'push', '-q', '-u', 'origin', 'main')
+    sh(repo, 'push', '-q', 'origin', 'main:refs/heads/b')
+    sh(repo, 'fetch', '-q', 'origin')
+    sh(repo, 'branch', 'b', 'origin/b')
+    // A local rewrite of b, not meant to be pushed yet.
+    sh(repo, 'checkout', '-q', 'b')
+    commit(repo, 'rewritten b', { 'b.txt': 'b\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'main moves', { 'm.txt': 'm\n' })
+    sh(repo, 'config', 'push.default', 'matching')
+    await ops.push(repo, { force: true }, () => undefined)
+    const remoteLog = (ref: string) => execFileSync('git', ['-C', bare, 'log', '-1', '--format=%s', ref], { encoding: 'utf8' }).trim()
+    expect(remoteLog('main')).toBe('main moves')
+    expect(remoteLog('b')).toBe('base')
   })
 
   it('never force pushes over a remote commit that was fetched but never looked at', async () => {
@@ -506,6 +603,8 @@ describe('deleted branches', () => {
     const tip = sh(repo, 'rev-parse', 'HEAD')
     commit(repo, 'pushed from elsewhere')
     const newer = sh(repo, 'rev-parse', 'HEAD')
+    sh(repo, 'remote', 'add', 'origin', '../origin.git')
+    sh(repo, 'remote', 'add', 'origin2', '../origin2.git')
     sh(repo, 'update-ref', 'refs/remotes/origin/feat', newer)
     sh(repo, 'checkout', '-q', 'main')
     sh(repo, 'branch', '-q', '-D', 'feat')
@@ -513,6 +612,36 @@ describe('deleted branches', () => {
     writeFileSync(join(repo, '.git', 'gdg-pruned-refs.json'), JSON.stringify([{ ref: 'origin2/feat', sha: 'f'.repeat(40), date: 1 }]))
     const [found] = await newerTips(repo, [{ name: 'feat', sha: tip }])
     expect(found).toMatchObject({ name: 'feat', sha: newer, via: 'remote', ahead: 1 })
+  })
+
+  it('finds commits made on a deleted branch that nothing references any more', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base')
+    sh(repo, 'checkout', '-q', '-b', 'feat')
+    commit(repo, 'known tip')
+    const tip = sh(repo, 'rev-parse', 'HEAD')
+    commit(repo, 'made later')
+    const newer = sh(repo, 'rev-parse', 'HEAD')
+    sh(repo, 'checkout', '-q', 'main')
+    sh(repo, 'branch', '-q', '-D', 'feat')
+    const [found] = await newerTips(repo, [{ name: 'feat', sha: tip }])
+    expect(found).toMatchObject({ name: 'feat', sha: newer, via: 'unreferenced', ahead: 1 })
+  })
+
+  it('takes another branch whose name ends like the deleted one for what it is', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base')
+    sh(repo, 'checkout', '-q', '-b', 'feature')
+    commit(repo, 'known tip')
+    const tip = sh(repo, 'rev-parse', 'HEAD')
+    // Alice started her own branch from it: origin/alice/feature, not origin/feature.
+    commit(repo, 'alice work')
+    sh(repo, 'remote', 'add', 'origin', '../origin.git')
+    sh(repo, 'update-ref', 'refs/remotes/origin/alice/feature', 'HEAD')
+    sh(repo, 'checkout', '-q', 'main')
+    sh(repo, 'branch', '-q', '-D', 'feature')
+    const found = await newerTips(repo, [{ name: 'feature', sha: tip }])
+    expect(found.filter(t => t.via === 'remote')).toEqual([])
   })
 })
 
@@ -654,6 +783,19 @@ describe('line operations', () => {
     await expect(ops.stageLines(repo, 'a.txt', sel, false, undefined, 'stale')).rejects.toThrow(/changed since/)
     await ops.stageLines(repo, 'a.txt', sel, false, undefined, selectionFingerprint(d, sel))
     expect(sh(repo, 'show', ':a.txt')).toBe('A\nb\nc\nd\ne\nf\ng\nh')
+  })
+
+  it('unstages some lines without the file\'s mode change, a change of its own', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'run.sh': 'a\nb\nc\nd\ne\nf\ng\nh\n' })
+    write(repo, 'run.sh', 'A\nb\nc\nd\ne\nf\ng\nH\n')
+    sh(repo, 'add', 'run.sh')
+    sh(repo, 'update-index', '--chmod=+x', 'run.sh')
+    const d = await diff(repo, { kind: 'index', path: 'run.sh' }, OPTS)
+    const sel = { 0: d.hunks[0].lines.flatMap((l, i) => (l.text === 'H' || l.text === 'h' ? [i] : [])) }
+    await ops.unstageLines(repo, 'run.sh', sel, undefined, selectionFingerprint(d, sel))
+    expect(sh(repo, 'show', ':run.sh')).toBe('A\nb\nc\nd\ne\nf\ng\nh')
+    expect(sh(repo, 'ls-files', '-s', 'run.sh')).toMatch(/^100755 /)
   })
 
   it('unstages lines of a renamed file without undoing the rename', async () => {
@@ -802,6 +944,48 @@ describe('conflicts', () => {
     expect(readFileSync(join(repo, 'a.cs'), 'utf8')).toBe(`${bom}using C;\nclass X {}\n`)
   })
 
+  it('resolves a UTF-16 file that git converts (working-tree-encoding) without staging garbage', async () => {
+    const repo = makeRepo()
+    const utf16 = (s: string) => Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(s, 'utf16le')])
+    const save = (text: string, message: string) => {
+      writeFileSync(join(repo, 'a.txt'), utf16(text))
+      sh(repo, 'add', '-A')
+      sh(repo, 'commit', '-q', '-m', message)
+    }
+    writeFileSync(join(repo, '.gitattributes'), '*.txt text working-tree-encoding=UTF-16LE-BOM eol=crlf\n')
+    save('one\r\ntwo\r\nthree\r\n', 'base')
+    sh(repo, 'checkout', '-q', '-b', 'other')
+    save('one\r\nTHEIRS\r\nthree\r\n', 'theirs')
+    sh(repo, 'checkout', '-q', 'main')
+    save('one\r\nOURS\r\nthree\r\n', 'ours')
+    await git(repo, ['merge', 'other'], { okCodes: [1] })
+    const f = await conflict(repo, 'a.txt')
+    expect(f.chunks[1]).toEqual({ kind: 'conflict', ours: ['OURS'], base: ['two'], theirs: ['THEIRS'] })
+    await resolveContent(repo, 'a.txt', ['one', 'OURS+THEIRS', 'three', ''].join(f.eol), f.encoding, f.disk)
+    expect(sh(repo, 'show', ':a.txt')).toBe('one\nOURS+THEIRS\nthree')
+    expect(readFileSync(join(repo, 'a.txt'))).toEqual(utf16('one\r\nOURS+THEIRS\r\nthree\r\n'))
+    expect(sh(repo, 'status', '--porcelain')).toBe('M  a.txt')
+  })
+
+  it('keeps a side of a binary conflict from replacing edits made since it was shown', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.bin': 'base\0\n' })
+    sh(repo, 'checkout', '-q', '-b', 'other')
+    commit(repo, 'theirs', { 'a.bin': 'theirs\0\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'ours', { 'a.bin': 'ours\0\n' })
+    await git(repo, ['merge', 'other'], { okCodes: [1] })
+    const f = await conflict(repo, 'a.bin')
+    expect(f.mode).toBe('whole')
+    // Adapted in another tool meanwhile.
+    write(repo, 'a.bin', 'adapted\0\n')
+    await expect(resolveWhole(repo, 'a.bin', 'theirs', f.disk)).rejects.toMatchObject({ code: 'CHANGED_ON_DISK' })
+    expect(readFileSync(join(repo, 'a.bin'), 'utf8')).toBe('adapted\0\n')
+    const again = await conflict(repo, 'a.bin')
+    await resolveWhole(repo, 'a.bin', 'theirs', again.disk)
+    expect(readFileSync(join(repo, 'a.bin'), 'utf8')).toBe('theirs\0\n')
+  })
+
   it('does not bring back a BOM that our side removed', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a.txt': '﻿line\n' })
@@ -932,7 +1116,7 @@ describe('file history', () => {
 })
 
 describe('operations in progress', () => {
-  it('lets status save the stat data of touched files once in a while', async () => {
+  it('saves the stat data of touched files once in a while, never from status itself', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a.txt': 'a\n' })
     const index = join(repo, '.git', 'index')
@@ -941,13 +1125,26 @@ describe('operations in progress', () => {
     utimesSync(join(repo, 'a.txt'), later, later)
     const before = statSync(index).mtimeMs
     await new Promise(resolve => setTimeout(resolve, 50))
+    // Status takes no lock: holding index.lock while it ran, it made a stage or a commit meanwhile fail.
     await status(repo)
+    expect(statSync(index).mtimeMs).toBe(before)
+    expect(indexRefreshDue(repo)).toBe(true)
+    await refreshIndex(repo)
     expect(statSync(index).mtimeMs).toBeGreaterThan(before)
     // And not at every refresh.
-    const after = statSync(index).mtimeMs
-    utimesSync(join(repo, 'a.txt'), new Date(Date.now() + 9_000), new Date(Date.now() + 9_000))
-    await status(repo)
-    expect(statSync(index).mtimeMs).toBe(after)
+    expect(indexRefreshDue(repo)).toBe(false)
+  })
+
+  it('names the commit a cherry-pick in progress brings in, which tells one pick from the next', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'base\n' })
+    sh(repo, 'checkout', '-q', '-b', 'other')
+    commit(repo, 'theirs', { 'a.txt': 'theirs\n' })
+    const picked = sh(repo, 'rev-parse', 'HEAD')
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'ours', { 'a.txt': 'ours\n' })
+    await git(repo, ['cherry-pick', picked], { okCodes: [1] })
+    expect(await status(repo)).toMatchObject({ operation: 'cherry-pick', operationHead: picked })
   })
 
   it('lists untracked files unless the repository says not to', async () => {
@@ -1124,9 +1321,24 @@ describe('history', () => {
     expect(windowsOpenSsh('C:/Windows/System32/OpenSSH/ssh.exe', true)).toBe(true)
     expect(windowsOpenSsh('"C:\\Windows\\System32\\OpenSSH\\ssh.exe" -i key', true)).toBe(true)
     expect(windowsOpenSsh('plink -batch', false)).toBe(false)
-    // Its helper cuts a host key question after the first line, which is still asked as one.
+    // A host key question cut after its first line is still asked as one.
     expect(classify("The authenticity of host 'h (1.2.3.4)' can't be established.")).toBe('confirm')
     expect(classify('Enter passphrase for key /c/Users/me/.ssh/id_ed25519: ')).toBe('password')
+  })
+
+  it.runIf(process.platform === 'win32')('gives Windows\' OpenSSH its own prompt helper program, never a batch file', async () => {
+    const repo = makeRepo()
+    const helper = 'C:/Apps/GaetanDev Git/resources/gdg-askpass.exe'
+    sh(repo, 'config', 'core.sshCommand', 'C:/Windows/System32/OpenSSH/ssh.exe')
+    setGitEnv({ GDG_ASKPASS_HELPER_EXE: helper })
+    try {
+      expect(await stallGuards(repo)).toEqual({ GIT_HTTP_LOW_SPEED_LIMIT: '1', GIT_HTTP_LOW_SPEED_TIME: '300', SSH_ASKPASS: helper })
+      // Any other ssh runs the shell script.
+      sh(repo, 'config', 'core.sshCommand', 'plink -batch')
+      expect(await stallGuards(repo)).toEqual({ GIT_HTTP_LOW_SPEED_LIMIT: '1', GIT_HTTP_LOW_SPEED_TIME: '300' })
+    } finally {
+      setGitEnv({})
+    }
   })
 
   it('works on the repository it runs in, whatever GIT_DIR or GIT_INDEX_FILE the app inherited', async () => {

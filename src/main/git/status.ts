@@ -35,21 +35,27 @@ async function untracked(repo: string): Promise<string> {
  * Status runs without optional locks (it never writes the index while the
  * user's own git may), so the stat data of files only touched was never
  * saved, and each of them was hashed again at every refresh of a large
- * repository. Once a minute per repository, status may update the index as
- * a plain `git status` does: only when the lock is free, never waiting.
+ * repository. Once a minute per repository the index is refreshed instead
+ * (refreshIndex), on the repository's write queue. Status itself must not:
+ * with optional locks it held index.lock for its whole run, and a stage, a
+ * commit or the user's own git meanwhile failed on "index.lock: File exists".
  */
 const indexRefreshed = new Map<string, number>()
-function mayRefreshIndex(repo: string): boolean {
+export function indexRefreshDue(repo: string): boolean {
   const last = indexRefreshed.get(repo) ?? 0
   if (Date.now() - last < 60_000) return false
   indexRefreshed.set(repo, Date.now())
   return true
 }
 
+/** Saves the stat data of files that were only touched, as a plain `git status` would. */
+export async function refreshIndex(repo: string): Promise<void> {
+  await git(repo, ['update-index', '-q', '--refresh'], { okCodes: [1, 128] })
+}
+
 export async function status(repo: string): Promise<RepoStatus> {
-  const env = mayRefreshIndex(repo) ? { GIT_OPTIONAL_LOCKS: '1' } : undefined
   const [out, dir] = await Promise.all([
-    untracked(repo).then(mode => gitOut(repo, ['status', '--porcelain=v2', '--branch', '--show-stash', '-z', `--untracked-files=${mode}`, '--ignore-submodules=dirty'], { env })),
+    untracked(repo).then(mode => gitOut(repo, ['status', '--porcelain=v2', '--branch', '--show-stash', '-z', `--untracked-files=${mode}`, '--ignore-submodules=dirty'])),
     gitDir(repo),
   ])
   const result: RepoStatus = {
@@ -111,8 +117,9 @@ function entry(xy: string, path: string, sub: string): FileChange {
   }
 }
 
-export function operation(dir: string): { operation: RepoOperation; operationStep?: string } {
+export function operation(dir: string): { operation: RepoOperation; operationStep?: string; operationHead?: string } {
   const has = (p: string) => existsSync(join(dir, p))
+  const head = (f: string) => { try { return readFileSync(join(dir, f), 'utf8').split('\n')[0].trim() || undefined } catch { return undefined } }
   if (has('rebase-merge') || has('rebase-apply')) {
     const base = has('rebase-merge') ? 'rebase-merge' : 'rebase-apply'
     const read = (f: string) => { try { return readFileSync(join(dir, base, f), 'utf8').trim() } catch { return '' } }
@@ -122,9 +129,9 @@ export function operation(dir: string): { operation: RepoOperation; operationSte
     const op = base === 'rebase-apply' && has('rebase-apply/applying') ? 'am' : 'rebase'
     return { operation: op, operationStep: step && end ? `${step}/${end}` : undefined }
   }
-  if (has('MERGE_HEAD')) return { operation: 'merge' }
-  if (has('CHERRY_PICK_HEAD')) return { operation: 'cherry-pick' }
-  if (has('REVERT_HEAD')) return { operation: 'revert' }
+  if (has('MERGE_HEAD')) return { operation: 'merge', operationHead: head('MERGE_HEAD') }
+  if (has('CHERRY_PICK_HEAD')) return { operation: 'cherry-pick', operationHead: head('CHERRY_PICK_HEAD') }
+  if (has('REVERT_HEAD')) return { operation: 'revert', operationHead: head('REVERT_HEAD') }
   // Several commits picked or reverted, one stopped on a conflict and was then committed by hand:
   // CHERRY_PICK_HEAD is gone, but the rest still waits in the sequencer for "--continue".
   const todo = (() => { try { return readFileSync(join(dir, 'sequencer', 'todo'), 'utf8') } catch { return '' } })()

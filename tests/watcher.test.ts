@@ -1,6 +1,7 @@
-import { realpathSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import type { RepoChangeEvent } from '@shared/types'
 import { gitFolders, RepoWatcher } from '../src/main/watcher'
 import { worktrees } from '../src/main/git/modules'
@@ -54,6 +55,32 @@ describe('repository watcher', () => {
       await until(() => events.some(e => e.kinds.includes('meta')))
     } finally {
       watcher.close()
+    }
+  })
+
+  it('keeps trying to watch a folder that stays away for a while', () => {
+    vi.useFakeTimers()
+    const root = mkdtempSync(join(tmpdir(), 'gdg-watch-'))
+    const repo = join(root, 'repo')
+    mkdirSync(repo)
+    const watcher = new RepoWatcher(() => undefined)
+    const inside = watcher as unknown as { watcher: unknown; restartLater(repo: string): void }
+    try {
+      watcher.set(repo)
+      expect(inside.watcher).not.toBeNull()
+      // The watch fails (a network share drops), and the folder is still gone at the first retry.
+      inside.restartLater(repo)
+      rmSync(repo, { recursive: true, force: true })
+      vi.advanceTimersByTime(2_000)
+      expect(inside.watcher).toBeNull()
+      // Back later: watched again, with no need to reopen the repository.
+      mkdirSync(repo)
+      vi.advanceTimersByTime(60_000)
+      expect(inside.watcher).not.toBeNull()
+    } finally {
+      watcher.set(null)
+      vi.useRealTimers()
+      rmSync(root, { recursive: true, force: true })
     }
   })
 })

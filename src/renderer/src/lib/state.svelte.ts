@@ -1,6 +1,7 @@
 import type { Commit, FileChange, LogQuery, Progress, Refs, RepoEntry, RepoStatus, RestorePoint, SearchMode, Settings } from '@shared/types'
 import { DEFAULT_SETTINGS } from '@shared/types'
 import { api, asError, on, type AppError } from './api'
+import type { Draft } from './drafts'
 import { GraphBuilder, type GraphRow } from './graph'
 import { choose, closeDialog, dialogs, openDialog, toast } from './ui.svelte'
 
@@ -49,8 +50,10 @@ class AppState {
   version = $state('')
   home = $state('')
 
-  status = $state<RepoStatus | null>(null)
-  refs = $state<Refs>(emptyRefs())
+  // Replaced whole at each refresh, never changed in place: raw, they are read without going through
+  // a proxy for each of their (tens of thousands of) files and refs.
+  status = $state.raw<RepoStatus | null>(null)
+  refs = $state.raw<Refs>(emptyRefs())
   /** Open repositories, as tabs, in order. */
   tabs = $state<string[]>([])
   view = $state<View>('changes')
@@ -80,7 +83,7 @@ class AppState {
   compareTarget = $state<CompareTarget | null>(null)
 
   /* Commit drafts survive repo switches */
-  drafts = $state<Record<string, { summary: string; body: string; amend: boolean; coAuthors?: string[] }>>({})
+  drafts = $state<Record<string, Draft>>({})
 
   private graphBuilder = new GraphBuilder()
   private statusRuns = new Map<string, { again: boolean; done: Promise<void> }>()
@@ -96,21 +99,19 @@ class AppState {
   private fsmonitorAsked = new Set<string>()
   /** Repositories with a background fetch running. */
   private backgroundFetches = new Set<string>()
+  /** Background fetches that failed, by repository: when, and how long before the next try. */
+  private fetchFailures = new Map<string, { at: number; wait: number }>()
 
   /* ─── Derived ─────────────────────────────────────────────────────────────── */
 
   get files(): FileChange[] {
     return this.status?.files ?? []
   }
-  get staged(): FileChange[] {
-    return this.files.filter(f => !f.conflicted && !f.untracked && f.index !== '.' && f.index !== '?')
-  }
-  get unstaged(): FileChange[] {
-    return this.files.filter(f => !f.conflicted && (f.untracked || f.worktree !== '.'))
-  }
-  get conflicted(): FileChange[] {
-    return this.files.filter(f => f.conflicted)
-  }
+  // Filtered once per status, not at each of the ten or so reads a refresh makes: with 50,000
+  // untracked files (an unignored node_modules) that was seconds of work per watcher event.
+  readonly staged: FileChange[] = $derived(this.files.filter(f => !f.conflicted && !f.untracked && f.index !== '.' && f.index !== '?'))
+  readonly unstaged: FileChange[] = $derived(this.files.filter(f => !f.conflicted && (f.untracked || f.worktree !== '.')))
+  readonly conflicted: FileChange[] = $derived(this.files.filter(f => f.conflicted))
   get currentBranch() {
     return this.refs.branches.find(b => b.current) ?? null
   }
@@ -468,8 +469,14 @@ class AppState {
   }
 
   private lastHead = ''
+  /**
+   * What the history shows besides its commits: HEAD and the branch it names, every branch and tag.
+   * A tag created or deleted, or a switch to a branch on the same commit, changed its labels (and,
+   * in "All" scope, its commits) without reloading it, F5 included.
+   */
   private headKey(): string {
-    return `${this.repo?.id}|${this.status?.head}|${this.refs.branches.map(b => b.sha).join(',')}`
+    const refs = [...this.refs.branches.map(b => `${b.name}@${b.sha}`), ...this.refs.tags.map(t => `tag:${t.name}@${t.sha}`)]
+    return `${this.repo?.id}|${this.status?.head}|${this.status?.branch}|${refs.join(',')}`
   }
 
   async refreshAll(): Promise<void> {
@@ -516,10 +523,12 @@ class AppState {
   async reloadHistory(keepSelection = false): Promise<void> {
     const token = ++this.historyToken
     this.historyStale = false
-    this.graphBuilder.reset(!!this.historySearch)
-    this.historyDone = false
     const repo = this.repo
     if (!repo) return
+    // The lanes of the new list, kept apart until it is shown: reset up front, a search git refused
+    // (an invalid regex) left the old list with a flat builder, and every page after lost its graph.
+    const builder = new GraphBuilder()
+    builder.reset(!!this.historySearch)
     this.historyLoading = true
     const limit = keepSelection ? Math.min(Math.max(PAGE, this.commits.length), REFRESH_DEPTH) : PAGE
     const query = { scope: this.settings.historyScope, search: this.historySearch || undefined, searchMode: this.historySearchMode }
@@ -529,7 +538,8 @@ class AppState {
       if (token !== this.historyToken || this.repo?.id !== repo.id) return
       this.historyQuery = { repoId: repo.id, path: repo.path, query }
       this.commits = commits
-      this.graph = this.graphBuilder.add(commits)
+      this.graphBuilder = builder
+      this.graph = builder.add(commits)
       this.historyDone = commits.length < limit
       if (!keepSelection || !this.selectedCommit) this.selectedCommit = commits[0]?.sha ?? null
     } catch (e) {
@@ -618,9 +628,24 @@ class AppState {
     if (background) {
       // Each tab switch asks for one, and fetches of a repository run one at a time: unchecked,
       // they would queue up in front of the user's own push or pull. One at a time, none right after another.
+      const failed = this.fetchFailures.get(repo)
       if (this.backgroundFetches.has(repo) || (this.lastFetched && Date.now() - this.lastFetched < 60_000)) return
+      // A fetch that failed (a credential prompt declined, no network) is not tried again at every tab
+      // switch: the prompt came back each time, and offline each try held the push queued behind it.
+      if (failed && Date.now() - failed.at < failed.wait) return
       this.backgroundFetches.add(repo)
-      try { await api['git:fetch'](repo) } catch { return } finally { this.backgroundFetches.delete(repo) }
+      try {
+        await api['git:fetch'](repo)
+        this.fetchFailures.delete(repo)
+      } catch (e) {
+        const code = asError(e).code
+        // Asked and refused: not before a good while. Otherwise twice as long each time, up to 15 minutes.
+        const wait = code === 'AUTH_FAILED' || code === 'CANCELLED' ? 30 * 60_000 : Math.min((failed?.wait ?? 30_000) * 2, 15 * 60_000)
+        this.fetchFailures.set(repo, { at: Date.now(), wait })
+        return
+      } finally {
+        this.backgroundFetches.delete(repo)
+      }
       fetched()
       await this.refreshAll()
       return
@@ -628,6 +653,8 @@ class AppState {
     await this.run('Fetching', async () => {
       await api['git:fetch'](repo)
       fetched()
+      // Answered by hand: background fetches go on as usual.
+      this.fetchFailures.delete(repo)
     })
   }
 

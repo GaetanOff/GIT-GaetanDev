@@ -167,9 +167,13 @@
 
   function step(dir: 1 | -1) {
     if (!body || !conflicts.length) return
-    const top = body.scrollTop + 10
-    const els = conflicts.map(x => ({ i: x.i, y: (body!.querySelector(`[data-chunk="${x.i}"]`) as HTMLElement)?.offsetTop ?? 0 }))
-    const target = dir === 1 ? els.find(e => e.y > top + 4) ?? els[0] : [...els].reverse().find(e => e.y < top - 4) ?? els[els.length - 1]
+    const top = body.scrollTop
+    // Positions within the scrolled content. offsetTop is measured from the nearest positioned
+    // ancestor (the whole view, title and toolbar included): "Next" kept landing on the first one.
+    const origin = body.getBoundingClientRect().top - body.scrollTop
+    const els = conflicts.map(x => ({ i: x.i, y: (body!.querySelector(`[data-chunk="${x.i}"]`)?.getBoundingClientRect().top ?? origin) - origin }))
+    // The conflict at the top of the view is the current one: neither next nor previous.
+    const target = dir === 1 ? els.find(e => e.y > top + 14) ?? els[0] : [...els].reverse().find(e => e.y < top - 4) ?? els[els.length - 1]
     scrollTo(target.i)
   }
 
@@ -305,8 +309,18 @@
       const ok = await confirm({ title: `Delete ${basename(path)}?`, message: 'The file is removed and the deletion staged.', confirmLabel: 'Delete', danger: true })
       if (!ok) return
     }
-    const done = await app.run('Resolving', () => api['git:resolveWhole'](repo, path, choice).then(() => true), { success: `${basename(path)} resolved.` })
-    if (done) forget()
+    // The file as it was when shown: edits made since in another tool are not replaced unasked.
+    const end = app.beginBusy('Resolving')
+    try {
+      await api['git:resolveWhole'](repo, path, choice, file?.disk)
+      forget()
+      toast('success', `${basename(path)} resolved.`)
+    } catch (e) {
+      failed(e)
+    } finally {
+      end()
+      await app.refreshAll()
+    }
   }
 
   /** A file edited elsewhere since it was read is shown again as it is now; the choices made stay. */

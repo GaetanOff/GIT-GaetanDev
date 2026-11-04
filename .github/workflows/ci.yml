@@ -50,3 +50,5 @@ jobs:
         run: |
           npx electron-builder --win --dir --publish never
           timeout 120 "release/win-unpacked/GaetanDev Git.exe" --smoke
+          # The prompt helper of Windows' OpenSSH (see src/askpass/askpass.cs) ships next to it.
+          test -f release/win-unpacked/resources/gdg-askpass.exe

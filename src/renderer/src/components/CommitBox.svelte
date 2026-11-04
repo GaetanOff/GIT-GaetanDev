@@ -4,6 +4,7 @@
   import { api, asError } from '@/lib/api'
   import { undoLastCommit } from '@/lib/commands'
   import { initials, MOD, tone } from '@/lib/format'
+  import { pendingCommit, untouchedPrefill } from '@/lib/drafts'
   import { app } from '@/lib/state.svelte'
   import { dialogs, menuAt, openDialog, overlayOpen, showOutput, toast } from '@/lib/ui.svelte'
   import { rank } from '@/lib/fuzzy'
@@ -96,26 +97,40 @@
 
   const draft = $derived(app.draft)
 
-  // A merge, squash or cherry-pick comes with a message from git: offer it.
-  let prefilledFor = ''
+  // A merge, squash or cherry-pick comes with a message from git: offer it, marked as git's for that
+  // commit (see OperationBanner). Once that commit is no longer pending (aborted, skipped, the next
+  // pick), its message goes too, unless it was edited: it became the title of an unrelated commit.
+  let seen = ''
   $effect(() => {
     const repo = app.repo?.path
-    const key = `${repo}|${app.status?.operation}|${app.status?.head}`
-    if (!repo || !app.status || key === prefilledFor || draft.summary.trim()) return
-    prefilledFor = key
-    const d = draft
+    const s = app.status
+    const key = `${repo}|${s?.operation}|${s?.operationHead ?? s?.head}`
+    if (!repo || !s || key === seen) return
+    seen = key
+    const d = untrack(() => app.draft)
+    const pending = pendingCommit(s)
+    if (d.prefill && d.prefill.for !== pending) {
+      if (untouchedPrefill(d)) Object.assign(d, { summary: '', body: '' })
+      delete d.prefill
+      app.saveDrafts()
+    }
+    if (d.summary.trim()) return
     api['git:preparedMessage'](repo).then(msg => {
       if (!msg || d.summary.trim()) return
       const [summary, ...rest] = msg.split('\n')
       d.summary = summary
       d.body = rest.join('\n').trim()
+      d.prefill = { for: pending, text: `${d.summary}\n${d.body}` }
+      app.saveDrafts()
     }).catch(() => undefined)
   })
   const stagedCount = $derived(app.staged.length)
   const unstagedCount = $derived(app.unstaged.length)
   const conflicts = $derived(app.conflicted.length)
   const op = $derived(app.status?.operation)
-  const willStageAll = $derived(!stagedCount && unstagedCount > 0 && !draft.amend)
+  // Never during a merge, a cherry-pick or a revert: "Commit merge" with nothing staged (every
+  // conflict resolved to ours) staged scratch and untracked files into the merge commit.
+  const willStageAll = $derived(!stagedCount && unstagedCount > 0 && !draft.amend && !op)
   const branch = $derived(app.status?.branch ?? 'detached HEAD')
   const summaryLen = $derived(draft.summary.length)
 
@@ -169,7 +184,7 @@
     try {
       if (toStage.length) await api['git:stage'](repo, toStage)
       const sha = await api['git:commit'](repo, message, d.amend, opts)
-      Object.assign(d, { ...splitTemplate(template), amend: false, coAuthors: [] })
+      Object.assign(d, { ...splitTemplate(template), amend: false, coAuthors: [], prefill: undefined })
       amendBackup = null
       app.saveDrafts()
       toast('success', `Committed ${sha.slice(0, 7)} to ${target}.`, { label: 'Undo', run: () => undoLastCommit({ repoId, sha }) })
@@ -274,7 +289,8 @@
           <input bind:this={coInput} bind:value={coQuery} class="input" placeholder="Search, or Name <email>" spellcheck="false"
             onkeydown={e => { if (e.key === 'Enter') { e.preventDefault(); addTyped() } else if (e.key === 'Escape') { e.stopPropagation(); coOpen = false } }} />
           <div class="co-list">
-            {#each coResults as { item } (item.email)}
+            <!-- Keyed by name and email: one person committing under two names shares an email. -->
+            {#each coResults as { item } (`${item.name} <${item.email}>`)}
               {@const on = coAuthors.includes(`${item.name} <${item.email}>`)}
               <button class="co-item" class:on onclick={() => toggleCoAuthor(item)}>
                 <Icon name={on ? 'check' : 'user'} size={12} />

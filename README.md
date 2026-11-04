@@ -43,7 +43,7 @@ npm run dev        # Electron with hot reload
 npm run check      # svelte-check + tsc
 npm run lint       # ESLint
 npm test           # Vitest: unit tests, and git tests in temporary repositories
-npm run build      # production bundles in out/
+npm run build      # production bundles in out/ (on Windows, also the prompt helper of Windows' OpenSSH)
 npm run dist       # Windows installer in release/
 ```
 

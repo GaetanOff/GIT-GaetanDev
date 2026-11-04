@@ -104,6 +104,8 @@ export interface RepoStatus {
   operation: RepoOperation
   /** Rebase progress as "3/7" when a rebase is running. */
   operationStep?: string
+  /** The commit a merge, cherry-pick or revert brings in (MERGE_HEAD and the others): which one is pending. */
+  operationHead?: string
   hasCommits: boolean
   stashCount: number
 }

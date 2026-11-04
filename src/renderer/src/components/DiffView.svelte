@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   import Icon from './Icon.svelte'
   import Code from './Code.svelte'
   import VirtualList from './VirtualList.svelte'
@@ -59,7 +60,9 @@
       // Every status refresh reloads a working-tree diff (any file may have changed). When this one
       // did not, the main process says so instead of sending it all again, and the rows already
       // built (word diff, highlighting) stay as they are.
-      const since = diff?.etag
+      // Read untracked: called from the effect above, the read made that effect depend on `diff`,
+      // and setting it (to null on a new file, then to the result) loaded every diff two or three times.
+      const since = untrack(() => diff?.etag)
       const d = await api['git:diff'](repo, $state.snapshot(src) as DiffSource, { ...opts, since })
       if (t !== token) return
       const before = diff

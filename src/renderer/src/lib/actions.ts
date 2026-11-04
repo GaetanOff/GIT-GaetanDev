@@ -82,7 +82,7 @@ export async function deleteBranch(b: Branch): Promise<void> {
     deleted(b.name, sha, target)
   } catch (e) {
     const err = e as { message: string; code?: string }
-    if (err.code !== 'BRANCH_NOT_MERGED') return toast('error', err.message)
+    if (err.code !== 'BRANCH_NOT_MERGED') return void toast('error', err.message)
     const force = await confirm({
       title: 'Branch not fully merged',
       message: `“${b.name}” has commits that are not merged anywhere. Delete it anyway?`,

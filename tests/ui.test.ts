@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { selectionFingerprint, type DiffLine, type FileDiff } from '@shared/types'
+import { selectionFingerprint, type DiffLine, type FileDiff, type RepoStatus } from '@shared/types'
+import { continueMessage, pendingCommit, untouchedPrefill, type Draft } from '../src/renderer/src/lib/drafts'
 import { splitRows, unifiedRows } from '../src/renderer/src/lib/diffrows'
 import { fuzzy, rank } from '../src/renderer/src/lib/fuzzy'
 import { pairLines, wordDiff } from '../src/renderer/src/lib/intraline'
@@ -93,5 +94,27 @@ describe('syntax rules', () => {
 describe('syntax states', () => {
   it('carries a block comment and a template string across lines', () => {
     expect(lineStates(['/* start', 'inside', 'end */', 'code', 'const s = `a', 'b`'], 'clike')).toEqual([null, 'block', 'block', null, null, 'tpl'])
+  })
+})
+
+describe('the message a pending merge or pick is committed with', () => {
+  const status = (operation: RepoStatus['operation'], operationHead?: string) => ({ operation, operationHead }) as RepoStatus
+  const draft = (summary: string, prefill?: Draft['prefill']): Draft => ({ summary, body: '', amend: false, prefill })
+
+  it('is the box\'s only when it holds git\'s message for that very commit, maybe corrected', () => {
+    const pick = status('cherry-pick', 'b'.repeat(40))
+    expect(continueMessage(draft('Fix login (corrected)', { for: pendingCommit(pick), text: 'Fix login\n' }), pick)).toBe('Fix login (corrected)')
+    // A draft written before the pull, or the message an undo put back: git's own is used.
+    expect(continueMessage(draft('Add OAuth'), status('merge', 'a'.repeat(40)))).toBeUndefined()
+    // The previous pick's message, after it was skipped: not this commit's.
+    expect(continueMessage(draft('B', { for: pendingCommit(pick), text: 'B\n' }), status('cherry-pick', 'c'.repeat(40)))).toBeUndefined()
+    // A rebase writes its own messages.
+    expect(continueMessage(draft('x', { for: '', text: 'x\n' }), status('rebase'))).toBeUndefined()
+  })
+
+  it('tells an untouched prepared message from an edited one', () => {
+    expect(untouchedPrefill(draft('Merge branch x', { for: 'merge:a', text: 'Merge branch x\n' }))).toBe(true)
+    expect(untouchedPrefill(draft('Merge branch x, fixed', { for: 'merge:a', text: 'Merge branch x\n' }))).toBe(false)
+    expect(untouchedPrefill(draft('Mine'))).toBe(false)
   })
 })

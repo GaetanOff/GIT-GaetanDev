@@ -23,7 +23,9 @@
 
 <style>
   /* The SSH Console toasts. */
-  .toasts { position: fixed; right: 14px; bottom: calc(var(--statusbar-h) + 12px); z-index: 600; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; pointer-events: none; }
+  /* Above dialogs (680): what Settings, Clone and the rest report while open was blurred behind their
+     backdrop, and a click on it closed the dialog. Below context menus (700). */
+  .toasts { position: fixed; right: 14px; bottom: calc(var(--statusbar-h) + 12px); z-index: 690; display: flex; flex-direction: column; gap: 8px; align-items: flex-end; pointer-events: none; }
   .toast {
     pointer-events: auto; display: flex; align-items: flex-start; gap: 10px; min-width: 260px; max-width: 420px; padding: 11px 12px;
     border-radius: 14px; background: rgba(15, 17, 23, 0.94); backdrop-filter: blur(16px); border: 1px solid rgba(255, 255, 255, 0.12);

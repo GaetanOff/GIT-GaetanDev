@@ -18,13 +18,13 @@ import { git, GitError, gitVersion } from './git/exec'
 import { commitDetail, log, stashDetail } from './git/log'
 import * as ops from './git/ops'
 import { defaultBranch, defaultRemote, extras, refs } from './git/refs'
-import { isRepo, status, topLevel } from './git/status'
+import { indexRefreshDue, isRepo, refreshIndex, status, topLevel } from './git/status'
 import { openEditor, openTerminal, resolveProgram } from './integrations'
 import { logDir } from './log'
 import { detectProvider, providerUrl } from './provider'
 import { installUpdate, updateReady } from './updater'
 import { githubDesktopRepos } from './importers'
-import { addRepoEntry, flush, foldPath, getState, isInsideRegistered, isRegistered, removeRepo, repoById, save, stateReset, stateUnreadable, updateSettings, upsertRepo } from './store'
+import { addRepoEntry, flush, foldPath, getState, isInsideRegistered, isRegistered, isUnc, removeRepo, repoById, save, stateReset, stateUnreadable, updateSettings, upsertRepo } from './store'
 import { gitFolders, type RepoWatcher } from './watcher'
 
 type Handlers = { [K in ApiChannel]: (...args: Parameters<Api[K]>) => ReturnType<Api[K]> }
@@ -41,6 +41,12 @@ const progress = (p: Progress | null) => send('progress', p)
  * becomes one only once the user says so in a dialog of the main process.
  */
 async function addRepo(path: string) {
+  // A network folder the user neither picked, nor launched the app on, nor added before: looking it
+  // up sends the user's NTLM hash to that host, so the user says so first (a compromised page could
+  // name \\attacker\share).
+  if (isUnc(path) && !inChosen(path) && !launched.has(folderKey(path)) && !isRegistered(path) && !isInsideRegistered(path)) {
+    if (!(await ask('Open this network folder?', path, 'Open'))) throw new GitError('Cancelled.', 'CANCELLED')
+  }
   if (!existsSync(path)) throw new GitError('This folder does not exist.')
   if (await isRepo(path)) return upsertRepo(await topLevel(path))
   if (!(await ask('This folder is not a Git repository yet. Create one in it?', path, 'Create repository'))) {
@@ -84,20 +90,29 @@ const inChosen = (path: string) => {
  * one confirmed in a dialog of the main process, which a compromised page
  * can neither show nor answer. Without it, a page could create a repository
  * in ~/.config/git or the Startup folder and fill it with files of its own.
+ * What is remembered is the folder shown, not its parent: agreeing to
+ * ~\wt-x let anything be created anywhere in the home folder afterwards.
  */
-export async function confirmDestination(path: string, message: string, button: string, remember: string): Promise<void> {
+export async function confirmDestination(path: string, message: string, button: string): Promise<void> {
   if (inChosen(path)) return
   if (!(await ask(message, path, button))) throw new GitError('Cancelled: nothing was created.', 'CANCELLED')
-  chosenFolders.add(folderKey(remember))
+  chosenFolders.add(folderKey(path))
 }
+
+/** A folder macOS opens as a program or an installer rather than in Finder: a bundle, by its extension. */
+export const opensAsProgram = (folder: string, platform = process.platform): boolean =>
+  platform === 'darwin' && /\.(app|appex|bundle|framework|kext|mpkg|pkg|plugin|prefpane|qlgenerator|saver|xpc)[\\/]*$/i.test(folder)
 
 /** Stops the clone under way, if any: a large one or a stalled network no longer leaves only waiting. */
 let cloneAbort: AbortController | null = null
 
 /** A folder the app was launched with; the renderer opens it instead of the last repo. */
 let launchPath: string | null = null
+/** Folders the system launched the app on (Explorer's "Open in", a second launch): the user's choice. */
+const launched = new Set<string>()
 export function setLaunchPath(path: string | null): void {
   launchPath = path
+  if (path) launched.add(folderKey(path))
 }
 
 /** Whether the page has read its start state (and so listens for open:path). */
@@ -105,6 +120,7 @@ let stateRead = false
 
 /** A folder from a second launch: sent to the page, or kept for it while it is still starting. */
 export function openFolder(path: string): void {
+  launched.add(folderKey(path))
   if (stateRead) send('open:path', path)
   else launchPath = path
 }
@@ -141,12 +157,17 @@ export function registerIpc(watcher: RepoWatcher): void {
     },
     // "Restart now" during a commit or a checkout: the update waits for it (ten seconds at most).
     'app:installUpdate': async () => {
+      // A newer download that failed since took the one offered with it: nothing to install.
+      if (!updateReady()) throw new GitError('The update is no longer ready to install. It will be downloaded again at the next check.')
       // No new git work starts (an auto-fetch, say), what runs gets ten seconds, and the state is
       // saved now: the installer may end the app before its own quit handlers have run.
       closeQueues()
       await settleQueues(10_000)
       flush()
       installUpdate()
+      // Still running a while later, the install did not happen: closed for good, the queues
+      // refused every write and fetch for the rest of the session.
+      setTimeout(reopenQueues, 30_000).unref()
     },
     'repo:list': async () => getState().repos,
     'repo:add': async path => addRepo(path),
@@ -164,15 +185,16 @@ export function registerIpc(watcher: RepoWatcher): void {
       return result
     },
     'repo:init': async path => {
-      await confirmDestination(path, 'This folder is not a Git repository yet. Create one in it?', 'Create repository', path)
+      await confirmDestination(path, 'This folder is not a Git repository yet. Create one in it?', 'Create repository')
       mkdirSync(path, { recursive: true })
       await git(path, ['init', '-b', 'main'])
       return upsertRepo(path)
     },
     'repo:clone': async (url, parent, name) => {
       const target = join(parent, name)
+      // Asked before the disk is touched: looking up "\\host\share" sends the user's NTLM hash there.
+      await confirmDestination(target, 'Clone the repository into this folder?', 'Clone')
       if (existsSync(target)) throw new GitError(`"${target}" already exists.`)
-      await confirmDestination(target, 'Clone the repository into this folder?', 'Clone', parent)
       mkdirSync(parent, { recursive: true })
       const abort = new AbortController()
       cloneAbort = abort
@@ -204,7 +226,12 @@ export function registerIpc(watcher: RepoWatcher): void {
       return picked
     },
 
-    'git:status': async repo => status(repo),
+    'git:status': async repo => {
+      const result = await status(repo)
+      // Once a minute, behind any stage or commit in progress instead of beside it (see refreshIndex).
+      if (indexRefreshDue(repo)) schedule('git:refreshIndex', repo, () => refreshIndex(repo)).catch(() => undefined)
+      return result
+    },
     'git:diff': async (repo, source, opts) => diff(repo, source, opts),
     'git:stage': async (repo, paths) => ops.stage(repo, paths),
     'git:unstage': async (repo, paths) => ops.unstage(repo, paths),
@@ -225,7 +252,7 @@ export function registerIpc(watcher: RepoWatcher): void {
     'git:skip': async repo => ops.skipOp(repo),
     'git:conflict': async (repo, path) => conflict(repo, path),
     'git:resolveContent': async (repo, path, content, encoding, expect) => resolveContent(repo, path, content, encoding, expect),
-    'git:resolveWhole': async (repo, path, choice) => resolveWhole(repo, path, choice),
+    'git:resolveWhole': async (repo, path, choice, expect) => resolveWhole(repo, path, choice, expect),
 
     'git:log': async (repo, q) => log(repo, q),
     'git:commit:detail': async (repo, sha) => commitDetail(repo, sha),
@@ -276,7 +303,7 @@ export function registerIpc(watcher: RepoWatcher): void {
       const name = (p: string) => (process.platform === 'win32' || process.platform === 'darwin' ? basename(p).toLowerCase() : basename(p))
       const suggested = folderKey(dirname(path)) === folderKey(dirname(repo)) && name(path).startsWith(`${name(repo)}-`)
       if (!suggested) {
-        await confirmDestination(path, 'Create the worktree in this folder?', 'Create worktree', dirname(path))
+        await confirmDestination(path, 'Create the worktree in this folder?', 'Create worktree')
       }
       return worktreeAdd(repo, path, branch, create, from)
     },
@@ -304,6 +331,9 @@ export function registerIpc(watcher: RepoWatcher): void {
     },
     'shell:reveal': async (repo, path) => {
       if (path) shell.showItemInFolder(join(repo, path))
+      // On macOS a folder named like a bundle ("Photos.app", cloned from Photos.app.git) is a program:
+      // opening it ran the code the repository holds. It is shown in its folder instead.
+      else if (opensAsProgram(repo)) shell.showItemInFolder(repo)
       else await shell.openPath(repo)
     },
     'shell:editor': async (repo, path) => openEditor(getState().settings.editorCommand, repo, path ? join(repo, path) : repo),
@@ -361,6 +391,8 @@ const WRITES = new Set([
   'git:checkout', 'git:createBranch', 'git:renameBranch', 'git:deleteBranch', 'git:restoreBranch', 'git:merge', 'git:rebase',
   'git:createTag', 'git:deleteTag', 'git:stash', 'git:stashApply', 'git:stashDrop', 'git:addRemote', 'git:removeRemote', 'git:pull',
   'git:submoduleUpdate', 'git:lfsPull', 'git:worktreeAdd', 'git:worktreeRemove', 'repo:setFsmonitor',
+  // Not a channel: the index refresh that follows a status now and then.
+  'git:refreshIndex',
 ])
 /**
  * Channels that talk to a remote and update remote-tracking refs: two at once
@@ -379,7 +411,12 @@ const networkQueues = new Map<string, Promise<unknown>>()
 function serial<T>(queues: Map<string, Promise<unknown>>, repo: string, fn: () => Promise<T>): Promise<T> {
   // Case folded only where the file system ignores it: two Linux repositories differing by case are two queues.
   const key = foldPath(repo).replace(/\\/g, '/')
-  const result = (queues.get(key) ?? Promise.resolve()).catch(() => undefined).then(fn)
+  // Checked again when its turn comes: a pull queued behind an auto-fetch started during the wait
+  // before quitting, and was killed half-way when the wait ended.
+  const result = (queues.get(key) ?? Promise.resolve()).catch(() => undefined).then(() => {
+    if (closing) throw closingError()
+    return fn()
+  })
   const tail = result.catch(() => undefined)
   queues.set(key, tail)
   tail.then(() => { if (queues.get(key) === tail) queues.delete(key) })
@@ -408,15 +445,20 @@ export function settleQueues(ms: number): Promise<void> {
   return Promise.race([Promise.all(pending).then(() => undefined), new Promise<void>(resolve => setTimeout(resolve, ms))])
 }
 
-/** Runs a channel's handler on the queues it belongs to (none for reads). */
 /** Set once the app is quitting or installing an update: writes and network commands no longer start. */
 let closing = false
+const closingError = () => new GitError('The app is closing: nothing was started.')
 export function closeQueues(): void {
   closing = true
 }
+/** The quit or the install did not happen after all: git work starts again. */
+export function reopenQueues(): void {
+  closing = false
+}
 
+/** Runs a channel's handler on the queues it belongs to (none for reads). */
 export function schedule<T>(channel: string, repo: string, fn: () => Promise<T>): Promise<T> {
-  if (closing && (WRITES.has(channel) || NETWORK.has(channel))) return Promise.reject(new GitError('The app is closing: nothing was started.'))
+  if (closing && (WRITES.has(channel) || NETWORK.has(channel))) return Promise.reject(closingError())
   const write = WRITES.has(channel) ? () => serial(writeQueues, repo, fn) : fn
   return NETWORK.has(channel) ? serial(networkQueues, sharedGitDir(repo), write) : write()
 }
@@ -524,6 +566,18 @@ export function checkArgs(channel: string, args: unknown[]): void {
   }
   const choice = CHOICES[channel]
   if (choice && !choice[1].includes(args[choice[0]] as string)) throw new GitError(`"${String(args[choice[0]])}" is not one of ${choice[1].join(', ')}.`)
+  // The new folder's name, one level inside the parent shown in the confirmation: an absolute name
+  // ("C:\Users\me\AppData\…") or one with separators made git clone somewhere else entirely.
+  if (channel === 'repo:clone') {
+    const [url, parent, name] = args
+    if (typeof url !== 'string' || typeof parent !== 'string' || !isAbsolute(parent)) throw new GitError('Invalid clone.')
+    if (typeof name !== 'string' || !name.trim() || /[\\/:\0]/.test(name) || name === '.' || name === '..') {
+      throw new GitError(`"${String(name)}" is not a valid folder name.`)
+    }
+  }
+  if ((channel === 'git:resolveContent' || channel === 'git:resolveWhole') && args[channel === 'git:resolveWhole' ? 3 : 4] !== undefined && typeof args[channel === 'git:resolveWhole' ? 3 : 4] !== 'string') {
+    throw new GitError('Invalid file state.')
+  }
   if (channel === 'repo:pin' && typeof args[1] !== 'boolean') throw new GitError('Invalid pin.')
   if (channel === 'askpass:respond' && (typeof args[0] !== 'string' || (args[1] !== null && typeof args[1] !== 'string'))) throw new GitError('Invalid answer.')
   for (const r of refs) {

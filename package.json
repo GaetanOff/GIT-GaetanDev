@@ -13,10 +13,10 @@
   "scripts": {
     "dev": "electron-vite dev",
     "app": "node scripts/launch.cjs",
-    "build": "electron-vite build",
+    "build": "electron-vite build && node scripts/build-askpass.cjs",
     "preview": "electron-vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.web.json && tsc --noEmit -p tsconfig.node.json && tsc --noEmit -p tsconfig.test.json",
-    "dist": "electron-vite build && electron-builder --win --publish never",
+    "dist": "npm run build && electron-builder --win --publish never",
     "lint": "eslint .",
     "test": "vitest run"
   },
@@ -49,7 +49,8 @@
     "files": [
       "out/**/*",
       "package.json",
-      "!**/*.map"
+      "!**/*.map",
+      "!out/askpass{,/**}"
     ],
     "electronLanguages": [
       "en-US",
@@ -59,7 +60,13 @@
       "target": [
         "nsis"
       ],
-      "icon": "build/icon.png"
+      "icon": "build/icon.png",
+      "extraResources": [
+        {
+          "from": "out/askpass/gdg-askpass.exe",
+          "to": "gdg-askpass.exe"
+        }
+      ]
     },
     "nsis": {
       "artifactName": "GaetanDev-Git-Setup-${version}.${ext}",
