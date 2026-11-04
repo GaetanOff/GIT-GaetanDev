@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { spawn, type ChildProcess } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { findOnPath } from './git/exec'
@@ -31,11 +31,21 @@ export function resolveProgram(command: string): { line: string; builtin: boolea
 
 /**
  * Runs a user-configured command line detached, with `{path}` or a trailing
- * argument. The path reaches the shell as an environment variable, which the
- * shell substitutes without parsing it again: a file named `$(cmd)` or
- * `a&b.txt` in a cloned repo stays a file name.
+ * argument. The path reaches the shell as an environment variable: sh
+ * substitutes it without parsing it again, so a file named `$(cmd)` stays a
+ * file name. cmd.exe substitutes `%GDG_TARGET%` before it parses the line, so
+ * a quote in the value would close the quotes around it and let `&` start a
+ * command: such a path (a file of a commit made elsewhere, never one on a
+ * Windows disk) is refused, as are control characters (a line break ends the
+ * command).
  */
-function launch(command: string, target: string, cwd: string): void {
+const unsafeForCmd = (c: string) => c === '"' || c.charCodeAt(0) < 0x20
+
+export function launch(command: string, target: string, cwd: string): ChildProcess {
+  if (win && [...target].some(unsafeForCmd)) {
+    const shown = [...target].map(c => (c.charCodeAt(0) < 0x20 ? '?' : c)).join('')
+    throw new Error(`"${shown}" cannot be opened: Windows file names cannot hold quotes or control characters.`)
+  }
   const { line: program, builtin } = resolveProgram(command)
   const ref = win ? '"%GDG_TARGET%"' : '"$GDG_TARGET"'
   const line = program.includes('{path}') ? program.replaceAll('{path}', ref) : `${program} ${ref}`
@@ -44,6 +54,7 @@ function launch(command: string, target: string, cwd: string): void {
   const child = spawn(line, { cwd, shell: true, detached: true, stdio: 'ignore', windowsHide: false, env })
   child.on('error', () => undefined)
   child.unref()
+  return child
 }
 
 const onPath = (exe: string) => !!findOnPath(exe, win ? ['.exe', '.cmd', '.bat'] : [''])
@@ -57,15 +68,21 @@ export function openEditor(command: string, repo: string, target: string): void 
 }
 
 export function openTerminal(command: string, repo: string): void {
-  if (command.trim()) return launch(command, repo, repo)
-  if (win) {
+  if (command.trim()) {
+    launch(command, repo, repo)
+  } else if (win) {
     const wt = join(process.env.LOCALAPPDATA ?? '', 'Microsoft', 'WindowsApps', 'wt.exe')
-    if (existsSync(wt)) return launch(`"${wt}" -d`, repo, repo)
+    if (existsSync(wt)) {
+      launch(`"${wt}" -d`, repo, repo)
+      return
+    }
     // Full paths: started in the repository, neither name may resolve to a file inside it.
     const powershell = join(system32, 'WindowsPowerShell', 'v1.0', 'powershell.exe')
     const child = spawn(join(system32, 'cmd.exe'), ['/d', '/c', 'start', '', powershell, '-NoExit'], { cwd: repo, detached: true, stdio: 'ignore' })
-    return child.unref()
+    child.unref()
+  } else if (process.platform === 'darwin') {
+    launch('open -a Terminal', repo, repo)
+  } else {
+    launch('x-terminal-emulator --working-directory', repo, repo)
   }
-  if (process.platform === 'darwin') return launch('open -a Terminal', repo, repo)
-  launch('x-terminal-emulator --working-directory', repo, repo)
 }

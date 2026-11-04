@@ -1,8 +1,8 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
-import { resolveProgram } from '../src/main/integrations'
+import { launch, resolveProgram } from '../src/main/integrations'
 
 const bin = mkdtempSync(join(tmpdir(), 'gdg-bin-'))
 writeFileSync(join(bin, 'myeditor.cmd'), '@echo off\r\n')
@@ -26,5 +26,15 @@ describe.runIf(process.platform === 'win32')('editor and terminal commands', () 
 
   it('says when the program is nowhere on PATH', () => {
     expect(() => resolveProgram('no-such-editor-here')).toThrow(/not found on PATH/)
+  })
+
+  it('never lets a file name run a command through cmd.exe', async () => {
+    const marker = join(bin, 'injected.txt')
+    // A quote would close the quotes around the path: refused, as Windows cannot name a file so.
+    expect(() => launch('cmd /c echo', 'x" & echo INJECTED> injected.txt & rem "', bin)).toThrow(/quotes/)
+    // Without one, "&" stays part of the name.
+    const child = launch('cmd /c echo', 'a & echo INJECTED> injected.txt', bin)
+    await new Promise(resolve => child.on('exit', resolve))
+    expect(existsSync(marker)).toBe(false)
   })
 })
