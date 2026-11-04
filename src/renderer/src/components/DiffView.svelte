@@ -173,6 +173,11 @@
     void mode
     splitX = 0
   })
+  // A wider window can make the scrollbar go away: an offset left past what overflows cut the
+  // start of every line, with no scrollbar to bring it back.
+  $effect(() => {
+    if (splitX > splitOverflow) splitX = splitOverflow
+  })
   function onSplitWheel(e: WheelEvent) {
     if (mode !== 'split' || !hbar) return
     const dx = e.shiftKey ? e.deltaY : e.deltaX
