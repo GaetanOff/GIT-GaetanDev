@@ -184,6 +184,21 @@ describe('stash', () => {
     expect(sh(repo, 'stash', 'list')).toBe('')
   })
 
+  it('keeps auto-stashed changes stashed when the switch is done but a hook fails', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'base\n' })
+    sh(repo, 'checkout', '-q', '-b', 'other')
+    commit(repo, 'other', { 'a.txt': 'other\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    write(repo, 'a.txt', 'mine\n')
+    writeFileSync(join(repo, '.git', 'hooks', 'post-checkout'), '#!/bin/sh\nexit 2\n', { mode: 0o755 })
+    await expect(ops.checkout(repo, 'other', { stash: true })).rejects.toThrow(/Switched to other/)
+    // Not popped onto the other branch, where it conflicted.
+    expect(sh(repo, 'symbolic-ref', '--short', 'HEAD')).toBe('other')
+    expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('other\n')
+    expect(sh(repo, 'stash', 'list')).toMatch(/Auto-stash before switching to other/)
+  })
+
   it('refuses an entry that moved since it was shown', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a.txt': 'a\n' })

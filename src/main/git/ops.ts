@@ -352,12 +352,24 @@ export async function reset(repo: string, sha: string, mode: ResetMode): Promise
 export async function checkout(repo: string, branch: string, opts: { stash?: boolean } = {}): Promise<void> {
   if (!opts.stash) return switchTo(repo, branch)
   const top = () => git(repo, ['rev-parse', '-q', '--verify', 'refs/stash'], { okCodes: [1] }).then(r => r.stdout.trim())
+  const label = `Auto-stash before switching to ${branch}`
+  // Where HEAD is: the branch it names, else its commit.
+  const where = () => git(repo, ['symbolic-ref', '-q', 'HEAD'], { okCodes: [1] })
+    .then(r => r.stdout.trim() || git(repo, ['rev-parse', '-q', '--verify', 'HEAD'], { okCodes: [1] }).then(c => c.stdout.trim()))
+    .catch(() => '')
+  const start = await where()
   const before = await top()
-  await git(repo, ['stash', 'push', '--include-untracked', '-m', `Auto-stash before switching to ${branch}`])
+  await git(repo, ['stash', 'push', '--include-untracked', '-m', label])
   const stashed = (await top()) !== before
   try {
     await switchTo(repo, branch)
   } catch (e) {
+    // A post-checkout hook (Git LFS's, without git-lfs on PATH) can fail once the switch is done:
+    // the changes then stay in the stash, instead of being popped onto the other branch.
+    if ((await where()) !== start) {
+      if (e instanceof GitError) e.message = `Switched to ${branch}, but git then reported: ${e.message}${stashed ? `\nYour changes are kept in the stash “${label}”.` : ''}`
+      throw e
+    }
     // Still on the old branch: put the changes back where they were, so nothing seems lost.
     if (stashed) await git(repo, ['stash', 'pop', '--index']).catch(() => git(repo, ['stash', 'pop'])).catch(() => undefined)
     throw e
