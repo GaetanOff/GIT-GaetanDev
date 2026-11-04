@@ -525,10 +525,12 @@ class AppState {
   async reloadHistory(keepSelection = false): Promise<void> {
     const token = ++this.historyToken
     this.historyStale = false
-    this.graphBuilder.reset(!!this.historySearch)
-    this.historyDone = false
     const repo = this.repo
     if (!repo) return
+    // The lanes of the new list, kept apart until it is shown: reset up front, a search git refused
+    // (an invalid regex) left the old list with a flat builder, and every page after lost its graph.
+    const builder = new GraphBuilder()
+    builder.reset(!!this.historySearch)
     this.historyLoading = true
     const limit = keepSelection ? Math.min(Math.max(PAGE, this.commits.length), REFRESH_DEPTH) : PAGE
     const query = { scope: this.settings.historyScope, search: this.historySearch || undefined, searchMode: this.historySearchMode }
@@ -538,7 +540,8 @@ class AppState {
       if (token !== this.historyToken || this.repo?.id !== repo.id) return
       this.historyQuery = { repoId: repo.id, path: repo.path, query }
       this.commits = commits
-      this.graph = this.graphBuilder.add(commits)
+      this.graphBuilder = builder
+      this.graph = builder.add(commits)
       this.historyDone = commits.length < limit
       if (!keepSelection || !this.selectedCommit) this.selectedCommit = commits[0]?.sha ?? null
     } catch (e) {
