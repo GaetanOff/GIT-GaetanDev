@@ -8,7 +8,7 @@
   import OperationBanner from '@/components/OperationBanner.svelte'
   import type { DiffSource, FileChange } from '@shared/types'
   import { discardAll } from '@/lib/commands'
-  import { discardPaths, fileMenu, stagePaths, unstagePaths } from '@/lib/files'
+  import { discardPaths, fileMenu, markResolved, stagePaths, unstagePaths } from '@/lib/files'
   import { basename, dirname, statusStyle } from '@/lib/format'
   import { app, type Area } from '@/lib/state.svelte'
   import { contextMenu, isMenuKey, menuAt, openDialog, toast } from '@/lib/ui.svelte'
@@ -199,7 +199,7 @@
                 </span>
                 <span class="acts">
                   {#if r.area === 'conflicted'}
-                    <button class="icon-btn sm" title="Mark resolved (stage)" onclick={e => { e.stopPropagation(); stagePaths([r.file.path]) }}><Icon name="check" size={13} /></button>
+                    <button class="icon-btn sm" title="Mark resolved (stage)" onclick={e => { e.stopPropagation(); markResolved(r.file.path) }}><Icon name="check" size={13} /></button>
                   {:else}
                     {#if r.area === 'unstaged'}
                       <button class="icon-btn sm danger" title="Discard changes" onclick={e => { e.stopPropagation(); discardPaths([r.file.path]) }}><Icon name="trash" size={13} /></button>
