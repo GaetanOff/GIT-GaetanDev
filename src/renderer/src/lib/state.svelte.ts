@@ -1,4 +1,4 @@
-import type { Commit, FileChange, Progress, Refs, RepoEntry, RepoStatus, RestorePoint, SearchMode, Settings } from '@shared/types'
+import type { Commit, FileChange, LogQuery, Progress, Refs, RepoEntry, RepoStatus, RestorePoint, SearchMode, Settings } from '@shared/types'
 import { DEFAULT_SETTINGS } from '@shared/types'
 import { api, asError, on, type AppError } from './api'
 import { GraphBuilder, type GraphRow } from './graph'
@@ -84,6 +84,8 @@ class AppState {
   private busyId = 0
   private fetchTimer: ReturnType<typeof setInterval> | null = null
   private historyToken = 0
+  /** What the list in History was loaded with, for its next pages. */
+  private historyQuery: { repoId: string; path: string; query: Omit<LogQuery, 'skip' | 'limit'> } | null = null
   private refsToken = 0
   private openToken = 0
   private memory = new Map<string, TabMemory>()
@@ -501,11 +503,11 @@ class AppState {
     if (!repo) return
     this.historyLoading = true
     const limit = keepSelection ? Math.min(Math.max(PAGE, this.commits.length), REFRESH_DEPTH) : PAGE
+    const query = { scope: this.settings.historyScope, search: this.historySearch || undefined, searchMode: this.historySearchMode }
     try {
-      const commits = await api['git:log'](repo.path, {
-        scope: this.settings.historyScope, skip: 0, limit, search: this.historySearch || undefined, searchMode: this.historySearchMode,
-      })
+      const commits = await api['git:log'](repo.path, { ...query, skip: 0, limit })
       if (token !== this.historyToken) return
+      this.historyQuery = { repoId: repo.id, path: repo.path, query }
       this.commits = commits
       this.graph = this.graphBuilder.add(commits)
       this.historyDone = commits.length < limit
@@ -518,17 +520,18 @@ class AppState {
   }
 
   async loadMoreHistory(): Promise<void> {
-    if (this.historyDone || this.historyLoading || !this.repo) return
+    // The next page of the list shown: same repository and query as its first page. A tab
+    // restored from memory, or a search typed but not run yet, must not get another list's page.
+    const q = this.historyQuery
+    if (this.historyDone || this.historyLoading || !q || q.repoId !== this.repo?.id) return
     const token = this.historyToken
     this.historyLoading = true
     try {
       // Each page makes git walk and sort the history again (topo order): pages double in
       // size, so scrolling through N commits costs log(N) walks rather than N / 400.
       const limit = Math.max(PAGE, this.commits.length)
-      const more = await api['git:log'](this.repo.path, {
-        scope: this.settings.historyScope, skip: this.commits.length, limit, search: this.historySearch || undefined, searchMode: this.historySearchMode,
-      })
-      if (token !== this.historyToken) return
+      const more = await api['git:log'](q.path, { ...q.query, skip: this.commits.length, limit })
+      if (token !== this.historyToken || this.repo?.id !== q.repoId) return
       this.commits = [...this.commits, ...more]
       this.graph = [...this.graph, ...this.graphBuilder.add(more)]
       this.historyDone = more.length < limit
