@@ -136,9 +136,11 @@ export async function commit(repo: string, message: string, amend: boolean, opts
 }
 
 async function hasCommitHook(repo: string): Promise<boolean> {
-  const custom = (await git(repo, ['config', '--get', 'core.hooksPath'], { okCodes: [1] })).stdout.trim()
-  const dir = custom ? (isAbsolute(custom) ? custom : join(repo, custom)) : join(await gitDir(repo), 'hooks')
-  return ['pre-commit', 'commit-msg', 'prepare-commit-msg'].some(h => existsSync(join(dir, h)))
+  // --git-path follows core.hooksPath and, in a linked worktree, finds the hooks it shares with the
+  // main one (the worktree's own git folder has none).
+  const dir = (await gitOut(repo, ['rev-parse', '--git-path', 'hooks'])).trim()
+  const abs = isAbsolute(dir) ? dir : join(repo, dir)
+  return ['pre-commit', 'commit-msg', 'prepare-commit-msg'].some(h => existsSync(join(abs, h)))
 }
 
 /** People who committed here, most active first: suggestions for co-authors. */

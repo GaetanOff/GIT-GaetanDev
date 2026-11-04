@@ -149,6 +149,17 @@ describe('commit', () => {
     await expect(assertRefName(repo, 'branch', 'feature/ok')).resolves.toBeUndefined()
   })
 
+  it('blames a failing hook in a linked worktree too', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'a\n' })
+    writeFileSync(join(repo, '.git', 'hooks', 'pre-commit'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+    const wt = join(repo, '..', 'wt')
+    sh(repo, 'worktree', 'add', '-q', wt)
+    write(wt, 'a.txt', 'changed\n')
+    sh(wt, 'add', 'a.txt')
+    await expect(ops.commit(wt, 'blocked', false)).rejects.toMatchObject({ code: 'HOOK_FAILED' })
+  })
+
   it('undoes only the commit it was asked for', async () => {
     const repo = makeRepo()
     commit(repo, 'base')
