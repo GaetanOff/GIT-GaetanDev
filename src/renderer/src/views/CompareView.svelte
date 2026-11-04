@@ -3,7 +3,8 @@
   import DiffView from '@/components/DiffView.svelte'
   import RefInput from '@/components/RefInput.svelte'
   import Resizer from '@/components/Resizer.svelte'
-  import type { CompareResult } from '@shared/types'
+  import VirtualList from '@/components/VirtualList.svelte'
+  import type { CommitFile, CompareResult } from '@shared/types'
   import { commitMenu } from '@/lib/actions'
   import { api, asError } from '@/lib/api'
   import { basename, dirname, initials, relativeTime, shortSha, statusStyle, tone } from '@/lib/format'
@@ -20,6 +21,7 @@
   let tab = $state<'files' | 'commits'>('files')
   let width = $state(380)
   let token = 0
+  let fileList = $state<VirtualList<CommitFile>>()
 
   $effect(() => {
     const repo = app.repo?.path
@@ -55,8 +57,11 @@
   function fileKeys(e: KeyboardEvent) {
     if (!result) return
     const i = result.files.findIndex(f => f.path === file)
-    if (e.key === 'ArrowDown') { e.preventDefault(); file = result.files[Math.min(i + 1, result.files.length - 1)]?.path ?? file }
-    if (e.key === 'ArrowUp') { e.preventDefault(); file = result.files[Math.max(i - 1, 0)]?.path ?? file }
+    const to = e.key === 'ArrowDown' ? Math.min(i + 1, result.files.length - 1) : e.key === 'ArrowUp' ? Math.max(i - 1, 0) : -1
+    if (to < 0) return
+    e.preventDefault()
+    file = result.files[to]?.path ?? file
+    fileList?.reveal(to)
   }
 </script>
 
@@ -94,19 +99,24 @@
           <button class:on={tab === 'commits'} onclick={() => (tab = 'commits')}>Commits <span class="n">{result.ahead.length}</span></button>
         </div>
         {#if tab === 'files'}
-          <div class="items" role="listbox" tabindex="0" aria-label="Changed files" onkeydown={fileKeys}>
-            {#each result.files as f (f.path)}
-              {@const st = statusStyle(f.status)}
-              <div class="file" class:sel={f.path === file} role="option" aria-selected={f.path === file} tabindex="-1"
-                onclick={() => (file = f.path)} onkeydown={() => undefined} title={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}>
-                <span class="st" style="color:{st.color};background:color-mix(in srgb, {st.color} 16%, transparent)">{st.letter}</span>
-                <span class="name truncate"><b>{basename(f.path)}</b>{#if dirname(f.path)}<span class="dir">{dirname(f.path)}</span>{/if}</span>
-                {#if f.binary}<span class="badge">bin</span>{:else}<span class="nn a">+{f.additions}</span><span class="nn d">−{f.deletions}</span>{/if}
-              </div>
-            {:else}
-              <div class="none">No differences.</div>
-            {/each}
-          </div>
+          {#if result.files.length}
+            <!-- Virtualised: a comparison can hold tens of thousands of files. -->
+            <div class="items vwrap" role="listbox" tabindex="0" aria-label="Changed files" onkeydown={fileKeys}>
+              <VirtualList bind:this={fileList} items={result.files} rowHeight={28} class="vfill">
+                {#snippet row(f)}
+                {@const st = statusStyle(f.status)}
+                <div class="file" class:sel={f.path === file} role="option" aria-selected={f.path === file} tabindex="-1"
+                  onclick={() => (file = f.path)} onkeydown={() => undefined} title={f.oldPath ? `${f.oldPath} → ${f.path}` : f.path}>
+                  <span class="st" style="color:{st.color};background:color-mix(in srgb, {st.color} 16%, transparent)">{st.letter}</span>
+                  <span class="name truncate"><b>{basename(f.path)}</b>{#if dirname(f.path)}<span class="dir">{dirname(f.path)}</span>{/if}</span>
+                  {#if f.binary}<span class="badge">bin</span>{:else}<span class="nn a">+{f.additions}</span><span class="nn d">−{f.deletions}</span>{/if}
+                </div>
+                {/snippet}
+              </VirtualList>
+            </div>
+          {:else}
+            <div class="items"><div class="none">No differences.</div></div>
+          {/if}
         {:else}
           <div class="items">
             {#each result.ahead as c (c.sha)}
@@ -160,6 +170,8 @@
   .tabs button.on { background: var(--surface-3); color: #fff; }
   .n { color: var(--text-dim); margin-left: 4px; }
   .items { flex: 1; overflow-y: auto; padding: 4px 0; outline: none; }
+  .items.vwrap { display: flex; flex-direction: column; overflow: hidden; padding: 0; min-height: 0; }
+  .vwrap :global(.vfill) { flex: 1; min-height: 0; }
   .file, .commit { display: flex; align-items: center; gap: 8px; height: 28px; padding: 0 12px; }
   .file:hover, .commit:hover { background: var(--surface-1); }
   .file.sel { background: var(--surface-3); }
