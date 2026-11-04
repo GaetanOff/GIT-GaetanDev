@@ -117,8 +117,9 @@ function entry(xy: string, path: string, sub: string): FileChange {
   }
 }
 
-export function operation(dir: string): { operation: RepoOperation; operationStep?: string } {
+export function operation(dir: string): { operation: RepoOperation; operationStep?: string; operationHead?: string } {
   const has = (p: string) => existsSync(join(dir, p))
+  const head = (f: string) => { try { return readFileSync(join(dir, f), 'utf8').split('\n')[0].trim() || undefined } catch { return undefined } }
   if (has('rebase-merge') || has('rebase-apply')) {
     const base = has('rebase-merge') ? 'rebase-merge' : 'rebase-apply'
     const read = (f: string) => { try { return readFileSync(join(dir, base, f), 'utf8').trim() } catch { return '' } }
@@ -128,9 +129,9 @@ export function operation(dir: string): { operation: RepoOperation; operationSte
     const op = base === 'rebase-apply' && has('rebase-apply/applying') ? 'am' : 'rebase'
     return { operation: op, operationStep: step && end ? `${step}/${end}` : undefined }
   }
-  if (has('MERGE_HEAD')) return { operation: 'merge' }
-  if (has('CHERRY_PICK_HEAD')) return { operation: 'cherry-pick' }
-  if (has('REVERT_HEAD')) return { operation: 'revert' }
+  if (has('MERGE_HEAD')) return { operation: 'merge', operationHead: head('MERGE_HEAD') }
+  if (has('CHERRY_PICK_HEAD')) return { operation: 'cherry-pick', operationHead: head('CHERRY_PICK_HEAD') }
+  if (has('REVERT_HEAD')) return { operation: 'revert', operationHead: head('REVERT_HEAD') }
   // Several commits picked or reverted, one stopped on a conflict and was then committed by hand:
   // CHERRY_PICK_HEAD is gone, but the rest still waits in the sequencer for "--continue".
   const todo = (() => { try { return readFileSync(join(dir, 'sequencer', 'todo'), 'utf8') } catch { return '' } })()

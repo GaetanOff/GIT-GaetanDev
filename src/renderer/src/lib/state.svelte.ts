@@ -1,6 +1,7 @@
 import type { Commit, FileChange, LogQuery, Progress, Refs, RepoEntry, RepoStatus, RestorePoint, SearchMode, Settings } from '@shared/types'
 import { DEFAULT_SETTINGS } from '@shared/types'
 import { api, asError, on, type AppError } from './api'
+import type { Draft } from './drafts'
 import { GraphBuilder, type GraphRow } from './graph'
 import { choose, closeDialog, dialogs, openDialog, toast } from './ui.svelte'
 
@@ -80,7 +81,7 @@ class AppState {
   compareTarget = $state<CompareTarget | null>(null)
 
   /* Commit drafts survive repo switches */
-  drafts = $state<Record<string, { summary: string; body: string; amend: boolean; coAuthors?: string[] }>>({})
+  drafts = $state<Record<string, Draft>>({})
 
   private graphBuilder = new GraphBuilder()
   private statusRuns = new Map<string, { again: boolean; done: Promise<void> }>()

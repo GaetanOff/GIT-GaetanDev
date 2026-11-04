@@ -1,6 +1,7 @@
 <script lang="ts">
   import Icon from './Icon.svelte'
   import { api } from '@/lib/api'
+  import { continueMessage } from '@/lib/drafts'
   import { app } from '@/lib/state.svelte'
   import { confirm } from '@/lib/ui.svelte'
 
@@ -27,19 +28,20 @@
   }
 
   /**
-   * A merge, cherry-pick or revert is committed with the message of the commit box, prefilled
-   * with git's and maybe corrected there. Used, the message is cleared: left in the box, it
-   * became the title of the next ordinary commit.
+   * A merge, cherry-pick or revert is committed with the message of the commit box when that is
+   * git's prepared message for this very commit, maybe corrected there (see CommitBox). Any other
+   * text (a draft written before the pull, the message an undo put back, the previous pick's) is
+   * left alone, and git uses its own. Used, the message is cleared: left in the box, it became
+   * the title of the next ordinary commit.
    */
   async function proceed() {
     const repo = app.repo!.path
     const d = app.draft
-    const usesMessage = (op === 'merge' || op === 'cherry-pick' || op === 'revert') && !!d.summary.trim()
-    const message = usesMessage ? [d.summary.trim(), d.body.trim()].filter(Boolean).join('\n\n') : undefined
+    const message = continueMessage(d, app.status)
     const done = await app.run('Continuing', () => api['git:continue'](repo, message).then(() => true))
-    if (done && usesMessage) {
-      d.summary = ''
-      d.body = ''
+    if (done && message !== undefined) {
+      Object.assign(d, { summary: '', body: '', prefill: undefined })
+      app.saveDrafts()
     }
   }
 

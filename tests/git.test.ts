@@ -1020,6 +1020,18 @@ describe('operations in progress', () => {
     expect(indexRefreshDue(repo)).toBe(false)
   })
 
+  it('names the commit a cherry-pick in progress brings in, which tells one pick from the next', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'base\n' })
+    sh(repo, 'checkout', '-q', '-b', 'other')
+    commit(repo, 'theirs', { 'a.txt': 'theirs\n' })
+    const picked = sh(repo, 'rev-parse', 'HEAD')
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'ours', { 'a.txt': 'ours\n' })
+    await git(repo, ['cherry-pick', picked], { okCodes: [1] })
+    expect(await status(repo)).toMatchObject({ operation: 'cherry-pick', operationHead: picked })
+  })
+
   it('lists untracked files unless the repository says not to', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a.txt': 'a\n' })
