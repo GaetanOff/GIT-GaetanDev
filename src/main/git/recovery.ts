@@ -36,7 +36,7 @@ async function readJournal(repo: string): Promise<Pruned[]> {
 }
 
 async function remoteRefs(repo: string): Promise<Map<string, string>> {
-  const out = await gitOut(repo, ['for-each-ref', '--format=%(refname:short) %(objectname)', 'refs/remotes'])
+  const out = await gitOut(repo, ['for-each-ref', '--format=%(refname:lstrip=2) %(objectname)', 'refs/remotes'])
   return new Map(out.split('\n').filter(Boolean).map(l => l.split(' ') as [string, string]).filter(([ref]) => !ref.endsWith('/HEAD')))
 }
 

@@ -210,6 +210,22 @@ describe('commit', () => {
   })
 })
 
+describe('refs', () => {
+  it('reads a name a branch and a tag share as it is, and pushes the branch under it', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base')
+    sh(repo, 'tag', 'release')
+    sh(repo, 'checkout', '-q', '-b', 'release')
+    const bare = join(repo, '..', 'remote.git')
+    execFileSync('git', ['init', '-q', '--bare', bare])
+    sh(repo, 'remote', 'add', 'origin', bare)
+    expect((await refs(repo)).tags.map(t => t.name)).toEqual(['release'])
+    await ops.push(repo, {}, () => undefined)
+    expect(execFileSync('git', ['-C', bare, 'for-each-ref', '--format=%(refname)', 'refs/heads'], { encoding: 'utf8' }).trim()).toBe('refs/heads/release')
+    expect((await refs(repo)).branches.find(b => b.name === 'release')?.upstream).toBe('origin/release')
+  })
+})
+
 describe('edit history', () => {
   it('refuses a plan made before HEAD moved, so a new commit is never dropped', async () => {
     const repo = makeRepo()

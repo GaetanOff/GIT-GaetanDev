@@ -17,7 +17,7 @@ export async function extras(repo: string): Promise<Pick<Refs, 'submodules' | 'w
 }
 
 async function listBranches(repo: string): Promise<Branch[]> {
-  const fmt = ['%(refname)', '%(objectname)', '%(upstream:short)', '%(upstream:track,nobracket)', '%(committerdate:unix)', '%(HEAD)', '%(contents:subject)'].join(US)
+  const fmt = ['%(refname)', '%(objectname)', '%(upstream:lstrip=2)', '%(upstream:track,nobracket)', '%(committerdate:unix)', '%(HEAD)', '%(contents:subject)'].join(US)
   const out = await gitOut(repo, ['for-each-ref', `--format=${fmt}`, '--sort=-committerdate', 'refs/heads', 'refs/remotes'])
   const branches: Branch[] = []
   for (const line of out.split('\n')) {
@@ -47,7 +47,7 @@ async function listBranches(repo: string): Promise<Branch[]> {
 }
 
 async function listTags(repo: string): Promise<Tag[]> {
-  const fmt = ['%(refname:short)', '%(*objectname)', '%(objectname)', '%(creatordate:unix)', '%(contents:subject)'].join(US)
+  const fmt = ['%(refname:lstrip=2)', '%(*objectname)', '%(objectname)', '%(creatordate:unix)', '%(contents:subject)'].join(US)
   const out = await gitOut(repo, ['for-each-ref', `--format=${fmt}`, '--sort=-creatordate', 'refs/tags'])
   return out.split('\n').filter(Boolean).map(line => {
     const [name, peeled, sha, date, subject] = line.split(US)
@@ -87,14 +87,22 @@ async function listStashes(repo: string): Promise<Stash[]> {
   })
 }
 
+/**
+ * Ref names come in full and lose only their prefix. Git's short form
+ * (`--short`, `:short`, `--abbrev-ref`) keeps more when a name is
+ * ambiguous: with a branch and a tag "release", HEAD's branch reads
+ * "heads/release", and pushing it published refs/heads/heads/release.
+ */
+const strip = (ref: string) => ref.replace(/^refs\/(?:heads|remotes|tags)\//, '')
+
 export async function currentBranch(repo: string): Promise<string | null> {
-  const r = await git(repo, ['symbolic-ref', '--quiet', '--short', 'HEAD'], { okCodes: [1, 128] })
-  return r.code === 0 ? r.stdout.trim() : null
+  const r = await git(repo, ['symbolic-ref', '--quiet', 'HEAD'], { okCodes: [1, 128] })
+  return r.code === 0 ? strip(r.stdout.trim()) : null
 }
 
 export async function upstreamOf(repo: string, branch: string): Promise<string | null> {
-  const r = await git(repo, ['rev-parse', '--abbrev-ref', `${branch}@{upstream}`], { okCodes: [128] })
-  return r.code === 0 ? r.stdout.trim() : null
+  const r = await git(repo, ['rev-parse', '--symbolic-full-name', `refs/heads/${branch}@{upstream}`], { okCodes: [128] })
+  return r.code === 0 && r.stdout.trim() ? strip(r.stdout.trim()) : null
 }
 
 export async function defaultRemote(repo: string): Promise<string | null> {
@@ -104,8 +112,8 @@ export async function defaultRemote(repo: string): Promise<string | null> {
 
 /** The branch PRs usually target: the remote's HEAD, else main/master. */
 export async function defaultBranch(repo: string, remote: string): Promise<string> {
-  const r = await git(repo, ['symbolic-ref', '--quiet', '--short', `refs/remotes/${remote}/HEAD`], { okCodes: [1, 128] })
-  if (r.code === 0) return r.stdout.trim().replace(`${remote}/`, '')
+  const r = await git(repo, ['symbolic-ref', '--quiet', `refs/remotes/${remote}/HEAD`], { okCodes: [1, 128] })
+  if (r.code === 0) return r.stdout.trim().replace(`refs/remotes/${remote}/`, '')
   for (const name of ['main', 'master', 'develop']) {
     const c = await git(repo, ['rev-parse', '--verify', '-q', `refs/remotes/${remote}/${name}`], { okCodes: [1] })
     if (c.code === 0) return name

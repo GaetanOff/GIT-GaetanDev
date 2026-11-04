@@ -32,7 +32,7 @@ export async function operations(repo: string, limit = 150): Promise<RepoOperati
   const [list, branch, locals, remotes] = await Promise.all([
     entries(repo, limit * 4),
     currentBranch(repo),
-    gitOut(repo, ['for-each-ref', '--format=%(refname:short)', 'refs/heads']).then(s => new Set(s.split('\n').filter(Boolean))),
+    gitOut(repo, ['for-each-ref', '--format=%(refname:lstrip=2)', 'refs/heads']).then(s => new Set(s.split('\n').filter(Boolean))),
     gitOut(repo, ['remote']).then(s => s.split('\n').filter(Boolean)),
   ])
   // A name that is neither a hash nor a remote branch was a local branch, even if deleted since.
@@ -117,7 +117,7 @@ export async function deletedBranches(repo: string): Promise<DeletedBranch[]> {
   const [list, branch, locals, remotes] = await Promise.all([
     entries(repo, 3000),
     currentBranch(repo),
-    gitOut(repo, ['for-each-ref', '--format=%(refname:short)', 'refs/heads']).then(s => new Set(s.split('\n').filter(Boolean))),
+    gitOut(repo, ['for-each-ref', '--format=%(refname:lstrip=2)', 'refs/heads']).then(s => new Set(s.split('\n').filter(Boolean))),
     gitOut(repo, ['remote']).then(s => s.split('\n').filter(Boolean)),
   ])
   const looksLikeBranch = (n: string) =>
