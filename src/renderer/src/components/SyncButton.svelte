@@ -10,7 +10,7 @@
     return () => clearInterval(t)
   })
 
-  const remote = $derived(app.status?.upstream?.split('/')[0] ?? app.refs.remotes[0]?.name ?? 'origin')
+  const remote = $derived((app.status?.upstream && app.remoteBranches.find(b => b.name === app.status!.upstream)?.remoteName) ?? app.status?.upstream?.split('/')[0] ?? app.refs.remotes[0]?.name ?? 'origin')
   const hasRemote = $derived(app.refs.remotes.length > 0)
 
   const action = $derived.by((): { icon: IconName; title: string; sub: string } => {

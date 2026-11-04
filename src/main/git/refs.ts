@@ -16,9 +16,21 @@ export async function extras(repo: string): Promise<Pick<Refs, 'submodules' | 'w
   return { submodules: subs, worktrees: trees, lfs: lfsInfo }
 }
 
+/**
+ * The remote a remote-tracking branch belongs to: the longest remote name it
+ * starts with. A remote may hold a slash ("team/upstream"), and cutting at
+ * the first one named a remote "team" and a branch "upstream/main".
+ */
+export function remoteOf(short: string, remotes: string[]): string {
+  return [...remotes].sort((a, b) => b.length - a.length).find(r => short.startsWith(`${r}/`)) ?? short.split('/')[0]
+}
+
 async function listBranches(repo: string): Promise<Branch[]> {
   const fmt = ['%(refname)', '%(objectname)', '%(upstream:lstrip=2)', '%(upstream:track,nobracket)', '%(committerdate:unix)', '%(HEAD)', '%(contents:subject)'].join(US)
-  const out = await gitOut(repo, ['for-each-ref', `--format=${fmt}`, '--sort=-committerdate', 'refs/heads', 'refs/remotes'])
+  const [out, remoteNames] = await Promise.all([
+    gitOut(repo, ['for-each-ref', `--format=${fmt}`, '--sort=-committerdate', 'refs/heads', 'refs/remotes']),
+    gitOut(repo, ['remote']).then(s => s.split('\n').map(r => r.trim()).filter(Boolean)),
+  ])
   const branches: Branch[] = []
   for (const line of out.split('\n')) {
     if (!line) continue
@@ -32,7 +44,7 @@ async function listBranches(repo: string): Promise<Branch[]> {
       name: short,
       fullRef: ref,
       remote,
-      remoteName: remote ? short.split('/')[0] : undefined,
+      remoteName: remote ? remoteOf(short, remoteNames) : undefined,
       sha,
       upstream: upstream || undefined,
       ahead: ahead ? +ahead[1] : 0,

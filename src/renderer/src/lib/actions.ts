@@ -55,8 +55,9 @@ export async function rebaseOnto(ref: string, name = ref): Promise<void> {
 export async function deleteBranch(b: Branch): Promise<void> {
   if (b.remote) {
     const path = repo()
-    const [remote, ...rest] = b.name.split('/')
-    const branch = rest.join('/')
+    // The remote's own name, which may hold a slash ("team/upstream"), then the branch on it.
+    const remote = b.remoteName ?? b.name.split('/')[0]
+    const branch = b.name.slice(remote.length + 1)
     const ok = await confirm({
       title: 'Delete remote branch?',
       message: `“${branch}” will be deleted from ${remote} for everyone.`,
@@ -136,7 +137,7 @@ export async function renameBranch(b: Branch): Promise<void> {
 export function branchMenu(b: Branch): MenuItem[] {
   const current = app.status?.branch
   const isCurrent = b.current
-  const short = b.remote ? b.name.split('/').slice(1).join('/') : b.name
+  const short = b.remote && b.remoteName ? b.name.slice(b.remoteName.length + 1) : b.name
   const items: MenuItem[] = [
     { label: isCurrent ? 'Current branch' : `Switch to ${b.remote ? short : b.name}`, icon: 'branch', disabled: isCurrent, run: () => app.checkout(b.name) },
     { label: 'New branch from here…', icon: 'plus', run: () => openDialog({ kind: 'branch', from: b.fullRef, fromLabel: b.name }) },

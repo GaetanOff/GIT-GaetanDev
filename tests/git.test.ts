@@ -360,6 +360,21 @@ describe('refs', () => {
     expect(execFileSync('git', ['-C', bare, 'log', '-1', '--format=%s', 'release'], { encoding: 'utf8' }).trim()).toBe('second')
   })
 
+  it('reads and switches to a branch of a remote whose name holds a slash', async () => {
+    const source = makeRepo()
+    commit(source, 'base')
+    sh(source, 'checkout', '-q', '-b', 'feature')
+    commit(source, 'work')
+    const repo = makeRepo()
+    sh(repo, 'remote', 'add', 'team/upstream', source)
+    sh(repo, 'fetch', '-q', 'team/upstream')
+    const b = (await refs(repo)).branches.find(x => x.name === 'team/upstream/feature')
+    expect(b).toMatchObject({ remote: true, remoteName: 'team/upstream' })
+    await ops.checkout(repo, 'team/upstream/feature')
+    expect(sh(repo, 'symbolic-ref', '--short', 'HEAD')).toBe('feature')
+    expect(await upstreamOf(repo, 'feature')).toBe('team/upstream/feature')
+  })
+
   it('pushes a renamed branch under its new name', async () => {
     const bare = join(makeRepo(), '..', 'remote.git')
     execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare])

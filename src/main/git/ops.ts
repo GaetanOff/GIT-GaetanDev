@@ -6,7 +6,7 @@ import { shell } from 'electron'
 import { selectionFingerprint, type Author, type DiffOptions, type FileChange, type FileDiff, type LineSelection, type Progress, type PullMode, type ResetMode, type RepoStatus } from '@shared/types'
 import { applyPatch, buildPartialPatch, diff } from './diff'
 import { assertRefName, git, gitOut, GitError, literal } from './exec'
-import { currentBranch, defaultRemote, upstreamOf } from './refs'
+import { currentBranch, defaultRemote, remoteOf, upstreamOf } from './refs'
 import { gitDir, status } from './status'
 import { withPruneJournal } from './recovery'
 
@@ -369,10 +369,12 @@ async function switchTo(repo: string, branch: string): Promise<void> {
   if (isLocal) return void (await git(repo, ['switch', branch]))
   const isRemote = await git(repo, ['rev-parse', '--verify', '-q', `refs/remotes/${branch}`], { okCodes: [1] }).then(r => r.code === 0)
   if (isRemote) {
-    const local = branch.split('/').slice(1).join('/')
+    // "team/upstream/main" is main on the remote "team/upstream", not upstream/main on "team".
+    const remotes = (await gitOut(repo, ['remote'])).split('\n').map(r => r.trim()).filter(Boolean)
+    const local = branch.slice(remoteOf(branch, remotes).length + 1)
     const exists = await git(repo, ['rev-parse', '--verify', '-q', `refs/heads/${local}`], { okCodes: [1] }).then(r => r.code === 0)
     if (exists) await git(repo, ['switch', local])
-    else await git(repo, ['switch', '--track', branch])
+    else await git(repo, ['switch', '-c', local, '--track', `refs/remotes/${branch}`])
     return
   }
   await git(repo, ['switch', branch])

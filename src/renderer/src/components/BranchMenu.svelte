@@ -21,7 +21,7 @@
   const candidates = $derived.by(() => {
     const locals = new Set(app.localBranches.map(b => b.name))
     const tracked = new Set(app.localBranches.map(b => b.upstream).filter(Boolean))
-    const remotes = app.remoteBranches.filter(b => !tracked.has(b.name) && !locals.has(b.name.split('/').slice(1).join('/')))
+    const remotes = app.remoteBranches.filter(b => !tracked.has(b.name) && !locals.has(b.remoteName ? b.name.slice(b.remoteName.length + 1) : b.name))
     return [...app.localBranches, ...remotes]
   })
   const results = $derived(rank(candidates, query, b => b.name, 300))
