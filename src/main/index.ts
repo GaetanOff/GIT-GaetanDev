@@ -73,6 +73,9 @@ function start(): void {
     // The app needs no camera, microphone, location or notifications: refuse every request.
     session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
     session.defaultSession.setPermissionCheckHandler(() => false)
+    // Nor any download: the app downloads nothing through its pages (updates go another way), and a
+    // compromised page could otherwise put a "Save as" for an .exe in front of the user.
+    session.defaultSession.on('will-download', e => e.preventDefault())
     askpass()
     serveBundle()
     registerIpc(watcher)
