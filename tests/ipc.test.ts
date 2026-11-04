@@ -73,15 +73,26 @@ describe('destinations', () => {
     const home = process.platform === 'win32' ? 'C:\\Users\\me' : '/home/me'
     const sep = process.platform === 'win32' ? '\\' : '/'
     showMessageBox.mockResolvedValueOnce({ response: 1 })
-    await expect(confirmDestination(`${home}${sep}.config${sep}git`, 'Create?', 'Create', `${home}${sep}.config${sep}git`)).rejects.toMatchObject({ code: 'CANCELLED' })
+    await expect(confirmDestination(`${home}${sep}.config${sep}git`, 'Create?', 'Create')).rejects.toMatchObject({ code: 'CANCELLED' })
     expect(showMessageBox).toHaveBeenCalledTimes(1)
     // Agreed once for a folder: what goes inside it later asks nothing more.
     showMessageBox.mockResolvedValueOnce({ response: 0 })
-    await confirmDestination(`${home}${sep}repos${sep}a`, 'Clone?', 'Clone', `${home}${sep}repos`)
-    await confirmDestination(`${home}${sep}repos${sep}b`, 'Clone?', 'Clone', `${home}${sep}repos`)
+    await confirmDestination(`${home}${sep}wt-x`, 'Create?', 'Create')
+    await confirmDestination(`${home}${sep}wt-x${sep}inner`, 'Create?', 'Create')
     expect(showMessageBox).toHaveBeenCalledTimes(2)
+    // But only inside it: not the folder around it, here the home folder with git's own config.
     showMessageBox.mockResolvedValueOnce({ response: 1 })
-    await expect(confirmDestination(`${home}${sep}repos-evil${sep}c`, 'Clone?', 'Clone', `${home}${sep}repos-evil`)).rejects.toThrow(/Cancelled/)
+    await expect(confirmDestination(`${home}${sep}.config${sep}git`, 'Create?', 'Create')).rejects.toThrow(/Cancelled/)
+    expect(showMessageBox).toHaveBeenCalledTimes(3)
+  })
+
+  it('clones into a folder of one name, inside the parent shown', () => {
+    const parent = process.platform === 'win32' ? 'C:\\Users\\me\\src' : '/home/me/src'
+    for (const name of ['C:\\Users\\me\\AppData\\Startup\\x', '/etc/x', '..\\x', 'a/b', '..', '.', '', 'x:stream']) {
+      expect(() => checkArgs('repo:clone', ['https://h/r.git', parent, name]), name).toThrow(/not a valid folder name/)
+    }
+    expect(() => checkArgs('repo:clone', ['https://h/r.git', 'relative', 'r'])).toThrow(/Invalid clone/)
+    expect(() => checkArgs('repo:clone', ['https://h/r.git', parent, 'my-repo'])).not.toThrow()
   })
 })
 

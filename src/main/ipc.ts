@@ -24,7 +24,7 @@ import { logDir } from './log'
 import { detectProvider, providerUrl } from './provider'
 import { installUpdate, updateReady } from './updater'
 import { githubDesktopRepos } from './importers'
-import { addRepoEntry, flush, foldPath, getState, isInsideRegistered, isRegistered, removeRepo, repoById, save, stateReset, stateUnreadable, updateSettings, upsertRepo } from './store'
+import { addRepoEntry, flush, foldPath, getState, isInsideRegistered, isRegistered, isUnc, removeRepo, repoById, save, stateReset, stateUnreadable, updateSettings, upsertRepo } from './store'
 import { gitFolders, type RepoWatcher } from './watcher'
 
 type Handlers = { [K in ApiChannel]: (...args: Parameters<Api[K]>) => ReturnType<Api[K]> }
@@ -41,6 +41,12 @@ const progress = (p: Progress | null) => send('progress', p)
  * becomes one only once the user says so in a dialog of the main process.
  */
 async function addRepo(path: string) {
+  // A network folder the user neither picked, nor launched the app on, nor added before: looking it
+  // up sends the user's NTLM hash to that host, so the user says so first (a compromised page could
+  // name \\attacker\share).
+  if (isUnc(path) && !inChosen(path) && !launched.has(folderKey(path)) && !isRegistered(path) && !isInsideRegistered(path)) {
+    if (!(await ask('Open this network folder?', path, 'Open'))) throw new GitError('Cancelled.', 'CANCELLED')
+  }
   if (!existsSync(path)) throw new GitError('This folder does not exist.')
   if (await isRepo(path)) return upsertRepo(await topLevel(path))
   if (!(await ask('This folder is not a Git repository yet. Create one in it?', path, 'Create repository'))) {
@@ -84,11 +90,13 @@ const inChosen = (path: string) => {
  * one confirmed in a dialog of the main process, which a compromised page
  * can neither show nor answer. Without it, a page could create a repository
  * in ~/.config/git or the Startup folder and fill it with files of its own.
+ * What is remembered is the folder shown, not its parent: agreeing to
+ * ~\wt-x let anything be created anywhere in the home folder afterwards.
  */
-export async function confirmDestination(path: string, message: string, button: string, remember: string): Promise<void> {
+export async function confirmDestination(path: string, message: string, button: string): Promise<void> {
   if (inChosen(path)) return
   if (!(await ask(message, path, button))) throw new GitError('Cancelled: nothing was created.', 'CANCELLED')
-  chosenFolders.add(folderKey(remember))
+  chosenFolders.add(folderKey(path))
 }
 
 /** Stops the clone under way, if any: a large one or a stalled network no longer leaves only waiting. */
@@ -96,8 +104,11 @@ let cloneAbort: AbortController | null = null
 
 /** A folder the app was launched with; the renderer opens it instead of the last repo. */
 let launchPath: string | null = null
+/** Folders the system launched the app on (Explorer's "Open in", a second launch): the user's choice. */
+const launched = new Set<string>()
 export function setLaunchPath(path: string | null): void {
   launchPath = path
+  if (path) launched.add(folderKey(path))
 }
 
 /** Whether the page has read its start state (and so listens for open:path). */
@@ -105,6 +116,7 @@ let stateRead = false
 
 /** A folder from a second launch: sent to the page, or kept for it while it is still starting. */
 export function openFolder(path: string): void {
+  launched.add(folderKey(path))
   if (stateRead) send('open:path', path)
   else launchPath = path
 }
@@ -164,15 +176,16 @@ export function registerIpc(watcher: RepoWatcher): void {
       return result
     },
     'repo:init': async path => {
-      await confirmDestination(path, 'This folder is not a Git repository yet. Create one in it?', 'Create repository', path)
+      await confirmDestination(path, 'This folder is not a Git repository yet. Create one in it?', 'Create repository')
       mkdirSync(path, { recursive: true })
       await git(path, ['init', '-b', 'main'])
       return upsertRepo(path)
     },
     'repo:clone': async (url, parent, name) => {
       const target = join(parent, name)
+      // Asked before the disk is touched: looking up "\\host\share" sends the user's NTLM hash there.
+      await confirmDestination(target, 'Clone the repository into this folder?', 'Clone')
       if (existsSync(target)) throw new GitError(`"${target}" already exists.`)
-      await confirmDestination(target, 'Clone the repository into this folder?', 'Clone', parent)
       mkdirSync(parent, { recursive: true })
       const abort = new AbortController()
       cloneAbort = abort
@@ -281,7 +294,7 @@ export function registerIpc(watcher: RepoWatcher): void {
       const name = (p: string) => (process.platform === 'win32' || process.platform === 'darwin' ? basename(p).toLowerCase() : basename(p))
       const suggested = folderKey(dirname(path)) === folderKey(dirname(repo)) && name(path).startsWith(`${name(repo)}-`)
       if (!suggested) {
-        await confirmDestination(path, 'Create the worktree in this folder?', 'Create worktree', dirname(path))
+        await confirmDestination(path, 'Create the worktree in this folder?', 'Create worktree')
       }
       return worktreeAdd(repo, path, branch, create, from)
     },
@@ -531,6 +544,15 @@ export function checkArgs(channel: string, args: unknown[]): void {
   }
   const choice = CHOICES[channel]
   if (choice && !choice[1].includes(args[choice[0]] as string)) throw new GitError(`"${String(args[choice[0]])}" is not one of ${choice[1].join(', ')}.`)
+  // The new folder's name, one level inside the parent shown in the confirmation: an absolute name
+  // ("C:\Users\me\AppData\…") or one with separators made git clone somewhere else entirely.
+  if (channel === 'repo:clone') {
+    const [url, parent, name] = args
+    if (typeof url !== 'string' || typeof parent !== 'string' || !isAbsolute(parent)) throw new GitError('Invalid clone.')
+    if (typeof name !== 'string' || !name.trim() || /[\\/:\0]/.test(name) || name === '.' || name === '..') {
+      throw new GitError(`"${String(name)}" is not a valid folder name.`)
+    }
+  }
   if (channel === 'repo:pin' && typeof args[1] !== 'boolean') throw new GitError('Invalid pin.')
   if (channel === 'askpass:respond' && (typeof args[0] !== 'string' || (args[1] !== null && typeof args[1] !== 'string'))) throw new GitError('Invalid answer.')
   for (const r of refs) {
