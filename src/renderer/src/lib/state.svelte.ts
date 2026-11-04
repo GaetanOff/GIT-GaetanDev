@@ -84,6 +84,7 @@ class AppState {
   private busyId = 0
   private fetchTimer: ReturnType<typeof setInterval> | null = null
   private historyToken = 0
+  private refsToken = 0
   private openToken = 0
   private memory = new Map<string, TabMemory>()
   private fsmonitorAsked = new Set<string>()
@@ -424,16 +425,23 @@ class AppState {
     return run.done
   }
 
+  /**
+   * Watcher events, window focus, finished operations and fetches overlap:
+   * only the newest call's answers are applied, so an older one arriving last
+   * never puts back a branch, a count or a current branch that has changed.
+   */
   async refreshRefs(): Promise<void> {
     const repo = this.repo
     if (!repo) return
+    const t = ++this.refsToken
+    const current = () => t === this.refsToken && this.repo?.id === repo.id
     try {
       const r = await api['git:refs'](repo.path)
-      if (this.repo?.id !== repo.id) return
+      if (!current()) return
       // Keep the previous extras until fresh ones arrive, so sections do not flicker.
       this.refs = { ...r, submodules: this.refs.submodules, worktrees: this.refs.worktrees, lfs: this.refs.lfs }
       api['git:extras'](repo.path).then(x => {
-        if (this.repo?.id === repo.id) this.refs = { ...this.refs, ...x }
+        if (current()) this.refs = { ...this.refs, ...x }
       }).catch(() => undefined)
     } catch { /* status reports the error */ }
   }
