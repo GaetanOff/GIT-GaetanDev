@@ -12,6 +12,8 @@ export interface CompareTarget { base: string; head: string; threeDot: boolean; 
 export type Area = 'staged' | 'unstaged' | 'conflicted'
 
 const PAGE = 400
+/** How deep a refresh reloads a history the user scrolled through. */
+const REFRESH_DEPTH = 5000
 
 const emptyRefs = (): Refs => ({
   branches: [], tags: [], remotes: [], stashes: [], submodules: [], worktrees: [], lfs: { used: false, installed: true },
@@ -61,6 +63,8 @@ class AppState {
   graph = $state.raw<GraphRow[]>([])
   historyDone = $state(false)
   historyLoading = $state(false)
+  /** Refs moved while the history was not shown: it reloads once it is. */
+  historyStale = $state(false)
   historySearch = $state('')
   historySearchMode = $state<SearchMode>('message')
   selectedCommit = $state<string | null>(null)
@@ -444,7 +448,9 @@ class AppState {
     const head = this.headKey()
     if (head !== this.lastHead) {
       this.lastHead = head
-      this.reloadHistory(true)
+      // Out of sight, the history reloads when it is shown again (HistoryView), not on every fetch.
+      if (this.view === 'history') this.reloadHistory(true)
+      else this.historyStale = true
     }
   }
 
@@ -473,22 +479,29 @@ class AppState {
 
   /* ─── History ─────────────────────────────────────────────────────────────── */
 
+  /**
+   * `keepSelection`: a refresh of the same list (refs moved, a fetch). It keeps
+   * the depth scrolled to (up to REFRESH_DEPTH) and the selected commit, even
+   * one that is no longer in the list, instead of jumping back to the top.
+   */
   async reloadHistory(keepSelection = false): Promise<void> {
     const token = ++this.historyToken
+    this.historyStale = false
     this.graphBuilder.reset(!!this.historySearch)
     this.historyDone = false
     const repo = this.repo
     if (!repo) return
     this.historyLoading = true
+    const limit = keepSelection ? Math.min(Math.max(PAGE, this.commits.length), REFRESH_DEPTH) : PAGE
     try {
       const commits = await api['git:log'](repo.path, {
-        scope: this.settings.historyScope, skip: 0, limit: PAGE, search: this.historySearch || undefined, searchMode: this.historySearchMode,
+        scope: this.settings.historyScope, skip: 0, limit, search: this.historySearch || undefined, searchMode: this.historySearchMode,
       })
       if (token !== this.historyToken) return
       this.commits = commits
       this.graph = this.graphBuilder.add(commits)
-      this.historyDone = commits.length < PAGE
-      if (!keepSelection || !commits.some(c => c.sha === this.selectedCommit)) this.selectedCommit = commits[0]?.sha ?? null
+      this.historyDone = commits.length < limit
+      if (!keepSelection || !this.selectedCommit) this.selectedCommit = commits[0]?.sha ?? null
     } catch (e) {
       if (token === this.historyToken) toast('error', asError(e).message)
     } finally {

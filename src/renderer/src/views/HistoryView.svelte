@@ -26,6 +26,11 @@
   const selectedIndex = $derived(app.commits.findIndex(c => c.sha === app.selectedCommit))
   const headSha = $derived(app.status?.head)
 
+  // Refs moved while another view was shown: catch up now, keeping the depth and the selection.
+  $effect(() => {
+    if (app.historyStale) app.reloadHistory(true)
+  })
+
   // Reveal a commit selected from elsewhere (a branch or tag click in the sidebar).
   $effect(() => {
     if (selectedIndex >= 0) list?.reveal(selectedIndex)
