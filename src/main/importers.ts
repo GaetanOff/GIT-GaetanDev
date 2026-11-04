@@ -43,7 +43,8 @@ export async function githubDesktopRepos(): Promise<ForeignRepo[]> {
   // The page must be on the file:// origin, the one GitHub Desktop's database belongs to.
   cpSync(source, join(dir, 'IndexedDB'), { recursive: true, filter: p => basename(p) !== 'LOCK' })
   writeFileSync(join(dir, 'blank.html'), '<!doctype html><meta charset="utf-8"><title>import</title>')
-  const win = new BrowserWindow({ show: false, webPreferences: { session: session.fromPath(dir), sandbox: true, contextIsolation: true } })
+  const ses = session.fromPath(dir)
+  const win = new BrowserWindow({ show: false, webPreferences: { session: ses, sandbox: true, contextIsolation: true } })
   try {
     await win.loadFile(join(dir, 'blank.html'))
     const rows = (await win.webContents.executeJavaScript(`(async () => {
@@ -64,7 +65,11 @@ export async function githubDesktopRepos(): Promise<ForeignRepo[]> {
     throw new GitError(`Could not read GitHub Desktop's repository list: ${(e as Error).message}`)
   } finally {
     win.destroy()
-    // The session usually still holds the copy open on Windows: sweepImportCopies removes it later.
-    try { rmSync(dir, { recursive: true, force: true }) } catch { /* swept later */ }
+    // Electron keeps a session for the app's lifetime, and this one held the copy's database open:
+    // each import kept its files (and the session's) until the app quit. Its storage is cleared,
+    // which closes them, so the copy goes now; sweepImportCopies still catches one left held.
+    await ses.clearStorageData().catch(() => undefined)
+    await ses.closeAllConnections().catch(() => undefined)
+    try { rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 200 }) } catch { /* swept later */ }
   }
 }
