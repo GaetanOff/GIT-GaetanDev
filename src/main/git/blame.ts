@@ -41,6 +41,27 @@ export function parseFileLog(stdout: string, path: string): FileCommit[] {
   return out
 }
 
+const ESCAPES: Record<string, number> = { a: 7, b: 8, t: 9, n: 10, v: 11, f: 12, r: 13, '"': 34, '\\': 92 }
+
+/**
+ * A path as git prints it in blame's porcelain output, which has no -z: a
+ * name holding a quote, a backslash or a control character comes C-quoted
+ * ("a\"b", "\303\251" when core.quotepath is on). Anything else is as is.
+ */
+export function unquote(path: string): string {
+  if (path.length < 2 || !path.startsWith('"') || !path.endsWith('"')) return path
+  const bytes: number[] = []
+  const body = Buffer.from(path.slice(1, -1), 'utf8')
+  for (let i = 0; i < body.length; i++) {
+    if (body[i] !== 0x5c) { bytes.push(body[i]); continue }
+    const next = String.fromCharCode(body[i + 1])
+    const octal = /^[0-7]{3}$/.test(body.subarray(i + 1, i + 4).toString('latin1'))
+    if (octal) { bytes.push(parseInt(body.subarray(i + 1, i + 4).toString('latin1'), 8)); i += 3 }
+    else { bytes.push(ESCAPES[next] ?? body[i + 1]); i += 1 }
+  }
+  return Buffer.from(bytes).toString('utf8')
+}
+
 function splitLines(buf: Buffer): Buffer[] {
   const lines: Buffer[] = []
   let start = 0
@@ -93,7 +114,7 @@ export async function blame(repo: string, path: string, rev: string | null): Pro
       case 'summary': current.summary = current.uncommitted ? 'Uncommitted changes' : value; break
       case 'previous': {
         const i = value.indexOf(' ')
-        current.previous = { sha: value.slice(0, i), path: value.slice(i + 1) }
+        current.previous = { sha: value.slice(0, i), path: unquote(value.slice(i + 1)) }
         break
       }
     }

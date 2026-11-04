@@ -24,7 +24,7 @@ const { diff } = await import('../src/main/git/diff')
 const { conflict, resolveContent } = await import('../src/main/git/conflict')
 const { refs } = await import('../src/main/git/refs')
 const { log } = await import('../src/main/git/log')
-const { fileLog, parseFileLog } = await import('../src/main/git/blame')
+const { fileLog, parseFileLog, unquote } = await import('../src/main/git/blame')
 const { rebasePlan, rebaseRun } = await import('../src/main/git/rebase')
 const { git, assertRefName, gitVersion, readGitVersion, stallGuards } = await import('../src/main/git/exec')
 
@@ -457,6 +457,12 @@ describe('file history', () => {
     expect(commits.map(c => [c.subject, c.status, c.path, c.oldPath])).toEqual([
       ['three', 'M', 'b c.txt', undefined], ['two', 'R', 'b c.txt', 'a.txt'], ['one', 'A', 'a.txt', undefined],
     ])
+  })
+
+  it('unquotes the C-quoted paths of blame output', () => {
+    expect(unquote('plain name.txt')).toBe('plain name.txt')
+    expect(unquote('"a\\"b\\\\c\\td.txt"')).toBe('a"b\\c\td.txt')
+    expect(unquote('"caf\\303\\251.txt"')).toBe('café.txt')
   })
 
   // Git C-quotes such a name ("a\tb") unless -z; Windows file names cannot hold a tab, so the output is crafted.
