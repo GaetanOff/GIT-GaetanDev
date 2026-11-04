@@ -2,7 +2,7 @@ import type { Commit, FileChange, LogQuery, Progress, Refs, RepoEntry, RepoStatu
 import { DEFAULT_SETTINGS } from '@shared/types'
 import { api, asError, on, type AppError } from './api'
 import { GraphBuilder, type GraphRow } from './graph'
-import { choose, closeDialog, confirm, dialogs, openDialog, toast } from './ui.svelte'
+import { choose, closeDialog, dialogs, openDialog, toast } from './ui.svelte'
 
 export type View = 'changes' | 'history' | 'stash' | 'file' | 'rebase' | 'undo' | 'compare'
 type MainView = 'changes' | 'history' | 'stash' | 'undo'
@@ -35,10 +35,13 @@ interface TabMemory {
   fileTarget: FileTarget | null
   rebaseTarget: RebaseTarget | null
   compareTarget: CompareTarget | null
+  selectedStash: string | null
 }
 
 class AppState {
   ready = $state(false)
+  /** Why the app could not start (its state unreadable from the main process): shown instead of a spinner forever. */
+  bootError = $state<string | null>(null)
   repos = $state<RepoEntry[]>([])
   repo = $state<RepoEntry | null>(null)
   settings = $state<Settings>({ ...DEFAULT_SETTINGS })
@@ -68,7 +71,8 @@ class AppState {
   historySearch = $state('')
   historySearchMode = $state<SearchMode>('message')
   selectedCommit = $state<string | null>(null)
-  selectedStash = $state<number | null>(null)
+  /** The stash shown, by its commit: indexes shift when a stash is added or dropped. */
+  selectedStash = $state<string | null>(null)
 
   /* File history & blame */
   fileTarget = $state<FileTarget | null>(null)
@@ -171,15 +175,20 @@ class AppState {
     })
     on('progress', p => (this.progress = p))
     on('askpass', req => {
+      // Asked again after the page reloaded: once is enough.
+      if (dialogs.some(x => x.kind === 'askpass' && x.id === req.id)) return
       openDialog({
         kind: 'askpass', id: req.id, prompt: req.prompt, mode: req.kind,
         resolve: v => api['askpass:respond'](req.id, v),
       })
     })
-    on('askpass:cancel', id => {
+    on('askpass:cancel', ({ id, reason }) => {
       const d = dialogs.find(x => x.kind === 'askpass' && x.id === id)
-      if (d) closeDialog(d)
-      toast('info', 'A credential prompt went unanswered for five minutes and was declined.')
+      if (!d) return
+      closeDialog(d)
+      toast('info', reason === 'timeout'
+        ? 'A credential prompt went unanswered for five minutes and was declined.'
+        : 'Git stopped waiting for the credential prompt: the operation ended or was cancelled.')
     })
     on('menu', m => {
       if (m === 'focus' && this.repo) this.refreshAll()
@@ -190,9 +199,12 @@ class AppState {
       this.tabs = saved.filter(id => s.repos.some(r => r.id === id))
     } catch { /* no tabs yet */ }
     on('open:path', path => this.addRepo(path))
-    on('update:ready', version => toast('info', `Version ${version} is ready. It installs when you quit.`, {
+    const updateReady = (version: string) => toast('info', `Version ${version} is ready. It installs when you quit.`, {
       label: 'Restart now', run: () => api['app:installUpdate'](),
-    }, 30_000))
+    }, 30_000)
+    on('update:ready', updateReady)
+    // Downloaded before this page listened (a reload, a slow start): said now.
+    if (s.updateReady) updateReady(s.updateReady)
     if (s.launchPath) await this.addRepo(s.launchPath)
     else if (s.lastRepo && s.repos.some(r => r.id === s.lastRepo)) await this.openRepo(s.lastRepo).catch(() => undefined)
     this.ready = true
@@ -203,23 +215,33 @@ class AppState {
     if (s.stateUnreadable) {
       toast('error', 'Your repository list and settings could not be read (another program may hold the file). Nothing is saved until you restart the app.', undefined, 20_000)
     }
+    if (s.stateReset) {
+      toast('error', `Your repository list and settings were damaged, so the app started afresh. The old file is kept as ${s.stateReset}.`, undefined, 30_000)
+    }
   }
 
   saveDrafts(): void {
     try { localStorage.setItem('drafts', JSON.stringify(this.drafts)) } catch { /* storage unavailable */ }
   }
 
-  /** Shown at once; put back if the main process refuses it (a command change not confirmed). */
-  async updateSettings(patch: Partial<Settings>): Promise<void> {
+  /**
+   * Shown at once; put back if the main process refuses it (a command change not confirmed,
+   * a settings file that cannot be written), and then said. Twelve callers never caught the
+   * error: the value went back without a word. `rethrow`: the caller reports it itself.
+   */
+  async updateSettings(patch: Partial<Settings>, opts: { rethrow?: boolean } = {}): Promise<boolean> {
     const before = { ...this.settings }
     Object.assign(this.settings, patch)
     try {
       this.settings = await api['app:settings'](patch)
     } catch (e) {
       this.settings = before
-      throw e
+      if (opts.rethrow) throw e
+      toast('error', `The setting was not saved: ${asError(e).message}`)
+      return false
     }
     if ('autoFetchMinutes' in patch) this.scheduleAutoFetch()
+    return true
   }
 
   private scheduleAutoFetch(): void {
@@ -242,6 +264,9 @@ class AppState {
     if (this.repo && this.repo.id !== entry.id && this.tabs.includes(this.repo.id)) this.memory.set(this.repo.id, this.snapshot())
     this.drafts[entry.id] ??= { summary: '', body: '', amend: false }
     this.repo = entry
+    // A history page or search still loading belongs to the repository left behind.
+    this.historyToken++
+    this.historyLoading = false
     if (!this.tabs.includes(entry.id)) this.tabs = [...this.tabs, entry.id]
     this.saveTabs()
     api['repo:list']().then(list => (this.repos = list)).catch(() => undefined)
@@ -288,7 +313,7 @@ class AppState {
       historyDone: this.historyDone && this.commits.length <= PAGE,
       view: this.view, selected: this.selected, selectedCommit: this.selectedCommit, historySearch: this.historySearch,
       historySearchMode: this.historySearchMode, lastFetched: this.lastFetched,
-      fileTarget: this.fileTarget, rebaseTarget: this.rebaseTarget, compareTarget: this.compareTarget,
+      fileTarget: this.fileTarget, rebaseTarget: this.rebaseTarget, compareTarget: this.compareTarget, selectedStash: this.selectedStash,
     }
   }
 
@@ -341,20 +366,14 @@ class AppState {
     }, 15_000)
   }
 
+  /** A folder that is not a repository yet: the main process asks whether to create one. */
   async addRepo(path: string): Promise<void> {
     try {
       const entry = await api['repo:add'](path)
       await this.openRepo(entry.id)
     } catch (e) {
       const err = asError(e)
-      if (err.code === 'NOT_A_REPO') {
-        const ok = await confirm({
-          title: 'Not a Git repository',
-          message: `“${path}” is not a Git repository yet. Initialise one here?`,
-          confirmLabel: 'Create repository',
-        })
-        if (ok) await this.initRepo(path)
-      } else toast('error', err.message)
+      if (err.code !== 'CANCELLED') toast('error', err.message)
     }
   }
 
@@ -506,7 +525,8 @@ class AppState {
     const query = { scope: this.settings.historyScope, search: this.historySearch || undefined, searchMode: this.historySearchMode }
     try {
       const commits = await api['git:log'](repo.path, { ...query, skip: 0, limit })
-      if (token !== this.historyToken) return
+      // Another tab may be in front by now, before its own reload started: this list is not its history.
+      if (token !== this.historyToken || this.repo?.id !== repo.id) return
       this.historyQuery = { repoId: repo.id, path: repo.path, query }
       this.commits = commits
       this.graph = this.graphBuilder.add(commits)
@@ -581,6 +601,9 @@ class AppState {
         toast('error', 'The remote has commits you do not have yet. Pull first, then push again.', {
           label: 'Pull now', run: () => this.stillOn(id) && this.pull(),
         })
+        break
+      case 'CANCELLED':
+        // The user said no in a dialog: nothing to report.
         break
       default:
         toast('error', err.message)
@@ -755,8 +778,10 @@ class AppState {
   }
 
   copy(text: string, what = 'Copied'): void {
-    api['clipboard:write'](text)
-    toast('success', `${what} to clipboard.`, undefined, 1800)
+    api['clipboard:write'](text).then(
+      () => toast('success', `${what} to clipboard.`, undefined, 1800),
+      e => toast('error', `Could not copy: ${asError(e).message}`),
+    )
   }
 }
 

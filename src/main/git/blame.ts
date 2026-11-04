@@ -94,7 +94,8 @@ export async function blame(repo: string, path: string, rev: string | null): Pro
       result.lines.push({ sha, origLine, text: line.slice(1).replace(/\r$/, '') })
       continue
     }
-    const header = /^([0-9a-f]{40}) (\d+) \d+/.exec(line)
+    // 40 hex digits, or 64 in a SHA-256 repository.
+    const header = /^([0-9a-f]{40}(?:[0-9a-f]{24})?) (\d+) \d+/.exec(line)
     if (header) {
       sha = header[1]
       origLine = +header[2]

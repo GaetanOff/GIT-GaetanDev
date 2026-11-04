@@ -8,7 +8,7 @@
   import OperationBanner from '@/components/OperationBanner.svelte'
   import type { DiffSource, FileChange } from '@shared/types'
   import { discardAll } from '@/lib/commands'
-  import { discardPaths, fileMenu, stagePaths, unstagePaths } from '@/lib/files'
+  import { discardPaths, fileMenu, markResolved, stagePaths, unstagePaths } from '@/lib/files'
   import { basename, dirname, statusStyle } from '@/lib/format'
   import { app, type Area } from '@/lib/state.svelte'
   import { contextMenu, isMenuKey, menuAt, openDialog, toast } from '@/lib/ui.svelte'
@@ -17,7 +17,12 @@
 
   let collapsed = $state<Record<Area, boolean>>({ conflicted: false, staged: false, unstaged: false })
   let list = $state<ReturnType<typeof VirtualList<Row>>>()
-  let anchor = $state<number | null>(null)
+  /**
+   * Where a Shift+click range starts: a file, not a row number. The list changes under the
+   * user (a file staged, saved or deleted elsewhere), and a row number then named another file:
+   * the range, and the Delete that discards it, took files never clicked.
+   */
+  let anchor = $state<string | null>(null)
   let focused = $state(false)
 
   const key = (area: Area, path: string) => `${area}\0${path}`
@@ -64,8 +69,9 @@
 
   function click(e: MouseEvent, i: number, area: Area, file: FileChange) {
     const k = key(area, file.path)
-    if (e.shiftKey && anchor !== null) {
-      const [a, b] = [Math.min(anchor, i), Math.max(anchor, i)]
+    const from = anchor === null ? -1 : rows.findIndex(r => r.kind === 'file' && key(r.area, r.file.path) === anchor)
+    if (e.shiftKey && from >= 0) {
+      const [a, b] = [Math.min(from, i), Math.max(from, i)]
       const next = new Set<string>()
       for (let j = a; j <= b; j++) {
         const r = rows[j]
@@ -78,10 +84,10 @@
       if (next.has(k)) next.delete(k)
       else next.add(k)
       app.multi = next
-      anchor = i
+      anchor = k
     } else {
       app.multi = new Set()
-      anchor = i
+      anchor = k
     }
     app.selected = { path: file.path, area }
   }
@@ -99,7 +105,7 @@
       if (!target || target.r.kind !== 'file') return
       app.multi = new Set()
       app.selected = { path: target.r.file.path, area: target.r.area }
-      anchor = target.i
+      anchor = key(target.r.area, target.r.file.path)
       list?.reveal(target.i)
     }
     if (e.key === 'ArrowDown') { e.preventDefault(); move(pos + 1) }
@@ -193,7 +199,7 @@
                 </span>
                 <span class="acts">
                   {#if r.area === 'conflicted'}
-                    <button class="icon-btn sm" title="Mark resolved (stage)" onclick={e => { e.stopPropagation(); stagePaths([r.file.path]) }}><Icon name="check" size={13} /></button>
+                    <button class="icon-btn sm" title="Mark resolved (stage)" onclick={e => { e.stopPropagation(); markResolved(r.file.path) }}><Icon name="check" size={13} /></button>
                   {:else}
                     {#if r.area === 'unstaged'}
                       <button class="icon-btn sm danger" title="Discard changes" onclick={e => { e.stopPropagation(); discardPaths([r.file.path]) }}><Icon name="trash" size={13} /></button>

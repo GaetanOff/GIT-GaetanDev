@@ -26,6 +26,23 @@
     if (ok) await app.run('Skipping', () => api['git:skip'](repo))
   }
 
+  /**
+   * A merge, cherry-pick or revert is committed with the message of the commit box, prefilled
+   * with git's and maybe corrected there. Used, the message is cleared: left in the box, it
+   * became the title of the next ordinary commit.
+   */
+  async function proceed() {
+    const repo = app.repo!.path
+    const d = app.draft
+    const usesMessage = (op === 'merge' || op === 'cherry-pick' || op === 'revert') && !!d.summary.trim()
+    const message = usesMessage ? [d.summary.trim(), d.body.trim()].filter(Boolean).join('\n\n') : undefined
+    const done = await app.run('Continuing', () => api['git:continue'](repo, message).then(() => true))
+    if (done && usesMessage) {
+      d.summary = ''
+      d.body = ''
+    }
+  }
+
   async function abort() {
     const repo = app.repo!.path
     const ok = await confirm({ title: `Abort ${op}?`, message: 'The repository goes back to how it was before it started. Resolutions made so far are lost.', confirmLabel: 'Abort', danger: true })
@@ -46,7 +63,7 @@
       <button class="btn btn-danger sm" onclick={abort}>Abort</button>
       {#if op !== 'merge'}<button class="btn btn-secondary sm" onclick={skip}>Skip</button>{/if}
       <span class="grow"></span>
-      <button class="btn btn-primary sm" disabled={!!conflicts} onclick={() => app.run('Continuing', () => api['git:continue'](app.repo!.path))}>
+      <button class="btn btn-primary sm" disabled={!!conflicts} onclick={proceed}>
         {op === 'merge' ? 'Commit merge' : 'Continue'}
       </button>
     </div>

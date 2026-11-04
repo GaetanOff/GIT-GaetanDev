@@ -51,6 +51,13 @@ describe('detectProvider', () => {
     expect(providerUrl(tfs!, { type: 'branch', branch: 'main' })).toBe('https://tfs.corp.local/tfs/Collection/Proj/_git/Repo?version=GBmain')
   })
 
+  it('keeps a Bitbucket Server context path, and finds personal repositories', () => {
+    expect(detectProvider('https://h.corp/bitbucket/scm/PROJ/repo.git')?.web).toBe('https://h.corp/bitbucket/projects/PROJ/repos/repo')
+    expect(detectProvider('https://h.corp/stash/scm/proj/repo.git')).toMatchObject({ kind: 'bitbucket-server', web: 'https://h.corp/stash/projects/PROJ/repos/repo' })
+    expect(detectProvider('https://h.corp/scm/~jdoe/notes.git')?.web).toBe('https://h.corp/users/jdoe/repos/notes')
+    expect(detectProvider('ssh://git@h.corp:7999/~jdoe/notes.git')?.web).toBe('https://h.corp/users/jdoe/repos/notes')
+  })
+
   it('tells Bitbucket Server from Bitbucket Cloud', () => {
     const https = detectProvider('https://git.corp.local/scm/proj/repo.git')
     expect(https).toMatchObject({ kind: 'bitbucket-server', web: 'https://git.corp.local/projects/PROJ/repos/repo' })

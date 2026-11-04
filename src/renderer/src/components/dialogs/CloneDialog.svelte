@@ -56,6 +56,9 @@
     if (p) parent = p
   }
 
+  /** Closed while cloning: the clone goes on behind the "Cloning" label, and its outcome comes as a toast. */
+  let hidden = false
+
   async function clone() {
     if (!valid || cloning) return
     cloning = true
@@ -64,16 +67,25 @@
     try {
       try { localStorage.setItem('clone-parent', parent) } catch { /* ignore */ }
       const entry = await api['repo:clone'](url.trim(), parent.trim(), name.trim())
-      onclose()
+      if (!hidden) onclose()
       await app.openRepo(entry.id)
       app.lastFetched = Date.now()
       toast('success', `Cloned ${entry.name}.`)
     } catch (e) {
-      error = asError(e).message
+      const err = asError(e)
+      if (err.code === 'CANCELLED') toast('info', err.message)
+      else if (hidden) toast('error', `Clone of ${name.trim()} failed: ${err.message}`)
+      else error = err.message
     } finally {
       cloning = false
       end()
     }
+  }
+
+  /** Closing never waits for a long clone: it carries on, and "Cancel clone" is in the dialog until then. */
+  function close() {
+    if (cloning) hidden = true
+    onclose()
   }
 
   async function paste() {
@@ -87,7 +99,7 @@
   })
 </script>
 
-<Modal title="Clone a repository" icon="download" width={540} onclose={() => !cloning && onclose()} onsubmit={clone}>
+<Modal title="Clone a repository" icon="download" width={540} onclose={close} onsubmit={clone}>
   <div class="field">
     <span class="label">Repository URL</span>
     <div class="url">
@@ -117,8 +129,15 @@
   {/if}
   {#if error}<div class="error">{error}</div>{/if}
 
+  {#if cloning}<span class="hint">You can close this window: the clone goes on, and says when it is done.</span>{/if}
+
   {#snippet footer()}
-    <button type="button" class="btn btn-secondary" onclick={onclose} disabled={cloning}>Cancel</button>
+    {#if cloning}
+      <button type="button" class="btn btn-danger" onclick={() => api['repo:cancelClone']()}>Cancel clone</button>
+      <button type="button" class="btn btn-secondary" onclick={close}>Close</button>
+    {:else}
+      <button type="button" class="btn btn-secondary" onclick={close}>Cancel</button>
+    {/if}
     <button type="submit" class="btn btn-primary" disabled={!valid || cloning}>
       {#if cloning}<span class="spinner"></span>{/if}Clone
     </button>

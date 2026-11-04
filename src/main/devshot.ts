@@ -19,7 +19,8 @@ export function devShot(win: BrowserWindow): void {
     writeFileSync(target, image.toPNG())
     app.quit()
   })
-  win.webContents.on('console-message', (_e, level, message) => {
-    if (level >= 2) console.error('[renderer]', message)
+  // The event's own fields: the separate arguments are deprecated (Electron warns at each start).
+  win.webContents.on('console-message', e => {
+    if (e.level === 'warning' || e.level === 'error') console.error('[renderer]', e.message)
   })
 }

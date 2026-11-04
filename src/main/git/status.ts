@@ -15,9 +15,41 @@ export async function gitDir(repo: string): Promise<string> {
   return abs
 }
 
+/**
+ * Untracked files, listed one by one, unless the repository says not to list
+ * them: status.showUntrackedFiles=no is what large monorepos set to keep
+ * status fast, and forcing "all" over it scanned the whole tree at every
+ * refresh. Read again at most every 30 seconds.
+ */
+const untrackedMode = new Map<string, { mode: string; at: number }>()
+async function untracked(repo: string): Promise<string> {
+  const known = untrackedMode.get(repo)
+  if (known && Date.now() - known.at < 30_000) return known.mode
+  const value = (await git(repo, ['config', '--get', 'status.showUntrackedFiles'], { okCodes: [1] })).stdout.trim().toLowerCase()
+  const mode = value === 'no' || value === 'false' ? 'no' : 'all'
+  untrackedMode.set(repo, { mode, at: Date.now() })
+  return mode
+}
+
+/**
+ * Status runs without optional locks (it never writes the index while the
+ * user's own git may), so the stat data of files only touched was never
+ * saved, and each of them was hashed again at every refresh of a large
+ * repository. Once a minute per repository, status may update the index as
+ * a plain `git status` does: only when the lock is free, never waiting.
+ */
+const indexRefreshed = new Map<string, number>()
+function mayRefreshIndex(repo: string): boolean {
+  const last = indexRefreshed.get(repo) ?? 0
+  if (Date.now() - last < 60_000) return false
+  indexRefreshed.set(repo, Date.now())
+  return true
+}
+
 export async function status(repo: string): Promise<RepoStatus> {
+  const env = mayRefreshIndex(repo) ? { GIT_OPTIONAL_LOCKS: '1' } : undefined
   const [out, dir] = await Promise.all([
-    gitOut(repo, ['status', '--porcelain=v2', '--branch', '--show-stash', '-z', '--untracked-files=all', '--ignore-submodules=dirty']),
+    untracked(repo).then(mode => gitOut(repo, ['status', '--porcelain=v2', '--branch', '--show-stash', '-z', `--untracked-files=${mode}`, '--ignore-submodules=dirty'], { env })),
     gitDir(repo),
   ])
   const result: RepoStatus = {
@@ -59,7 +91,7 @@ export async function status(repo: string): Promise<RepoStatus> {
       const f = t.split(' ')
       result.files.push({
         path: f.slice(10).join(' '), index: 'U', worktree: 'U',
-        conflicted: true, untracked: false, conflictCode: f[1],
+        conflicted: true, untracked: false, conflictCode: f[1], submodule: f[2].startsWith('S') || undefined,
       })
     }
   }
@@ -93,6 +125,12 @@ export function operation(dir: string): { operation: RepoOperation; operationSte
   if (has('MERGE_HEAD')) return { operation: 'merge' }
   if (has('CHERRY_PICK_HEAD')) return { operation: 'cherry-pick' }
   if (has('REVERT_HEAD')) return { operation: 'revert' }
+  // Several commits picked or reverted, one stopped on a conflict and was then committed by hand:
+  // CHERRY_PICK_HEAD is gone, but the rest still waits in the sequencer for "--continue".
+  const todo = (() => { try { return readFileSync(join(dir, 'sequencer', 'todo'), 'utf8') } catch { return '' } })()
+  const next = todo.split('\n').map(l => l.trim()).find(l => l && !l.startsWith('#')) ?? ''
+  if (/^(?:p|pick)\s/.test(next)) return { operation: 'cherry-pick' }
+  if (/^revert\s/.test(next)) return { operation: 'revert' }
   return { operation: null }
 }
 

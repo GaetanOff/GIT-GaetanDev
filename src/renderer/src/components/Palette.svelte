@@ -6,8 +6,9 @@
   import { COMMANDS, keyLabels } from '@/lib/commands'
   import { rank } from '@/lib/fuzzy'
   import { basename } from '@/lib/format'
+  import { asError } from '@/lib/api'
   import { app } from '@/lib/state.svelte'
-  import { overlays } from '@/lib/ui.svelte'
+  import { overlays, toast } from '@/lib/ui.svelte'
 
   interface Item {
     id: string
@@ -61,7 +62,7 @@
     if (mode === 'all' || mode === 'repos') {
       for (const r of app.repos) {
         if (r.id === app.repo?.id) continue
-        out.push({ id: `repo:${r.id}`, group: 'Open repository', title: r.name, sub: r.path, icon: 'repo', run: () => app.openRepo(r.id) })
+        out.push({ id: `repo:${r.id}`, group: 'Open repository', title: r.name, sub: r.path, icon: 'repo', run: () => app.openRepo(r.id).catch(e => toast('error', asError(e).message)) })
       }
     }
     return out
@@ -79,12 +80,22 @@
     })
   })
 
+  /** The focus before the palette opened, given back when it closes (unless an action moved it). */
+  let previous: HTMLElement | null = null
   $effect(() => {
     if (overlays.palette) {
+      previous = document.activeElement as HTMLElement | null
       query = ''
       active = 0
       tick().then(() => input?.focus())
+      return
     }
+    const back = previous
+    previous = null
+    tick().then(() => {
+      const lost = !document.activeElement || document.activeElement === document.body
+      if (back?.isConnected && lost) back.focus()
+    })
   })
   $effect(() => {
     void query
@@ -102,7 +113,10 @@
     item.run()
   }
   function onKey(e: KeyboardEvent) {
-    if (e.key === 'Escape') { e.preventDefault(); close() }
+    // Focus stays in the search field: Tab used to move it to a result, where Escape no
+    // longer closed the palette and the window's shortcuts stayed blocked.
+    if (e.key === 'Tab') { e.preventDefault(); input?.focus() }
+    else if (e.key === 'Escape') { e.preventDefault(); close() }
     else if (e.key === 'ArrowDown') { e.preventDefault(); active = Math.min(active + 1, results.length - 1) }
     else if (e.key === 'ArrowUp') { e.preventDefault(); active = Math.max(active - 1, 0) }
     else if (e.key === 'Enter' && results[active]) { e.preventDefault(); pick(results[active].item) }
@@ -111,10 +125,10 @@
 
 {#if overlays.palette}
   <div class="overlay" role="presentation" onpointerdown={e => e.target === e.currentTarget && close()}>
-    <div class="palette" role="dialog" aria-label="Command palette">
+    <div class="palette" role="dialog" aria-label="Command palette" tabindex="-1" onkeydown={onKey}>
       <div class="in">
         <Icon name="search" size={16} />
-        <input bind:this={input} bind:value={query} onkeydown={onKey} {placeholder} spellcheck="false" />
+        <input bind:this={input} bind:value={query} {placeholder} spellcheck="false" />
         <kbd>Esc</kbd>
       </div>
       <div class="list" bind:this={listEl}>
@@ -122,7 +136,7 @@
           {#if i === 0 || results[i - 1].item.group !== item.group}
             <div class="group">{item.group}</div>
           {/if}
-          <button class="pi" class:on={i === active} data-i={i} onclick={() => pick(item)} onmouseenter={() => (active = i)}>
+          <button class="pi" class:on={i === active} data-i={i} tabindex="-1" onclick={() => pick(item)} onmouseenter={() => (active = i)}>
             <span class="p-icon"><Icon name={item.icon} size={15} /></span>
             <span class="grow">
               <span class="p-title truncate"><Highlight text={item.title} hits={match.hits} /></span>

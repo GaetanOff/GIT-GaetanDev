@@ -16,10 +16,18 @@
   function loadCollapsed(): Record<string, boolean> {
     try { return JSON.parse(localStorage.getItem('sidebar-collapsed') ?? '{"tags":true}') } catch { return { tags: true } }
   }
+  /**
+   * Folders of remote branches start folded: a remote with thousands of branches drew a row
+   * for each of them, and redrew them all at every refresh of the refs.
+   */
+  const isCollapsed = (key: string) => collapsed[key] ?? (key.startsWith('remote:') && key.includes('/'))
   function toggle(key: string) {
-    collapsed[key] = !collapsed[key]
+    collapsed[key] = !isCollapsed(key)
     try { localStorage.setItem('sidebar-collapsed', JSON.stringify(collapsed)) } catch { /* ignore */ }
   }
+
+  /** A row's tooltip, made when the pointer reaches it rather than for every row at every refresh. */
+  const branchTitle = (b: Branch) => `${b.name}${b.subject ? `\n${b.subject}` : ''}\n${relativeTime(b.date)}\nDrag onto another branch to merge or rebase`
 
   const f = $derived(filter.trim().toLowerCase())
   const match = (s: string) => !f || s.toLowerCase().includes(f)
@@ -67,7 +75,7 @@
   }
 
   /* Drag a branch onto another to merge or rebase. */
-  let dragBranch = $state<string | null>(null)
+  let dragBranch = $state<Branch | null>(null)
   let dropTarget = $state<string | null>(null)
 
   const sep = $derived(app.platform === 'win32' ? '\\' : '/')
@@ -140,13 +148,13 @@
     {#snippet branchRow(b: Branch, label: string, depth: number)}
       <button
         class="ref" class:current={b.current} class:droptarget={dropTarget === b.name} style="padding-left:{10 + depth * 14}px"
-        title="{b.name}{b.subject ? `\n${b.subject}` : ''}\n{relativeTime(b.date)}\nDrag onto another branch to merge or rebase"
+        onpointerenter={e => (e.currentTarget.title = branchTitle(b))}
         onclick={() => showBranch(b)} ondblclick={() => !b.current && app.checkout(b.name)}
         oncontextmenu={e => contextMenu(e, branchMenu(b))}
         draggable="true"
-        ondragstart={e => { dragBranch = b.name; e.dataTransfer!.effectAllowed = 'move'; e.dataTransfer!.setData('text/plain', b.name) }}
+        ondragstart={e => { dragBranch = b; e.dataTransfer!.effectAllowed = 'move'; e.dataTransfer!.setData('text/plain', b.name) }}
         ondragend={() => { dragBranch = null; dropTarget = null }}
-        ondragover={e => { if (dragBranch && !b.remote && dragBranch !== b.name) { e.preventDefault(); dropTarget = b.name } }}
+        ondragover={e => { if (dragBranch && !b.remote && dragBranch.fullRef !== b.fullRef) { e.preventDefault(); dropTarget = b.name } }}
         ondragleave={() => { if (dropTarget === b.name) dropTarget = null }}
         ondrop={e => { e.preventDefault(); const d = dragBranch; dragBranch = null; dropTarget = null; if (d && !b.remote) dropBranch(d, b.name) }}
       >
@@ -162,12 +170,12 @@
       {#each t.groups as g (g.prefix)}
         {@const gk = `${key}/${g.prefix}`}
         <button class="ref folder" style="padding-left:{10 + depth * 14}px" onclick={() => toggle(gk)}>
-          <Icon name={collapsed[gk] ? 'chevronRight' : 'chevronDown'} size={11} class="caret" />
+          <Icon name={isCollapsed(gk) ? 'chevronRight' : 'chevronDown'} size={11} class="caret" />
           <Icon name="folder" size={13} class="ri" />
           <span class="grow truncate">{g.prefix}</span>
           <span class="n">{g.branches.length}</span>
         </button>
-        {#if !collapsed[gk] || f}
+        {#if !isCollapsed(gk) || f}
           {#each g.branches as b (b.fullRef)}
             {@render branchRow(b, b.name.slice(strip.length + g.prefix.length + 1), depth + 1)}
           {/each}
@@ -179,7 +187,7 @@
     {#snippet section(key: string, title: string, count: number, actions?: Snippet)}
       <div class="section-head">
         <button class="section-btn" onclick={() => toggle(key)}>
-          <Icon name={collapsed[key] && !f ? 'chevronRight' : 'chevronDown'} size={11} />
+          <Icon name={isCollapsed(key) && !f ? 'chevronRight' : 'chevronDown'} size={11} />
           <span class="label">{title}</span>
           <span class="n">{count}</span>
         </button>
@@ -213,12 +221,12 @@
             { label: 'Remove remote…', icon: 'trash', danger: true, run: () => removeRemote(remote.name) },
           ])}
         >
-          <Icon name={collapsed[rk] ? 'chevronRight' : 'chevronDown'} size={11} class="caret" />
+          <Icon name={isCollapsed(rk) ? 'chevronRight' : 'chevronDown'} size={11} class="caret" />
           <Icon name={providerIcon(remote.provider?.kind)} size={13} class="ri" />
           <span class="grow truncate">{remote.name}</span>
           {#if remote.provider}<span class="prov">{remote.provider.label}</span>{/if}
         </button>
-        {#if !collapsed[rk] || f}{@render tree(t, `${remote.name}/`, rk, 1)}{/if}
+        {#if !isCollapsed(rk) || f}{@render tree(t, `${remote.name}/`, rk, 1)}{/if}
       {/each}
       {#if !app.refs.remotes.length}<div class="muted">No remote. Add one to push.</div>{/if}
     {/if}
@@ -238,9 +246,9 @@
     {@render section('stashes', 'Stashes', app.refs.stashes.length)}
     {#if !collapsed.stashes || f}
       {#each stashes as s (s.sha)}
-        <button class="ref" class:sel={app.view === 'stash' && app.selectedStash === s.index} style="padding-left:10px"
+        <button class="ref" class:sel={app.view === 'stash' && app.selectedStash === s.sha} style="padding-left:10px"
           title="{s.message}\non {s.branch}, {relativeTime(s.date)}"
-          onclick={() => { app.selectedStash = s.index; app.view = 'stash' }}
+          onclick={() => { app.selectedStash = s.sha; app.view = 'stash' }}
           oncontextmenu={e => contextMenu(e, stashMenu(s))}>
           <Icon name="stash" size={13} class="ri" />
           <span class="grow truncate">{s.message}</span>

@@ -35,10 +35,16 @@
     }
   }
 
-  /** Focuses the first useful control, and gives focus back to where it was when the dialog closes. */
+  /**
+   * Focuses the first useful control, and gives focus back to where it was when the dialog closes.
+   * A dangerous question (delete, discard, reset hard) starts on Cancel: focused on the red
+   * button, an Enter pressed out of habit confirmed it.
+   */
   function autofocus(el: HTMLElement) {
     const previous = document.activeElement as HTMLElement | null
-    const target = el.querySelector<HTMLElement>('[autofocus], input:not([type=checkbox]):not([disabled]), textarea, .btn-primary, .btn-danger')
+    const field = el.querySelector<HTMLElement>('[autofocus], input:not([type=checkbox]):not([disabled]), textarea')
+    const cancel = el.querySelector('.btn-danger') ? el.querySelector<HTMLElement>('footer .btn-secondary, footer .btn-ghost') : null
+    const target = field ?? cancel ?? el.querySelector<HTMLElement>('.btn-primary, .btn-danger')
     queueMicrotask(() => (target ?? el).focus())
     return {
       destroy: () => { if (previous?.isConnected) queueMicrotask(() => previous.focus()) },

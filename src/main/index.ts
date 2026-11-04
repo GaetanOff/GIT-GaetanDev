@@ -1,12 +1,14 @@
 import { app, BrowserWindow, dialog, Menu, net, protocol, screen, session, shell } from 'electron'
+import { homedir } from 'node:os'
 import { join, resolve, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { folderArg as launchFolder } from './args'
 import { startAskPass, stopAskPass } from './askpass'
 import { killRunning, setGitEnv } from './git/exec'
 import { devShot } from './devshot'
+import { smokeProfile, smokeTest } from './smoke'
 import { logToFile } from './log'
-import { askRenderer, openFolder, queuesBusy, registerIpc, send, setLaunchPath, settleQueues } from './ipc'
+import { askRenderer, closeQueues, openFolder, queuesBusy, registerIpc, send, setLaunchPath, settleQueues } from './ipc'
 import { flush, getState, save } from './store'
 import { sweepImportCopies } from './importers'
 import { startUpdates } from './updater'
@@ -16,6 +18,7 @@ app.setAppUserModelId('fr.gaetandev.git')
 // Development aids (a separate profile, a dev server URL, scripted screenshots) never apply to an installed build.
 const dev = !app.isPackaged
 if (dev && process.env.GDG_USER_DATA) app.setPath('userData', process.env.GDG_USER_DATA)
+smokeProfile()
 logToFile()
 
 process.on('unhandledRejection', reason => console.error('Unhandled rejection in main:', reason))
@@ -50,6 +53,9 @@ else start()
 function start(): void {
   const watcher = new RepoWatcher(e => send('repo:changed', e))
   setLaunchPath(folderArg(process.argv))
+  // Read as given, the folder the app was started from is let go: Windows keeps a process's working
+  // folder locked, and "gaetandev-git ." made it impossible to rename or delete while the app ran.
+  try { process.chdir(homedir()) } catch { /* stays where it was */ }
 
   /** Credential prompts in the app; without them (the helper could not be written) git still runs. */
   const askpass = () => {
@@ -61,10 +67,15 @@ function start(): void {
   }
 
   app.whenReady().then(() => {
-    Menu.setApplicationMenu(null)
+    // No menu bar on Windows and Linux. macOS takes Cmd+C, Cmd+V, Cmd+Q from the menu itself:
+    // without one, copy, paste and quit did nothing in text fields.
+    Menu.setApplicationMenu(process.platform === 'darwin' ? Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }, { role: 'windowMenu' }]) : null)
     // The app needs no camera, microphone, location or notifications: refuse every request.
     session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
     session.defaultSession.setPermissionCheckHandler(() => false)
+    // Nor any download: the app downloads nothing through its pages (updates go another way), and a
+    // compromised page could otherwise put a "Save as" for an .exe in front of the user.
+    session.defaultSession.on('will-download', e => e.preventDefault())
     askpass()
     serveBundle()
     registerIpc(watcher)
@@ -108,6 +119,8 @@ function start(): void {
   // a fetch a ref lock: quitting waits for queued git work first, ten seconds at most.
   let waited = false
   app.on('before-quit', e => {
+    // Nothing new starts meanwhile: an auto-fetch begun during the wait would be cut off.
+    closeQueues()
     if (waited || !queuesBusy()) return
     e.preventDefault()
     waited = true
@@ -188,6 +201,7 @@ function createWindow(): BrowserWindow {
   })
 
   if (dev) devShot(win)
+  smokeTest(win)
   if (dev && process.env.ELECTRON_RENDERER_URL) win.loadURL(process.env.ELECTRON_RENDERER_URL)
   else win.loadURL(`${APP_ORIGIN}/index.html`)
   return win

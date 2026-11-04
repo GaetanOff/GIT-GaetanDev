@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { COMMANDS, eventKeys } from '@/lib/commands'
+  import { COMMANDS, eventKeys, isTyping } from '@/lib/commands'
+  import { asError } from '@/lib/api'
   import { app } from '@/lib/state.svelte'
   import { menu, overlayOpen } from '@/lib/ui.svelte'
   import TitleBar from '@/components/TitleBar.svelte'
@@ -24,7 +25,7 @@
   let dragOver = $state(false)
 
   onMount(() => {
-    app.init()
+    app.init().catch(e => (app.bootError = asError(e).message))
   })
 
   function onKeydown(e: KeyboardEvent) {
@@ -34,7 +35,7 @@
     }
     if (overlayOpen()) return
     const keys = eventKeys(e)
-    const cmd = COMMANDS.find(c => c.keys === keys && (!c.when || c.when()))
+    const cmd = COMMANDS.find(c => c.keys === keys && (!c.when || c.when()) && !(c.notWhileTyping && isTyping()))
     if (!cmd) return
     e.preventDefault()
     cmd.run()
@@ -60,7 +61,11 @@
   <TitleBar />
   {#if app.ready}<TabBar />{/if}
   {#if !app.ready}
-    <div class="boot"><span class="spinner"></span></div>
+    {#if app.bootError}
+      <div class="boot failed"><b>GaetanDev Git could not start</b><span>{app.bootError}</span><button class="btn btn-secondary" onclick={() => location.reload()}>Try again</button></div>
+    {:else}
+      <div class="boot"><span class="spinner"></span></div>
+    {/if}
   {:else if app.repo}
     <div class="body">
       <div class="sidebar-wrap" style="width:{app.settings.sidebarWidth}px">
@@ -109,6 +114,8 @@
 <style>
   .shell { display: flex; flex-direction: column; height: 100%; position: relative; }
   .boot { flex: 1; display: flex; align-items: center; justify-content: center; color: var(--green); }
+  .boot.failed { flex-direction: column; gap: 10px; color: var(--text-muted); text-align: center; padding: 24px; user-select: text; }
+  .boot.failed b { color: #fecaca; font-size: 15px; }
   .body { flex: 1; display: flex; min-height: 0; }
   .sidebar-wrap { flex-shrink: 0; min-width: 0; display: flex; }
   .main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--border); }

@@ -21,14 +21,23 @@
   const candidates = $derived.by(() => {
     const locals = new Set(app.localBranches.map(b => b.name))
     const tracked = new Set(app.localBranches.map(b => b.upstream).filter(Boolean))
-    const remotes = app.remoteBranches.filter(b => !tracked.has(b.name) && !locals.has(b.name.split('/').slice(1).join('/')))
+    const remotes = app.remoteBranches.filter(b => !tracked.has(b.name) && !locals.has(b.remoteName ? b.name.slice(b.remoteName.length + 1) : b.name))
     return [...app.localBranches, ...remotes]
   })
   const results = $derived(rank(candidates, query, b => b.name, 300))
   const local = $derived(results.filter(r => !r.item.remote))
   const remote = $derived(results.filter(r => r.item.remote))
   const flat = $derived([...local, ...remote])
-  const canCreate = $derived(!!query.trim() && !app.localBranches.some(b => b.name === sanitizeBranchName(query.trim())))
+  /**
+   * A name typed in full that exists only on a remote ("feature/login" on origin) is that
+   * branch: Enter checks it out with tracking. It offered "Create branch" first, and Enter made
+   * a new branch from HEAD under the same name instead.
+   */
+  const exactRemote = $derived.by(() => {
+    const name = sanitizeBranchName(query.trim())
+    return name ? remote.findIndex(r => r.item.remoteName && r.item.name.slice(r.item.remoteName.length + 1) === name) : -1
+  })
+  const canCreate = $derived(!!query.trim() && exactRemote < 0 && !app.localBranches.some(b => b.name === sanitizeBranchName(query.trim())))
   const offset = $derived(canCreate ? 1 : 0)
 
   $effect(() => {
@@ -40,7 +49,7 @@
   })
   $effect(() => {
     void query
-    active = 0
+    active = exactRemote >= 0 ? local.length + exactRemote : 0
   })
   $effect(() => {
     listEl?.querySelector(`[data-i="${active}"]`)?.scrollIntoView({ block: 'nearest' })

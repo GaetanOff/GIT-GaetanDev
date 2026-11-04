@@ -18,7 +18,8 @@ export async function fsmonitorInfo(repo: string): Promise<{ enabled: boolean; s
   const m = /(\d+)\.(\d+)/.exec(version)
   const recent = !!m && (+m[1] > 2 || (+m[1] === 2 && +m[2] >= 36))
   const supported = recent && (process.platform === 'win32' || process.platform === 'darwin')
-  return { enabled: cfg === 'true', supported, files }
+  // A boolean in any of git's spellings (yes, on, 1), or the path of a hook, which is on too.
+  return { enabled: !!cfg && !/^(false|no|off|0)$/i.test(cfg), supported, files }
 }
 
 /** Files in the index, read from its header (bytes 8 to 11) instead of listing them all. */
@@ -41,7 +42,8 @@ export async function setFsmonitor(repo: string, on: boolean): Promise<boolean> 
     await git(repo, ['config', '--local', 'core.fsmonitor', 'true'])
     await git(repo, ['config', '--local', 'core.untrackedCache', 'true'])
   } else {
-    await git(repo, ['config', '--local', '--unset', 'core.fsmonitor'], { okCodes: [5] })
+    // Off in the repository's own config, not just unset there: a global core.fsmonitor stayed in force.
+    await git(repo, ['config', '--local', 'core.fsmonitor', 'false'])
     await git(repo, ['fsmonitor--daemon', 'stop'], { okCodes: [1, 128] }).catch(() => undefined)
   }
   return on

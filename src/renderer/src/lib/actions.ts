@@ -14,12 +14,19 @@ const repo = () => app.repo!.path
 
 /* ─── Branches ──────────────────────────────────────────────────────────────── */
 
-export async function mergeInto(ref: string): Promise<void> {
+/*
+ * Branches reach git by their full ref (refs/heads/x, refs/remotes/o/x) and
+ * are named by their short one: by name alone git takes a tag first, so with
+ * an old tag "feature" a merge of the branch merged the tag ("Already up to
+ * date") and the app said the branch was merged.
+ */
+
+export async function mergeInto(ref: string, name = ref): Promise<void> {
   const current = app.status?.branch
   if (!current) return
   const path = repo()
   const how = await choose({
-    title: `Merge ${ref} into ${current}`,
+    title: `Merge ${name} into ${current}`,
     message: 'A merge commit keeps history as it happened. Squash folds every commit of the branch into staged changes you then commit once.',
     options: [
       { label: 'Merge', value: 'merge', variant: 'primary' },
@@ -27,29 +34,30 @@ export async function mergeInto(ref: string): Promise<void> {
     ],
   })
   if (!how) return
-  await app.run(`Merging ${ref}`, () => api['git:merge'](path, ref, { squash: how === 'squash' }), {
-    success: how === 'squash' ? `Squashed ${ref}: review and commit the staged changes.` : `Merged ${ref} into ${current}.`,
+  await app.run(`Merging ${name}`, () => api['git:merge'](path, ref, { squash: how === 'squash' }), {
+    success: how === 'squash' ? `Squashed ${name}: review and commit the staged changes.` : `Merged ${name} into ${current}.`,
   })
   if (how === 'squash') app.view = 'changes'
 }
 
-export async function rebaseOnto(ref: string): Promise<void> {
+export async function rebaseOnto(ref: string, name = ref): Promise<void> {
   const current = app.status?.branch
   if (!current) return
   const path = repo()
   const ok = await confirm({
-    title: `Rebase ${current} onto ${ref}?`,
-    message: `Your commits on ${current} are replayed on top of ${ref}. If ${current} was already pushed you will need to force push.`,
+    title: `Rebase ${current} onto ${name}?`,
+    message: `Your commits on ${current} are replayed on top of ${name}. If ${current} was already pushed you will need to force push.`,
     confirmLabel: 'Rebase',
   })
-  if (ok) await app.run(`Rebasing onto ${ref}`, () => api['git:rebase'](path, ref), { success: `Rebased ${current} onto ${ref}.` })
+  if (ok) await app.run(`Rebasing onto ${name}`, () => api['git:rebase'](path, ref), { success: `Rebased ${current} onto ${name}.` })
 }
 
 export async function deleteBranch(b: Branch): Promise<void> {
   if (b.remote) {
     const path = repo()
-    const [remote, ...rest] = b.name.split('/')
-    const branch = rest.join('/')
+    // The remote's own name, which may hold a slash ("team/upstream"), then the branch on it.
+    const remote = b.remoteName ?? b.name.split('/')[0]
+    const branch = b.name.slice(remote.length + 1)
     const ok = await confirm({
       title: 'Delete remote branch?',
       message: `“${branch}” will be deleted from ${remote} for everyone.`,
@@ -129,17 +137,17 @@ export async function renameBranch(b: Branch): Promise<void> {
 export function branchMenu(b: Branch): MenuItem[] {
   const current = app.status?.branch
   const isCurrent = b.current
-  const short = b.remote ? b.name.split('/').slice(1).join('/') : b.name
+  const short = b.remote && b.remoteName ? b.name.slice(b.remoteName.length + 1) : b.name
   const items: MenuItem[] = [
     { label: isCurrent ? 'Current branch' : `Switch to ${b.remote ? short : b.name}`, icon: 'branch', disabled: isCurrent, run: () => app.checkout(b.name) },
-    { label: 'New branch from here…', icon: 'plus', run: () => openDialog({ kind: 'branch', from: b.name, fromLabel: b.name }) },
+    { label: 'New branch from here…', icon: 'plus', run: () => openDialog({ kind: 'branch', from: b.fullRef, fromLabel: b.name }) },
     ...(current && !isCurrent ? [{ label: `Compare with ${current}`, icon: 'split' as const, run: () => app.openCompare(current, b.name) }] : []),
     'sep',
   ]
   if (current && !isCurrent) {
     items.push(
-      { label: `Merge into ${current}…`, icon: 'merge', run: () => mergeInto(b.name) },
-      { label: `Rebase ${current} onto this`, icon: 'sync', run: () => rebaseOnto(b.name) },
+      { label: `Merge into ${current}…`, icon: 'merge', run: () => mergeInto(b.fullRef, b.name) },
+      { label: `Rebase ${current} onto this`, icon: 'sync', run: () => rebaseOnto(b.fullRef, b.name) },
       'sep',
     )
   }
@@ -227,14 +235,14 @@ export function commitsMenu(list: Commit[]): MenuItem[] {
 }
 
 /** A branch dropped on another one: merge it in, or rebase onto it. */
-export async function dropBranch(dragged: string, target: string): Promise<void> {
-  if (dragged === target) return
+export async function dropBranch(dragged: Branch, target: string): Promise<void> {
+  if (dragged.name === target && !dragged.remote) return
   const current = app.status?.branch
   const id = app.repo?.id
   const choice = await choose({
-    title: `${dragged} → ${target}`,
+    title: `${dragged.name} → ${target}`,
     message: target === current
-      ? `Merge ${dragged} into the current branch, or replay ${target} on top of ${dragged}?`
+      ? `Merge ${dragged.name} into the current branch, or replay ${target} on top of ${dragged.name}?`
       : `${target} is not checked out: it is switched to first, then the operation runs.`,
     options: [
       { label: `Merge into ${target}`, value: 'merge' as const, variant: 'primary' },
@@ -247,8 +255,8 @@ export async function dropBranch(dragged: string, target: string): Promise<void>
     await app.checkout(target)
     if (app.status?.branch !== target) return
   }
-  if (choice === 'merge') await mergeInto(dragged)
-  else await rebaseOnto(dragged)
+  if (choice === 'merge') await mergeInto(dragged.fullRef, dragged.name)
+  else await rebaseOnto(dragged.fullRef, dragged.name)
 }
 
 /* ─── Tags & stashes ────────────────────────────────────────────────────────── */
@@ -257,8 +265,8 @@ export function tagMenu(t: Tag): MenuItem[] {
   const remote = app.refs.remotes[0]?.name
   return [
     { label: 'Show commit', icon: 'commit', run: () => { app.view = 'history'; app.selectedCommit = t.sha } },
-    { label: 'Checkout (detached)', icon: 'tag', run: () => app.run('Checking out', () => api['git:checkoutCommit'](repo(), t.name)) },
-    { label: 'New branch from tag…', icon: 'branch', run: () => openDialog({ kind: 'branch', from: t.name, fromLabel: t.name }) },
+    { label: 'Checkout (detached)', icon: 'tag', run: () => app.run('Checking out', () => api['git:checkoutCommit'](repo(), `refs/tags/${t.name}`)) },
+    { label: 'New branch from tag…', icon: 'branch', run: () => openDialog({ kind: 'branch', from: `refs/tags/${t.name}`, fromLabel: t.name }) },
     { label: `Push to ${remote ?? 'remote'}`, icon: 'push', disabled: !remote, run: () => app.run('Pushing tag', () => api['git:pushTag'](repo(), remote!, t.name), { success: `Pushed ${t.name}.` }) },
     { label: 'Copy name', icon: 'copy', run: () => app.copy(t.name, 'Tag copied') },
     'sep',
@@ -285,7 +293,7 @@ export async function dropStash(s: Stash): Promise<void> {
   const ok = await confirm({ title: 'Drop stash?', message: `“${s.message}” will be deleted.`, confirmLabel: 'Drop', danger: true })
   if (!ok) return
   await app.run('Dropping stash', () => api['git:stashDrop'](path, s.index, s.sha))
-  if (app.selectedStash === s.index) {
+  if (app.selectedStash === s.sha) {
     app.selectedStash = null
     app.view = 'changes'
   }

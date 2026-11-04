@@ -36,7 +36,7 @@ async function readJournal(repo: string): Promise<Pruned[]> {
 }
 
 async function remoteRefs(repo: string): Promise<Map<string, string>> {
-  const out = await gitOut(repo, ['for-each-ref', '--format=%(refname:short) %(objectname)', 'refs/remotes'])
+  const out = await gitOut(repo, ['for-each-ref', '--format=%(refname:lstrip=2) %(objectname)', 'refs/remotes'])
   return new Map(out.split('\n').filter(Boolean).map(l => l.split(' ') as [string, string]).filter(([ref]) => !ref.endsWith('/HEAD')))
 }
 
@@ -70,7 +70,11 @@ async function bestDescendants(repo: string, branches: { name: string; sha: stri
   for (const b of branches) {
     const candidates = pool(b.name)
     if (!candidates.length) continue
-    const r = await git(repo, ['rev-list', '--ancestry-path', '--date-order', '-n1', '--stdin'], {
+    // The known tip itself must exist: --ignore-missing would drop the "^" and walk all history.
+    const known = await git(repo, ['cat-file', '-e', `${b.sha}^{commit}`], { okCodes: [1, 128] })
+    if (known.code !== 0) continue
+    // A journaled commit collected by gc since made the whole query fail, hiding the valid ones.
+    const r = await git(repo, ['rev-list', '--ancestry-path', '--date-order', '-n1', '--ignore-missing', '--stdin'], {
       input: [`^${b.sha}`, ...new Set(candidates.map(c => c.sha))].join('\n') + '\n', okCodes: [128],
     })
     const newest = r.stdout.trim()
@@ -112,7 +116,7 @@ export async function newerTips(repo: string, branches: { name: string; sha: str
     ...journal.filter(p => sameName(p.ref, name)).map((p): Candidate => ({ sha: p.sha, via: 'pruned', ref: p.ref })),
   ])
   const rest = branches.filter(b => !named.some(n => n.name === b.name))
-  const dangling = fsck.split('\n').map(l => /^unreachable commit ([0-9a-f]{40})$/.exec(l)?.[1]).filter((s): s is string => !!s).slice(0, 3000)
+  const dangling = fsck.split('\n').map(l => /^unreachable commit ([0-9a-f]{40}(?:[0-9a-f]{24})?)$/.exec(l)?.[1]).filter((s): s is string => !!s).slice(0, 3000)
   const unnamed = await bestDescendants(repo, rest, () => dangling.map((sha): Candidate => ({ sha, via: 'unreferenced' })))
   return [...named, ...unnamed]
 }

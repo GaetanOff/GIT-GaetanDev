@@ -1,12 +1,12 @@
 import { existsSync } from 'node:fs'
-import { appendFile, copyFile, lstat, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { appendFile, copyFile, lstat, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { basename, isAbsolute, join } from 'node:path'
 import { shell } from 'electron'
 import { selectionFingerprint, type Author, type DiffOptions, type FileChange, type FileDiff, type LineSelection, type Progress, type PullMode, type ResetMode, type RepoStatus } from '@shared/types'
 import { applyPatch, buildPartialPatch, diff } from './diff'
-import { assertRefName, git, gitOut, GitError } from './exec'
-import { currentBranch, defaultRemote, upstreamOf } from './refs'
+import { assertRefName, git, gitOut, GitError, literal } from './exec'
+import { currentBranch, defaultRemote, remoteOf, upstreamOf } from './refs'
 import { gitDir, status } from './status'
 import { withPruneJournal } from './recovery'
 
@@ -22,6 +22,11 @@ export async function stage(repo: string, paths: string[]): Promise<void> {
 
 export async function unstage(repo: string, paths: string[]): Promise<void> {
   if (!paths.length) return
+  // A staged rename is two index entries: unstaging only the new path left the old one staged as
+  // deleted, and a commit then recorded the deletion without the file under its new name.
+  const wanted = new Set(paths)
+  const renamed = (await status(repo)).files.filter(f => f.index === 'R' && f.oldPath && wanted.has(f.path)).map(f => f.oldPath!)
+  paths = [...paths, ...renamed.filter(p => !wanted.has(p))]
   const hasHead = await git(repo, ['rev-parse', '--verify', '-q', 'HEAD'], { okCodes: [1] }).then(r => r.code === 0)
   if (hasHead) await git(repo, ['reset', '-q', 'HEAD', '--pathspec-from-file=-', '--pathspec-file-nul'], viaStdin(paths))
   else await git(repo, ['rm', '--cached', '-r', '-q', '--pathspec-from-file=-', '--pathspec-file-nul'], viaStdin(paths))
@@ -102,6 +107,21 @@ export async function discard(repo: string, paths: string[]): Promise<void> {
   const failed: string[] = []
   const copies: string[] = []
   const aside = join(tmpdir(), 'GaetanDev discarded', String(Date.now()))
+  // A new or renamed file staged, then changed again (AM, RM, AD), or any file before the first
+  // commit: its staged version is neither HEAD's nor the file's, and leaves with the index entry.
+  for (const [i, p] of created.entries()) {
+    const f = byPath.get(p)
+    if (!f || f.untracked || f.conflicted || f.index === '.' || f.worktree === '.') continue
+    try {
+      const dir = join(aside, `new-${i}`)
+      await mkdir(dir, { recursive: true })
+      const stagedCopy = join(dir, `${basename(p)} (staged)`)
+      await writeFile(stagedCopy, (await git(repo, ['show', `:${p}`])).raw)
+      copies.push(stagedCopy)
+    } catch {
+      failed.push(p)
+    }
+  }
   for (const [i, p] of tracked.entries()) {
     // Only regular files: a deleted file has nothing to keep, a submodule is a whole checkout.
     const isFile = await lstat(join(repo, p)).then(s => s.isFile(), () => false)
@@ -116,7 +136,8 @@ export async function discard(repo: string, paths: string[]): Promise<void> {
       copies.push(join(dir, basename(p)))
       // A staged version that is neither HEAD's nor the file's would be lost too.
       const f = byPath.get(p)
-      if (f && f.index !== '.' && f.worktree !== '.') {
+      // A conflicted file has no staged version (only its sides, which the merge keeps): its copy is enough.
+      if (f && !f.conflicted && f.index !== '.' && f.worktree !== '.') {
         const stagedCopy = join(dir, `${basename(p)} (staged)`)
         await writeFile(stagedCopy, (await git(repo, ['show', `:${p}`])).raw)
         copies.push(stagedCopy)
@@ -129,9 +150,12 @@ export async function discard(repo: string, paths: string[]): Promise<void> {
   if (restore.length) await git(repo, ['restore', '--source=HEAD', '--staged', '--worktree', '--pathspec-from-file=-', '--pathspec-file-nul'], viaStdin(restore))
   const binned: string[] = []
   for (const c of copies) await shell.trashItem(c).catch(() => binned.push(c))
-  const staged = created.filter(p => !byPath.get(p)?.untracked)
-  if (staged.length) await git(repo, ['rm', '--cached', '-q', '-r', '--pathspec-from-file=-', '--pathspec-file-nul'], viaStdin(staged))
-  for (const p of created) await shell.trashItem(join(repo, p)).catch(() => undefined)
+  const dropped = created.filter(p => !failed.includes(p))
+  const staged = dropped.filter(p => !byPath.get(p)?.untracked)
+  // -f: without it git refuses an entry whose staged content differs from both HEAD and the file,
+  // and it would do so after the restore above, leaving a rename half undone. Its copy is kept.
+  if (staged.length) await git(repo, ['rm', '--cached', '-f', '-q', '-r', '--pathspec-from-file=-', '--pathspec-file-nul'], viaStdin(staged))
+  for (const p of dropped) await shell.trashItem(join(repo, p)).catch(() => undefined)
   if (failed.length) throw new GitError(`Could not keep a copy of ${failed.length === 1 ? failed[0] : `${failed.length} files`}, so ${failed.length === 1 ? 'it was' : 'they were'} left as is.`)
   if (binned.length) throw new GitError(`The changes were discarded, but the recycle bin refused the copies: they are in "${aside}".`)
 }
@@ -186,8 +210,9 @@ const authorsCache = new Map<string, { head: string; at: number; list: Author[] 
 
 /** The commit.template file, without its comment lines, and whether commits get signed. */
 export async function commitSetup(repo: string): Promise<{ template: string; signing: boolean }> {
-  const read = (key: string) => git(repo, ['config', '--get', key], { okCodes: [1] }).then(r => r.stdout.trim())
-  const [templatePath, gpgsign] = await Promise.all([read('commit.template'), read('commit.gpgsign')])
+  const read = (key: string, type?: string) => git(repo, ['config', ...(type ? [`--type=${type}`] : []), '--get', key], { okCodes: [1, 128] }).then(r => r.stdout.trim())
+  // As a boolean: git also takes yes, on and 1, which a comparison with "true" read as off.
+  const [templatePath, gpgsign] = await Promise.all([read('commit.template'), read('commit.gpgsign', 'bool')])
   let template = ''
   if (templatePath) {
     const file = templatePath.replace(/^~(?=[\\/])/, homedir())
@@ -197,12 +222,25 @@ export async function commitSetup(repo: string): Promise<{ template: string; sig
   return { template, signing: gpgsign === 'true' }
 }
 
-/** The message git prepared for an in-progress merge, squash or cherry-pick, without comments. */
+/**
+ * The message git prepared for an in-progress merge, squash or cherry-pick,
+ * without the comments git added at its end ("# Conflicts: …"). Only that
+ * trailing block goes, in git's comment character: dropping every line that
+ * starts with "#" turned the cherry-pick of "#42 Fix login" into "Details
+ * here", and a core.commentChar of ";" left git's own comments in.
+ */
 export async function preparedMessage(repo: string): Promise<string> {
   const dir = await gitDir(repo)
   for (const f of ['MERGE_MSG', 'SQUASH_MSG']) {
     const text = await readFile(join(dir, f), 'utf8').catch(() => '')
-    if (text) return text.split(/\r?\n/).filter(l => !l.startsWith('#')).join('\n').trim()
+    if (!text) continue
+    const lines = text.split(/\r?\n/)
+    const configured = (await git(repo, ['config', '--get', 'core.commentChar'], { okCodes: [1] })).stdout.trim()
+    const last = [...lines].reverse().find(l => l.trim())
+    // "auto": git picked a character no line starts with; its own comments come last.
+    const mark = configured && configured !== 'auto' ? configured : configured === 'auto' && last && '#;@!$%^&|:'.includes(last[0]) ? last[0] : '#'
+    while (lines.length && (!lines[lines.length - 1].trim() || lines[lines.length - 1].startsWith(mark))) lines.pop()
+    return lines.join('\n').trim()
   }
   return ''
 }
@@ -223,13 +261,20 @@ export async function undoCommit(repo: string, expect?: string): Promise<string>
   }
   const message = await lastCommitMessage(repo)
   const hasParent = await git(repo, ['rev-parse', '--verify', '-q', 'HEAD~1'], { okCodes: [1] }).then(r => r.code === 0)
-  if (hasParent) await git(repo, ['reset', '--soft', 'HEAD~1'])
-  else await git(repo, ['update-ref', '-d', 'HEAD'])
+  if (hasParent) {
+    await git(repo, ['reset', '--soft', 'HEAD~1'])
+    return message
+  }
+  // The first commit: its branch goes back to unborn. Never `update-ref -d HEAD`, which on a
+  // detached HEAD deletes .git/HEAD itself and leaves a folder git no longer sees as a repository.
+  const branch = (await git(repo, ['symbolic-ref', '-q', 'HEAD'], { okCodes: [1] })).stdout.trim()
+  if (!branch) throw new GitError('This is the first commit and no branch is checked out, so there is nothing to undo it into.')
+  await git(repo, ['update-ref', '-d', branch])
   return message
 }
 
 export async function resolve(repo: string, path: string, side: 'ours' | 'theirs'): Promise<void> {
-  await git(repo, ['checkout', `--${side}`, '--', path])
+  await git(repo, ['checkout', `--${side}`, '--', literal(path)])
   await git(repo, ['add', '--', path])
 }
 
@@ -240,9 +285,22 @@ async function currentOp(repo: string): Promise<RepoStatus['operation']> {
   return (await status(repo)).operation
 }
 
-export async function continueOp(repo: string): Promise<void> {
+/**
+ * Goes on with the operation in progress. With `message`, the one written in
+ * the commit box, a merge, cherry-pick or revert is committed with it: "Commit
+ * merge" used git's prepared message and ignored the one corrected there. A
+ * cherry-pick or revert of several commits then goes on with the next ones.
+ */
+export async function continueOp(repo: string, message?: string): Promise<void> {
   const op = await currentOp(repo)
   if (!op) return
+  if (message?.trim() && (op === 'merge' || op === 'cherry-pick' || op === 'revert')) {
+    // The commit of a picked or reverted commit keeps its author, read by git from CHERRY_PICK_HEAD.
+    const pending = (await git(repo, ['rev-parse', '-q', '--verify', op === 'merge' ? 'MERGE_HEAD' : op === 'revert' ? 'REVERT_HEAD' : 'CHERRY_PICK_HEAD'], { okCodes: [1] })).code === 0
+    if (pending) await git(repo, ['commit', '-F', '-', '--cleanup=whitespace'], { ...NO_EDITOR, input: message })
+    if (op !== 'merge' && (await currentOp(repo)) === op) await git(repo, [op, '--continue'], NO_EDITOR)
+    return
+  }
   if (op === 'merge') await git(repo, ['commit', '--no-edit'], NO_EDITOR)
   else await git(repo, [op, '--continue'], NO_EDITOR)
 }
@@ -312,10 +370,12 @@ async function switchTo(repo: string, branch: string): Promise<void> {
   if (isLocal) return void (await git(repo, ['switch', branch]))
   const isRemote = await git(repo, ['rev-parse', '--verify', '-q', `refs/remotes/${branch}`], { okCodes: [1] }).then(r => r.code === 0)
   if (isRemote) {
-    const local = branch.split('/').slice(1).join('/')
+    // "team/upstream/main" is main on the remote "team/upstream", not upstream/main on "team".
+    const remotes = (await gitOut(repo, ['remote'])).split('\n').map(r => r.trim()).filter(Boolean)
+    const local = branch.slice(remoteOf(branch, remotes).length + 1)
     const exists = await git(repo, ['rev-parse', '--verify', '-q', `refs/heads/${local}`], { okCodes: [1] }).then(r => r.code === 0)
     if (exists) await git(repo, ['switch', local])
-    else await git(repo, ['switch', '--track', branch])
+    else await git(repo, ['switch', '-c', local, '--track', `refs/remotes/${branch}`])
     return
   }
   await git(repo, ['switch', branch])
@@ -331,9 +391,17 @@ export async function createBranch(repo: string, name: string, from: string | nu
   else await git(repo, ['branch', '--no-track', name, ...(from ? [from] : [])])
 }
 
+/**
+ * Renames a local branch. One that tracked a remote branch of its old name
+ * stops tracking it: git refuses to push it there ("the upstream branch of
+ * your current branch does not match the name"), and the next push publishes
+ * it under its new name instead. The remote branch is left as it is.
+ */
 export async function renameBranch(repo: string, from: string, to: string): Promise<void> {
   await assertRefName(repo, 'branch', to)
+  const upstream = await upstreamOf(repo, from)
   await git(repo, ['branch', '-m', from, to])
+  if (upstream && upstream.endsWith(`/${from}`) && from !== to) await git(repo, ['branch', '--unset-upstream', to])
 }
 
 /** Deletes a local branch and returns the commit it pointed to, so it can be restored. */
@@ -371,7 +439,7 @@ export async function stash(repo: string, message: string, includeUntracked: boo
   if (includeUntracked) args.push('--include-untracked')
   if (message.trim()) args.push('-m', message.trim())
   // stash runs without the literal pathspec mode (see exec): mark each path literal itself.
-  if (paths?.length) args.push('--', ...paths.map(p => `:(literal)${p}`))
+  if (paths?.length) args.push('--', ...paths.map(literal))
   await git(repo, args)
 }
 
@@ -420,9 +488,16 @@ function progressHandler(op: string, title: string, report: Reporter) {
   }
 }
 
+/**
+ * Fetches every remote. Unless the repository says otherwise, git also
+ * writes its commit-graph file: without one (a fresh clone), the history's
+ * --topo-order walked the whole history for every page loaded.
+ */
 export async function fetchAll(repo: string, report: Reporter): Promise<void> {
+  const setByUser = (await git(repo, ['config', '--get', 'fetch.writeCommitGraph'], { okCodes: [1] })).code === 0
+  const graph = setByUser ? [] : ['-c', 'fetch.writeCommitGraph=true']
   try {
-    await withPruneJournal(repo, () => git(repo, ['fetch', '--all', '--prune', '--progress'], { onStderrLine: progressHandler('fetch', 'Fetching', report) }))
+    await withPruneJournal(repo, () => git(repo, [...graph, 'fetch', '--all', '--prune', '--progress'], { onStderrLine: progressHandler('fetch', 'Fetching', report) }))
   } finally {
     report(null)
   }
@@ -434,10 +509,44 @@ export async function pull(repo: string, mode: PullMode, report: Reporter): Prom
   if (!(await upstreamOf(repo, branch))) throw new GitError(`Branch "${branch}" has no upstream to pull from. Push it first.`, 'NO_UPSTREAM')
   const flag = mode === 'rebase' ? '--rebase' : mode === 'ff-only' ? '--ff-only' : '--no-rebase'
   try {
-    await withPruneJournal(repo, () => git(repo, ['pull', flag, '--autostash', '--progress'], { ...NO_EDITOR, onStderrLine: progressHandler('pull', 'Pulling', report) }))
+    await keepingIndex(repo, 'Changes set aside by GaetanDev Git before a pull', autostash =>
+      withPruneJournal(repo, () => git(repo, ['pull', flag, autostash ? '--autostash' : '--no-autostash', '--progress'], { ...NO_EDITOR, onStderrLine: progressHandler('pull', 'Pulling', report) })))
   } finally {
     report(null)
   }
+}
+
+/**
+ * Runs an operation that needs a clean working tree (a pull, a rebase) and
+ * gives the changes back as they were. Git's --autostash re-applies them
+ * without --index: everything staged, lines picked one by one included,
+ * came back unstaged. With staged changes the app stashes them itself and
+ * restores them with the index; without, git's --autostash does (`run`
+ * receives which). An operation that stops on a conflict leaves the stash
+ * for later, and says so.
+ */
+export async function keepingIndex<T>(repo: string, label: string, run: (autostash: boolean) => Promise<T>): Promise<T> {
+  const staged = (await git(repo, ['diff', '--cached', '--quiet'], { okCodes: [1, 128] })).code === 1
+  if (!staged) return run(true)
+  const top = () => git(repo, ['rev-parse', '-q', '--verify', 'refs/stash'], { okCodes: [1] }).then(r => r.stdout.trim())
+  const before = await top()
+  await git(repo, ['stash', 'push', '-q', '-m', label])
+  const mine = await top()
+  if (!mine || mine === before) return run(true)
+  let result: T
+  try {
+    result = await run(false)
+  } catch (e) {
+    if (await currentOp(repo)) {
+      if (e instanceof GitError) e.message += `\nYour uncommitted changes are kept in the stash “${label}”: apply it once this is finished.`
+    } else {
+      // Nothing started: the changes go back where they were.
+      await git(repo, ['stash', 'pop', '-q', '--index']).catch(() => undefined)
+    }
+    throw e
+  }
+  if ((await top()) === mine) await stashApply(repo, 0, true, mine)
+  return result
 }
 
 export async function push(repo: string, opts: { force?: boolean; setUpstream?: boolean }, report: Reporter): Promise<void> {
@@ -476,9 +585,19 @@ export async function deleteRemoteBranch(repo: string, remote: string, branch: s
   }
 }
 
-export async function clone(url: string, parent: string, name: string, report: Reporter): Promise<void> {
+/**
+ * Clones into a new folder `parent/name`. Stopped through `signal`, the folder
+ * it was creating is removed: git, ended from outside, leaves it half filled.
+ */
+export async function clone(url: string, parent: string, name: string, report: Reporter, signal?: AbortSignal): Promise<void> {
   try {
-    await git(parent, ['clone', '--progress', '--recurse-submodules', '--', url, name], { onStderrLine: progressHandler('clone', `Cloning ${name}`, report) })
+    await git(parent, ['clone', '--progress', '--recurse-submodules', '--', url, name], { onStderrLine: progressHandler('clone', `Cloning ${name}`, report), signal })
+  } catch (e) {
+    if (e instanceof GitError && e.code === 'CANCELLED') {
+      await rm(join(parent, name), { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => undefined)
+      throw new GitError('Clone cancelled: nothing was kept.', 'CANCELLED')
+    }
+    throw e
   } finally {
     report(null)
   }
@@ -494,25 +613,49 @@ export async function removeRemote(repo: string, name: string): Promise<void> {
 
 /* ─── Identity ──────────────────────────────────────────────────────────────── */
 
+/**
+ * The identity commits get. In a repository, the one git itself resolves:
+ * every config file with its include and includeIf (a work identity for
+ * repositories under ~/work, say), then GIT_AUTHOR_NAME/EMAIL. Reading only
+ * the local and global values showed "Personal <me@home>" for commits made as
+ * "Work <me@work>", and blocked committing when the identity came only from
+ * an include. `scope` is "local" when the repository sets one of its own.
+ */
 export async function identity(repo: string | null): Promise<{ name: string; email: string; scope: 'local' | 'global' | 'none' }> {
-  const read = async (scope: string, key: string) => {
-    const r = await git(repo ?? process.cwd(), ['config', scope, '--get', key], { okCodes: [1] })
-    return r.stdout.trim()
+  const cwd = repo ?? homedir()
+  const read = async (key: string) => {
+    const r = await git(cwd, ['config', ...(repo ? ['--show-scope'] : ['--global', '--includes']), '--get', key], { okCodes: [1] })
+    const out = r.stdout.trim()
+    if (!repo) return { value: out, local: false }
+    const [scope, ...value] = out.split('\t')
+    return { value: value.join('\t'), local: scope === 'local' || scope === 'worktree' }
   }
+  const [n, e] = await Promise.all([read('user.name'), read('user.email')])
+  let name = n.value
+  let email = e.value
   if (repo) {
-    const [name, email] = await Promise.all([read('--local', 'user.name'), read('--local', 'user.email')])
-    if (name || email) {
-      const [gName, gEmail] = await Promise.all([read('--global', 'user.name'), read('--global', 'user.email')])
-      return { name: name || gName, email: email || gEmail, scope: 'local' }
-    }
+    // What a commit would really use, environment included; fails when git knows no identity.
+    const ident = await git(repo, ['var', 'GIT_AUTHOR_IDENT'], { okCodes: [128] })
+    const m = /^(.*) <(.*)> \d+ [+-]\d{4}$/.exec(ident.stdout.trim())
+    if (ident.code === 0 && m) [name, email] = [m[1], m[2]]
   }
-  const [name, email] = await Promise.all([read('--global', 'user.name'), read('--global', 'user.email')])
-  return { name, email, scope: name || email ? 'global' : 'none' }
+  const scope = n.local || e.local ? 'local' : name || email ? 'global' : 'none'
+  return { name, email, scope }
 }
 
-export async function setIdentity(repo: string | null, id: { name: string; email: string }): Promise<void> {
+/**
+ * Sets the repository's own identity, or the global one. Null, or a field
+ * left empty, removes it instead: unticking "a different identity for this
+ * repository" wrote the global one only, the local one stayed in use (and
+ * the box came back ticked), and empty fields wrote `user.name ""`, which
+ * every commit then refused.
+ */
+export async function setIdentity(repo: string | null, id: { name: string; email: string } | null): Promise<void> {
   const scope = repo ? '--local' : '--global'
-  const cwd = repo ?? process.cwd()
-  await git(cwd, ['config', scope, 'user.name', id.name])
-  await git(cwd, ['config', scope, 'user.email', id.email])
+  const cwd = repo ?? homedir()
+  for (const [key, value] of [['user.name', id?.name.trim()], ['user.email', id?.email.trim()]] as const) {
+    // Exit 5: the key was not set, nothing to remove.
+    if (value) await git(cwd, ['config', scope, key, value])
+    else await git(cwd, ['config', scope, '--unset-all', key], { okCodes: [5] })
+  }
 }

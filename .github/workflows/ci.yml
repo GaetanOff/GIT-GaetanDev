@@ -9,10 +9,11 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same branch or pull request replaces the run in progress.
+# A newer push to a pull request replaces its run in progress. On main every commit keeps its
+# run: a cancelled one left that commit with no result.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
@@ -21,14 +22,17 @@ jobs:
       matrix:
         os: [windows-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
+    # A git or a test waiting for input would otherwise hold the runner for six hours.
+    timeout-minutes: 30
     steps:
       # Actions pinned to a commit: a moved tag cannot change what runs here.
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 22
+          # The Node the app runs on: Electron 45 embeds Node 24.
+          node-version: 24
           cache: npm
       # Lint, types and tests need no Electron binary.
       - run: npm ci
@@ -38,3 +42,11 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: npm run build
+      # The app as installed (asar, fuses, the app:// protocol) starts and shows its interface: a break
+      # there showed only once released, in an app that could then not update itself out of it.
+      - name: Package and start the app
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          npx electron-builder --win --dir --publish never
+          timeout 120 "release/win-unpacked/GaetanDev Git.exe" --smoke

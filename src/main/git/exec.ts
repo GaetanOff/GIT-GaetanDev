@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { accessSync, constants, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, isAbsolute, join } from 'node:path'
@@ -22,6 +22,8 @@ export interface ExecOptions {
   /** Called with each progress line git writes to stderr. */
   onStderrLine?: (line: string) => void
   maxBytes?: number
+  /** Stops git and what it started; the call then fails with code CANCELLED. */
+  signal?: AbortSignal
 }
 
 export interface ExecResult {
@@ -37,9 +39,24 @@ export interface ExecResult {
 /** Git processes still running, so quitting the app can stop them. */
 const running = new Set<ChildProcess>()
 
-/** Stops every git process still running (clone, fetch, push…): called on quit. */
+/**
+ * Stops git processes with everything they started. On Windows killing
+ * git.exe leaves its children running (git-remote-https, index-pack, ssh, a
+ * hook), still holding files open after the app is gone: taskkill /T ends the
+ * whole tree.
+ */
+function stop(children: ChildProcess[]): void {
+  const pids = children.map(c => c.pid).filter((p): p is number => !!p)
+  if (process.platform === 'win32' && pids.length) {
+    const taskkill = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe')
+    spawnSync(taskkill, ['/T', '/F', ...pids.flatMap(p => ['/PID', String(p)])], { windowsHide: true, stdio: 'ignore' })
+  }
+  for (const child of children) child.kill()
+}
+
+/** Stops every git process still running (clone, fetch, push…) and what it started: called on quit. */
 export function killRunning(): void {
-  for (const child of running) child.kill()
+  stop([...running])
   running.clear()
 }
 
@@ -128,25 +145,62 @@ export async function gitVersion(): Promise<ReturnType<typeof readGitVersion>> {
   }
 }
 
+/**
+ * Commands run without GIT_LITERAL_PATHSPECS: stash, and those that run hooks
+ * (pre-commit, post-checkout, pre-push…), whose own git calls would inherit it.
+ * Any path given to them is written ":(literal)path".
+ */
+const GLOB_PATHSPECS = new Set(['stash', 'commit', 'merge', 'pull', 'rebase', 'cherry-pick', 'revert', 'am', 'push', 'switch', 'checkout', 'clone', 'worktree'])
+
+/** A file name as a pathspec that never reads as a pattern, whatever GIT_LITERAL_PATHSPECS says. */
+export const literal = (path: string) => `:(literal)${path}`
+
 /** Commands that talk to a remote. */
 const NETWORK_COMMANDS = new Set(['fetch', 'pull', 'push', 'clone', 'ls-remote', 'submodule', 'lfs'])
 
 /**
- * A dead connection fails instead of holding its queue until the app restarts:
- * HTTPS below 1 byte/s for five minutes, SSH after two minutes of unanswered
- * keepalives. A server preparing a pack or running a push hook still sends
- * progress, so only a silent connection trips them. Settings of the user's own
- * (git config or environment) are left alone.
+ * Whether the ssh git runs is Windows' own OpenSSH (System32\OpenSSH), which
+ * starts SSH_ASKPASS with CreateProcess: it cannot run a "#!/bin/sh" script
+ * ("error:193"), so it gets a .cmd. Git's own ssh reads the script. A bare
+ * "ssh" is Git's when Git for Windows ships one (usr\bin\ssh.exe, absent
+ * with its "Use external OpenSSH" option), else the one on PATH.
+ */
+export function windowsOpenSsh(command: string | null, bundledSsh: boolean): boolean {
+  if (process.platform !== 'win32') return false
+  const program = command?.trim().match(/^"([^"]+)"|^(\S+)/)
+  const name = program ? (program[1] ?? program[2]) : 'ssh'
+  if (/^ssh(\.exe)?$/i.test(name)) return !bundledSsh
+  return /[\\/]system32[\\/]openssh[\\/]/i.test(name)
+}
+
+/** Git for Windows' own ssh, next to the git found on PATH (…\cmd\git.exe or …\mingw64\bin\git.exe). */
+function bundledSsh(): boolean {
+  gitPath ??= findOnPath('git')
+  if (!gitPath) return true
+  const root = join(gitPath, '..', '..')
+  return [join(root, 'usr', 'bin', 'ssh.exe'), join(root, '..', 'usr', 'bin', 'ssh.exe')].some(p => { try { return statSync(p).isFile() } catch { return false } })
+}
+
+/**
+ * The environment of a command that talks to a remote. A dead connection
+ * fails instead of holding its queue until the app restarts: HTTPS below 1
+ * byte/s for five minutes, SSH after two minutes of unanswered keepalives. A
+ * server preparing a pack or running a push hook still sends progress, so
+ * only a silent connection trips them. Settings of the user's own (git config
+ * or environment) are left alone. Windows' OpenSSH gets the .cmd prompt helper.
  */
 export async function stallGuards(cwd: string): Promise<NodeJS.ProcessEnv> {
   const r = await run(cwd, ['config', '--get-regexp', '^(http\\.lowspeed(limit|time)|core\\.sshcommand)$'], { okCodes: [1] })
-  const set = new Set(r.stdout.split('\n').map(l => l.split(' ')[0].toLowerCase()).filter(Boolean))
+  const values = new Map(r.stdout.split('\n').filter(Boolean).map(l => {
+    const i = l.indexOf(' ')
+    return [(i < 0 ? l : l.slice(0, i)).toLowerCase(), i < 0 ? '' : l.slice(i + 1)] as const
+  }))
   const env: NodeJS.ProcessEnv = {}
-  const http = ['http.lowspeedlimit', 'http.lowspeedtime'].some(k => set.has(k)) || process.env.GIT_HTTP_LOW_SPEED_LIMIT || process.env.GIT_HTTP_LOW_SPEED_TIME
+  const http = ['http.lowspeedlimit', 'http.lowspeedtime'].some(k => values.has(k)) || process.env.GIT_HTTP_LOW_SPEED_LIMIT || process.env.GIT_HTTP_LOW_SPEED_TIME
   if (!http) Object.assign(env, { GIT_HTTP_LOW_SPEED_LIMIT: '1', GIT_HTTP_LOW_SPEED_TIME: '300' })
-  if (!set.has('core.sshcommand') && !process.env.GIT_SSH_COMMAND && !process.env.GIT_SSH) {
-    env.GIT_SSH_COMMAND = 'ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=8'
-  }
+  const sshCommand = process.env.GIT_SSH_COMMAND || process.env.GIT_SSH || values.get('core.sshcommand') || null
+  if (!sshCommand) env.GIT_SSH_COMMAND = 'ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=8'
+  if (baseEnv.GDG_ASKPASS_CMD && windowsOpenSsh(sshCommand, bundledSsh())) env.SSH_ASKPASS = baseEnv.GDG_ASKPASS_CMD
   return env
 }
 
@@ -159,6 +213,19 @@ export async function git(cwd: string, args: string[], opts: ExecOptions = {}): 
   return run(cwd, args, { ...opts, env: { ...(await stallGuards(cwd)), ...opts.env } })
 }
 
+/**
+ * Variables that point git at another repository, index or object store. The
+ * app started from a hook or an alias (`code .` in a post-checkout, a script
+ * run by git) inherits them, and every command would then act on that
+ * repository whatever folder it runs in: staging went into another index.
+ */
+const LOCATION_VARS = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_COMMON_DIR', 'GIT_NAMESPACE', 'GIT_PREFIX']
+function inheritedEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env }
+  for (const k of Object.keys(env)) if (LOCATION_VARS.includes(k.toUpperCase())) delete env[k]
+  return env
+}
+
 function run(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
     gitPath ??= findOnPath('git')
@@ -167,7 +234,7 @@ function run(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecR
       cwd,
       windowsHide: true,
       env: {
-        ...process.env,
+        ...inheritedEnv(),
         ...baseEnv,
         LANG: 'C',
         LC_ALL: 'C',
@@ -176,8 +243,10 @@ function run(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecR
         GIT_PAGER: 'cat',
         // Paths are file names, not patterns: discarding "a[1].txt" must not touch "a1.txt".
         // Except for stash, whose own pathspec magic (":/" to clear stashed untracked files)
-        // breaks in literal mode: callers give it ":(literal)" paths instead.
-        GIT_LITERAL_PATHSPECS: subcommand(args) === 'stash' ? '0' : '1',
+        // breaks in literal mode, and for commands that run hooks, which inherit the variable:
+        // a pre-commit "git diff --cached -- '*.js'" then matched nothing and checked nothing.
+        // Callers give those ":(literal)" paths instead.
+        GIT_LITERAL_PATHSPECS: GLOB_PATHSPECS.has(subcommand(args) ?? '') ? '0' : '1',
         ...opts.env,
       },
     })
@@ -191,12 +260,21 @@ function run(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecR
     let errBytes = 0
     let truncated = false
     let pending = ''
+    let cancelled = false
+
+    const cancel = () => {
+      cancelled = true
+      stop([child])
+    }
+    if (opts.signal?.aborted) cancel()
+    opts.signal?.addEventListener('abort', cancel, { once: true })
+    child.on('exit', () => opts.signal?.removeEventListener('abort', cancel))
 
     child.stdout.on('data', (chunk: Buffer) => {
       if (truncated) return
       if (opts.maxBytes && outBytes + chunk.length > opts.maxBytes) {
         truncated = true
-        child.kill()
+        stop([child])
         return
       }
       outBytes += chunk.length
@@ -226,6 +304,7 @@ function run(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecR
       const stdout = raw.toString('utf8')
       const stderr = Buffer.concat(err).toString('utf8')
       if (truncated) return resolve({ stdout, stderr, code: -1, raw, truncated: true })
+      if (cancelled) return reject(new GitError('Cancelled.', 'CANCELLED', stderr))
       const exit = code ?? 1
       if (exit === 0 || opts.okCodes?.includes(exit)) return resolve({ stdout, stderr, code: exit, raw })
       reject(toGitError(stdout, stderr, exit))
@@ -264,7 +343,7 @@ const PATTERNS: [RegExp, GitErrorCode][] = [
   [/not a git repository/i, 'NOT_A_REPO'],
 ]
 
-function toGitError(stdout: string, stderr: string, exitCode: number): GitError {
+export function toGitError(stdout: string, stderr: string, exitCode: number): GitError {
   const text = `${stderr}\n${stdout}`
   const code = PATTERNS.find(([re]) => re.test(text))?.[1]
   const error = new GitError(summarize(stderr || stdout) || `git exited with code ${exitCode}`, code, stderr, exitCode)
@@ -272,15 +351,21 @@ function toGitError(stdout: string, stderr: string, exitCode: number): GitError 
   return error
 }
 
-/** Keeps the lines a human needs: errors, fatal messages and hints, minus noise. */
+/**
+ * Keeps the lines a human needs: errors, fatal messages and hints, minus
+ * noise. The server's own errors come first: a push refused by a protected
+ * branch (GH006) or a server hook says why only on "remote:" lines and on
+ * "! [remote rejected] … (reason)", and showed just "failed to push some refs".
+ */
 function summarize(text: string): string {
   const lines = text
     .split(/\r?\n/)
     .map(l => l.trimEnd())
     .filter(l => l && !/^(remote: )?(Enumerating|Counting|Compressing|Writing|Total|Delta|Receiving|Resolving)/.test(l))
+  const server = lines.filter(l => /^remote: *(error|fatal|GH\d+)\b/i.test(l) || /^ ?! \[remote rejected\]/.test(l))
   const important = lines.filter(l => /^(error|fatal|CONFLICT|hint: Updates)/.test(l))
-  const picked = (important.length ? important : lines).slice(0, 6)
-  return picked.map(l => l.replace(/^(error|fatal): /, '')).join('\n')
+  const picked = [...server, ...important].slice(0, 6)
+  return (picked.length ? picked : lines.slice(0, 6)).map(l => l.replace(/^(error|fatal): /, '').replace(/^remote: */, '')).join('\n')
 }
 
 export function stripAnsi(text: string): string {

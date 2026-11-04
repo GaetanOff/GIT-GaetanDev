@@ -155,6 +155,12 @@ export interface FileDiff {
   /** Git LFS pointer: the real content lives on the LFS server. */
   lfs?: { oid: string; size: number; before?: { oid: string; size: number } }
   submodule?: { before?: string; after?: string }
+  /** A file replaced by a link or a submodule, or the reverse: git gives two diffs, shown together; no line operations. */
+  typeChange?: boolean
+  /** Identifies git's output with the options used, for DiffOptions.since. */
+  etag?: string
+  /** Same as the diff given as `since`: nothing else is filled in. */
+  unchanged?: boolean
 }
 
 export type DiffSource =
@@ -168,6 +174,8 @@ export interface DiffOptions {
   context: number
   ignoreWhitespace: boolean
   force?: boolean
+  /** The `etag` of the diff shown: if git's output is the same, only `{ unchanged: true }` comes back. */
+  since?: string
 }
 
 /** Line selection for partial staging: hunk index → selected line indexes. */
@@ -380,6 +388,8 @@ export interface ConflictFile {
   finalNewline: boolean
   /** The file on disk has no conflict markers left: it was resolved elsewhere. */
   resolvedOnDisk: boolean
+  /** The file on disk when the conflict was read (a hash): a result is never written over edits made since. */
+  disk: string
   /** Blob ids of the base, ours and theirs stages: the same file in another merge is another conflict. */
   stages: string
 }

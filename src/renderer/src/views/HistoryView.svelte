@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   import Icon from '@/components/Icon.svelte'
   import VirtualList from '@/components/VirtualList.svelte'
   import Resizer from '@/components/Resizer.svelte'
@@ -7,6 +8,7 @@
   import type { Commit } from '@shared/types'
   import { commitMenu, commitsMenu } from '@/lib/actions'
   import { initials, relativeTime, shortSha, tone } from '@/lib/format'
+  import { MAX_LANES } from '@/lib/graph'
   import { app } from '@/lib/state.svelte'
   import { contextMenu, isMenuKey, menuAt, overlayOpen } from '@/lib/ui.svelte'
   import type { SearchMode } from '@shared/types'
@@ -22,8 +24,11 @@
     try { return +(localStorage.getItem('history-width') ?? 560) } catch { return 560 }
   }
 
-  const lanes = $derived(Math.min(12, app.graph.reduce((m, r) => Math.max(m, r.width), 1)))
-  const selectedIndex = $derived(app.commits.findIndex(c => c.sha === app.selectedCommit))
+  const lanes = $derived(Math.min(MAX_LANES, app.graph.reduce((m, r) => Math.max(m, r.width), 1)))
+  // Built once per list loaded: looking the selection up by scanning took a pass over up to
+  // 100,000 commits at every arrow key.
+  const indexBySha = $derived(new Map(app.commits.map((c, i) => [c.sha, i])))
+  const selectedIndex = $derived(app.selectedCommit ? indexBySha.get(app.selectedCommit) ?? -1 : -1)
   const headSha = $derived(app.status?.head)
 
   // Refs moved while another view was shown: catch up now, keeping the depth and the selection.
@@ -31,9 +36,15 @@
     if (app.historyStale) app.reloadHistory(true)
   })
 
-  // Reveal a commit selected from elsewhere (a branch or tag click in the sidebar).
+  // Reveal a commit selected from elsewhere (a branch or tag click in the sidebar), once: run
+  // whenever its index moved (a fetch adding commits on top), it scrolled the list back to it
+  // while reading thousands of rows further down.
+  let revealed: string | null = null
   $effect(() => {
-    if (selectedIndex >= 0) list?.reveal(selectedIndex)
+    const sha = app.selectedCommit
+    if (!sha || sha === revealed || selectedIndex < 0) return
+    revealed = sha
+    list?.reveal(selectedIndex)
   })
 
   const MODES: { id: SearchMode; label: string; icon: IconName; hint: string; placeholder: string }[] = [
@@ -43,27 +54,33 @@
     { id: 'regex', label: 'Code: diff matches a regex', icon: 'code', hint: '-G', placeholder: 'Regex matched by a changed line' },
   ]
 
-  /** Extra commits picked with Ctrl/Shift-click, for cherry-picking or reverting several at once. */
+  /**
+   * Extra commits picked with Ctrl/Shift-click, for cherry-picking or reverting several at once.
+   * A new list keeps those still in it: emptied whenever the list changed, three commits picked
+   * were lost by scrolling to the next page. The Shift+click anchor is a commit, not a row.
+   */
   let picked = $state<Set<string>>(new Set())
-  let anchor = -1
+  let anchor: string | null = null
   $effect(() => {
-    void app.commits
-    picked = new Set()
+    const shown = new Set(app.commits.map(c => c.sha))
+    const kept = [...untrack(() => picked)].filter(s => shown.has(s))
+    if (kept.length !== untrack(() => picked).size) picked = new Set(kept)
   })
 
   function clickCommit(e: MouseEvent, c: Commit, i: number) {
-    if (e.shiftKey && anchor >= 0) {
-      const [a, b] = [Math.min(anchor, i), Math.max(anchor, i)]
+    const from = anchor === null ? -1 : app.commits.findIndex(x => x.sha === anchor)
+    if (e.shiftKey && from >= 0) {
+      const [a, b] = [Math.min(from, i), Math.max(from, i)]
       picked = new Set(app.commits.slice(a, b + 1).map(x => x.sha))
     } else if (e.ctrlKey || e.metaKey) {
       const next = new Set(picked.size ? picked : [app.selectedCommit ?? c.sha])
       if (next.has(c.sha)) next.delete(c.sha)
       else next.add(c.sha)
       picked = next
-      anchor = i
+      anchor = c.sha
     } else {
       picked = new Set()
-      anchor = i
+      anchor = c.sha
     }
     app.selectedCommit = c.sha
   }

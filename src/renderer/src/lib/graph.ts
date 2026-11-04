@@ -25,6 +25,15 @@ interface Lane {
 }
 
 /**
+ * Lanes the history draws. Edges entirely past them are not kept: with a
+ * thousand open branches every row held a thousand edges, millions in all
+ * (2.5 GB for 2,000 lanes), for lines that were never drawn. `width` stays
+ * the real number of lanes.
+ */
+export const MAX_LANES = 12
+const drawn = (e: GraphEdge) => e.from < MAX_LANES || e.to < MAX_LANES
+
+/**
  * Streaming lane assignment for a topo-ordered log. Each lane waits for a
  * commit; a commit takes the first lane waiting for it (others merge in), then
  * hands its lane to its first parent and opens lanes for the other parents.
@@ -68,7 +77,8 @@ export class GraphBuilder {
     before.forEach((l, i) => {
       if (!l) return
       // Lanes waiting for this commit converge on its node; the rest pass through.
-      top.push({ from: i, to: l.sha === c.sha ? col : i, color: l.color })
+      const e = { from: i, to: l.sha === c.sha ? col : i, color: l.color }
+      if (drawn(e)) top.push(e)
       if (l.sha === c.sha && i !== col) lanes[i] = null
     })
 
@@ -88,9 +98,12 @@ export class GraphBuilder {
 
     const bottom: GraphEdge[] = []
     lanes.forEach((l, i) => {
-      if (l && i !== col && before[i]?.sha === l.sha) bottom.push({ from: i, to: i, color: l.color })
+      if (l && i !== col && i < MAX_LANES && before[i]?.sha === l.sha) bottom.push({ from: i, to: i, color: l.color })
     })
-    for (const t of targets) bottom.push({ from: col, to: t.lane, color: t.lane === col ? color : t.color })
+    for (const t of targets) {
+      const e = { from: col, to: t.lane, color: t.lane === col ? color : t.color }
+      if (drawn(e)) bottom.push(e)
+    }
 
     while (lanes.length && lanes[lanes.length - 1] === null) lanes.pop()
     const width = Math.max(before.length, lanes.length, col + 1)

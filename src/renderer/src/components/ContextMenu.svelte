@@ -7,6 +7,25 @@
   let pos = $state({ x: 0, y: 0 })
   let active = $state(-1)
 
+  /**
+   * Where the focus was when the menu opened: it goes back there when the menu closes without
+   * having moved it (Escape, a click elsewhere), instead of being left on the page's body where
+   * the arrow keys of the list behind did nothing.
+   */
+  let previous: HTMLElement | null = null
+  $effect(() => {
+    if (menu.open) {
+      previous = document.activeElement as HTMLElement | null
+      return
+    }
+    const back = previous
+    previous = null
+    tick().then(() => {
+      const lost = !document.activeElement || document.activeElement === document.body
+      if (back?.isConnected && lost) back.focus()
+    })
+  })
+
   // Keep the menu inside the window.
   $effect(() => {
     if (!menu.open) return

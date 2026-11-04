@@ -1,14 +1,29 @@
+import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { extname, join } from 'node:path'
 import type { DiffHunk, DiffLine, DiffOptions, DiffSource, FileDiff, LineSelection, TextEncoding } from '@shared/types'
 import { decode, decodeOutput, detect, encode } from './encoding'
-import { git, gitOut } from './exec'
+import { git, gitOut, GitError } from './exec'
 
 /** Beyond this many diff lines the UI asks before rendering. */
 const LINE_BUDGET = 25_000
 const MAX_DIFF_BYTES = 40 * 1024 * 1024
-const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+/**
+ * The empty tree of the repository's object format: SHA-1's
+ * 4b825dc… written in full made every diff of a root commit, of an
+ * untracked stash part or of the index before the first commit fail in a
+ * SHA-256 repository ("bad revision").
+ */
+const emptyTrees = new Map<string, string>()
+async function emptyTree(repo: string): Promise<string> {
+  let tree = emptyTrees.get(repo)
+  if (!tree) {
+    tree = (await git(repo, ['hash-object', '-t', 'tree', '--stdin'], { input: '' })).stdout.trim()
+    emptyTrees.set(repo, tree)
+  }
+  return tree
+}
 
 const IMAGE_TYPES: Record<string, string> = {
   '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
@@ -23,8 +38,22 @@ function baseArgs(opts: DiffOptions): string[] {
   return args
 }
 
+/**
+ * A file's diff. Every status refresh (each save in an editor) asks again for
+ * the diff shown; with `since`, an output identical to it comes back as
+ * `{ unchanged: true }`, not parsed, sent and compared again (up to 40 MB for
+ * a diff shown with "Show anyway").
+ */
 export async function diff(repo: string, source: DiffSource, opts: DiffOptions): Promise<FileDiff> {
   const out = await rawDiff(repo, source, opts)
+  const etag = createHash('sha1').update(out.raw).update(`\0${opts.context}\0${!!opts.ignoreWhitespace}\0${!!opts.force}`).digest('hex')
+  if (opts.since && opts.since === etag) {
+    return { path: source.path, header: [], hunks: [], binary: false, isNew: false, isDeleted: false, additions: 0, deletions: 0, encoding: 'utf8', etag, unchanged: true }
+  }
+  return { ...(await parsed(repo, source, opts, out)), etag }
+}
+
+async function parsed(repo: string, source: DiffSource, opts: DiffOptions, out: { raw: Buffer; truncated: boolean }): Promise<FileDiff> {
   const { text, encoding } = decodeOutput(out.raw)
   // Cut at MAX_DIFF_BYTES: the end is missing, so it is shown as too large, without hunks to act on.
   const parsed = parseDiff(text, source.path, opts.force && !out.truncated)
@@ -49,24 +78,28 @@ async function rawDiff(repo: string, source: DiffSource, opts: DiffOptions): Pro
   const run = (a: string[], okCodes?: number[]) =>
     git(repo, a, { maxBytes: MAX_DIFF_BYTES, okCodes }).then(r => ({ raw: r.raw, truncated: !!r.truncated }))
 
+  // Changes are staged, unstaged and discarded line by line from these diffs: they show the
+  // file's real content, never a textconv filter's text (git-crypt, docx…), which a partial
+  // patch would otherwise write into the index ("NEW LINE" staged for "new line").
+  const real = ['--no-textconv', ...args]
   switch (source.kind) {
     case 'worktree':
-      if (source.untracked) return run(['diff', ...args, '--no-index', '--', '/dev/null', source.path], [1])
+      if (source.untracked) return run(['diff', ...real, '--no-index', '--', '/dev/null', source.path], [1])
       // A combined diff is hard to read; against HEAD the conflict markers show as additions.
-      if (source.conflicted) return run(['diff', ...args, 'HEAD', ...paths(source.path)])
-      return run(['diff', ...args, ...paths(source.path)])
+      if (source.conflicted) return run(['diff', ...real, 'HEAD', ...paths(source.path)])
+      return run(['diff', ...real, ...paths(source.path)])
     case 'index': {
       const hasHead = await git(repo, ['rev-parse', '--verify', '-q', 'HEAD'], { okCodes: [1] }).then(r => r.code === 0)
-      return run(['diff', ...args, '--cached', ...(hasHead ? [] : [EMPTY_TREE]), ...paths(source.path, source.oldPath)])
+      return run(['diff', ...real, '--cached', ...(hasHead ? [] : [await emptyTree(repo)]), ...paths(source.path, source.oldPath)])
     }
     case 'commit': {
       const parents = (await gitOut(repo, ['rev-list', '--parents', '-n', '1', source.sha])).trim().split(' ').slice(1)
-      const base = parents[0] ?? EMPTY_TREE
+      const base = parents[0] ?? await emptyTree(repo)
       return run(['diff', ...args, base, source.sha, ...paths(source.path, source.oldPath)])
     }
     case 'stash': {
       const ref = `stash@{${source.index}}`
-      if (source.untracked) return run(['diff', ...args, EMPTY_TREE, `${ref}^3`, '--', source.path])
+      if (source.untracked) return run(['diff', ...args, await emptyTree(repo), `${ref}^3`, '--', source.path])
       return run(['diff', ...args, `${ref}^1`, ref, '--', source.path])
     }
     case 'range':
@@ -113,6 +146,18 @@ export function parseDiff(raw: string, path: string, force = false): FileDiff {
   let newNo = 0
   for (; i < lines.length; i++) {
     const l = lines[i]
+    // A type change (file ↔ symbolic link or submodule) is a deletion then a creation: its second
+    // header was read as diff lines ("-- /dev/null" removed, "++ b/x" added) in the first one's hunk.
+    if (l.startsWith('diff --git ')) {
+      const old = result.header.find(h => h.startsWith('deleted file mode '))?.slice(18)
+      const mode = lines.slice(i, i + 4).find(h => h.startsWith('new file mode '))?.slice(14)
+      result.typeChange = true
+      result.isDeleted = false
+      result.isNew = false
+      if (old && mode) result.modeChange = `${old} → ${mode}`
+      hunk = null
+      continue
+    }
     const m = HUNK_RE.exec(l)
     if (m) {
       oldNo = +m[1]
@@ -262,6 +307,7 @@ function lfsPointer(d: FileDiff): FileDiff['lfs'] {
  * as context; unselected deletions are dropped.
  */
 export function buildPartialPatch(d: FileDiff, selection: LineSelection, direction: 'forward' | 'reverse'): string | null {
+  if (d.typeChange) throw new GitError('This file became a link or a submodule (or the reverse): stage it whole.')
   const out: string[] = []
   let partial = false
 

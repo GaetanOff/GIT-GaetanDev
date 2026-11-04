@@ -32,12 +32,12 @@ export async function operations(repo: string, limit = 150): Promise<RepoOperati
   const [list, branch, locals, remotes] = await Promise.all([
     entries(repo, limit * 4),
     currentBranch(repo),
-    gitOut(repo, ['for-each-ref', '--format=%(refname:short)', 'refs/heads']).then(s => new Set(s.split('\n').filter(Boolean))),
+    gitOut(repo, ['for-each-ref', '--format=%(refname:lstrip=2)', 'refs/heads']).then(s => new Set(s.split('\n').filter(Boolean))),
     gitOut(repo, ['remote']).then(s => s.split('\n').filter(Boolean)),
   ])
   // A name that is neither a hash nor a remote branch was a local branch, even if deleted since.
   const wasBranch = (n: string) =>
-    locals.has(n) || (!/^[0-9a-f]{7,40}$/.test(n) && n !== 'HEAD' && !remotes.some(r => n.startsWith(`${r}/`)))
+    locals.has(n) || (!/^[0-9a-f]{7,64}$/.test(n) && n !== 'HEAD' && !remotes.some(r => n.startsWith(`${r}/`)))
   const ops: RepoOperationEntry[] = []
   let after = branch
 
@@ -51,7 +51,7 @@ export async function operations(repo: string, limit = 150): Promise<RepoOperati
       const before = list[j + 1]
       const target = end[5] || after
       const ontoRaw = start ? /checkout (.*)$/.exec(start.subject)?.[1] : undefined
-      const onto = ontoRaw && /^[0-9a-f]{40}$/.test(ontoRaw) ? ontoRaw.slice(0, 7) : ontoRaw
+      const onto = ontoRaw && /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(ontoRaw) ? ontoRaw.slice(0, 7) : ontoRaw
       const picks = list.slice(i + 1, j).length
       ops.push({
         id: `${e.sha}-${e.date}-${i}`,
@@ -117,11 +117,11 @@ export async function deletedBranches(repo: string): Promise<DeletedBranch[]> {
   const [list, branch, locals, remotes] = await Promise.all([
     entries(repo, 3000),
     currentBranch(repo),
-    gitOut(repo, ['for-each-ref', '--format=%(refname:short)', 'refs/heads']).then(s => new Set(s.split('\n').filter(Boolean))),
+    gitOut(repo, ['for-each-ref', '--format=%(refname:lstrip=2)', 'refs/heads']).then(s => new Set(s.split('\n').filter(Boolean))),
     gitOut(repo, ['remote']).then(s => s.split('\n').filter(Boolean)),
   ])
   const looksLikeBranch = (n: string) =>
-    !!n && n !== 'HEAD' && !/^[0-9a-f]{7,40}$/.test(n) && !/[~^:\s]/.test(n) && !remotes.some(r => n.startsWith(`${r}/`))
+    !!n && n !== 'HEAD' && !/^[0-9a-f]{7,64}$/.test(n) && !/[~^:\s]/.test(n) && !remotes.some(r => n.startsWith(`${r}/`))
 
   const tips = new Map<string, { sha: string; date: number }>()
   let cur = branch

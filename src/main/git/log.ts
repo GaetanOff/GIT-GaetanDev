@@ -1,5 +1,5 @@
 import type { Commit, CommitDetail, CommitFile, LogQuery, Signature } from '@shared/types'
-import { git, gitOut } from './exec'
+import { git, gitOut, toGitError } from './exec'
 
 const RS = '\x1e'
 const US = '\x1f'
@@ -22,11 +22,17 @@ export async function log(repo: string, q: LogQuery): Promise<Commit[]> {
   if (q.path) args.push('--follow', '--', q.path)
 
   const r = await git(repo, args, { okCodes: [128] })
-  if (r.code === 128) return [] // unborn branch
+  if (r.code === 128) {
+    // A branch with no commit yet has no history. Any other failure (a search regex git cannot
+    // read, "foo(") is said, instead of showing as a search that found nothing.
+    const born = await git(repo, ['rev-parse', '-q', '--verify', 'HEAD'], { okCodes: [1, 128] })
+    if (born.code !== 0) return []
+    throw toGitError(r.stdout, r.stderr, r.code)
+  }
   const commits = parseLog(r.stdout)
 
   // A hash typed in the search box should find the commit even if no message matches.
-  if (q.search && q.skip === 0 && /^[0-9a-f]{4,40}$/i.test(q.search.trim()) && !commits.length) {
+  if (q.search && q.skip === 0 && /^[0-9a-f]{4,64}$/i.test(q.search.trim()) && !commits.length) {
     const one = await git(repo, ['log', `--format=${LOG_FORMAT}`, '-n1', q.search.trim(), '--decorate=full'], { okCodes: [128] })
     return one.code === 0 ? parseLog(one.stdout) : []
   }

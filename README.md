@@ -35,7 +35,7 @@ Built with Electron, Svelte 5 and TypeScript. All Git work goes through your ins
 
 ## Development
 
-Requires Node 22+ and Git 2.36 or later (2.50.1 or later recommended: the app says so at startup).
+Requires Node 22.13+ (Vitest, ESLint and Electron need it) and Git 2.36 or later (2.50.1 or later recommended: the app says so at startup).
 
 ```bash
 npm install
@@ -51,7 +51,7 @@ CI (`.github/workflows/ci.yml`) runs lint, check, tests and build on Windows and
 
 ## Releases
 
-Push a tag such as `v0.2.0` (after bumping `version` in package.json): `.github/workflows/release.yml` checks that the tag matches that version, runs lint, check and tests, builds the Windows installer and publishes it as a GitHub release (published at once, not left as a draft). Installed copies check for a newer release at startup and every six hours, download it in the background and install it on quit (or at once from the "Restart now" toast). Auto-update reads the releases of `GaetanOff/GIT-GaetanDev`, so the repository must be public (or the update feed hosted elsewhere).
+Push a tag such as `v0.2.0` (after bumping `version` in package.json): `.github/workflows/release.yml` checks that the tag is on `main` and matches that version, runs lint, check and tests, builds the Windows installer and checks the packaged app starts, all with a read-only token; a second job, the only one that can write, uploads the files to a draft GitHub release and publishes it once every file is in place (as a pre-release for a tag like `v0.3.0-beta.1`; a tag whose release is already published is refused). Installed copies check for a newer release at startup and every six hours, download it in the background and install it on quit (or at once from the "Restart now" toast). Auto-update reads the releases of `GaetanOff/GIT-GaetanDev`, so the repository must be public (or the update feed hosted elsewhere).
 
 - **Code signing**: set the `WIN_CSC_LINK` (base64 or URL of a .pfx) and `WIN_CSC_KEY_PASSWORD` repository secrets. Without them the installer is unsigned and SmartScreen warns on first launch.
 - **Hardening**: Electron fuses turn off `NODE_OPTIONS` and `--inspect`, validate the asar archive and load the app only from it. `runAsNode` stays on: the credential prompt helper (askpass) runs the app's executable as Node. The UI is served from `app://bundle`, not `file://`, so the page cannot read local files; `GrantFileProtocolExtraPrivileges` stays on for the GitHub Desktop importer, which reads its database from a `file://` page of its own. Changing the editor or terminal command asks for confirmation in a native dialog.

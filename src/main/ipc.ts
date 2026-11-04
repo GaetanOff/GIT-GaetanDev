@@ -1,10 +1,10 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
-import { existsSync, mkdirSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, isAbsolute, join, posix } from 'node:path'
+import { basename, dirname, isAbsolute, join, posix, resolve as resolvePath, sep } from 'node:path'
 import type { Api, ApiChannel, ApiEvents, IpcEnvelope } from '@shared/api'
 import { isSettingKey, validSetting, type Progress, type RepoImport } from '@shared/types'
-import { registerPending, respond } from './askpass'
+import { onAbandon, registerPending, respond } from './askpass'
 import { blame, fileLog } from './git/blame'
 import { compare } from './git/compare'
 import { rebasePlan, rebaseRun } from './git/rebase'
@@ -19,13 +19,13 @@ import { commitDetail, log, stashDetail } from './git/log'
 import * as ops from './git/ops'
 import { defaultBranch, defaultRemote, extras, refs } from './git/refs'
 import { isRepo, status, topLevel } from './git/status'
-import { openEditor, openTerminal } from './integrations'
+import { openEditor, openTerminal, resolveProgram } from './integrations'
 import { logDir } from './log'
 import { detectProvider, providerUrl } from './provider'
-import { installUpdate } from './updater'
+import { installUpdate, updateReady } from './updater'
 import { githubDesktopRepos } from './importers'
-import { addRepoEntry, getState, isRegistered, removeRepo, repoById, save, stateUnreadable, updateSettings, upsertRepo } from './store'
-import type { RepoWatcher } from './watcher'
+import { addRepoEntry, flush, foldPath, getState, isInsideRegistered, isRegistered, removeRepo, repoById, save, stateReset, stateUnreadable, updateSettings, upsertRepo } from './store'
+import { gitFolders, type RepoWatcher } from './watcher'
 
 type Handlers = { [K in ApiChannel]: (...args: Parameters<Api[K]>) => ReturnType<Api[K]> }
 
@@ -35,12 +35,64 @@ export function send<K extends keyof ApiEvents>(channel: K, payload: ApiEvents[K
 
 const progress = (p: Progress | null) => send('progress', p)
 
-/** Opening the same folder twice resolves to the repository root once. */
+/**
+ * Opening the same folder twice resolves to the repository root once. A
+ * folder that is not a repository yet (dropped, or opened from Explorer)
+ * becomes one only once the user says so in a dialog of the main process.
+ */
 async function addRepo(path: string) {
   if (!existsSync(path)) throw new GitError('This folder does not exist.')
-  if (!(await isRepo(path))) throw new GitError('This folder is not a Git repository. Use "Create repository" to initialise it.', 'NOT_A_REPO')
-  return upsertRepo(await topLevel(path))
+  if (await isRepo(path)) return upsertRepo(await topLevel(path))
+  if (!(await ask('This folder is not a Git repository yet. Create one in it?', path, 'Create repository'))) {
+    throw new GitError('Cancelled: nothing was created.', 'CANCELLED')
+  }
+  await git(path, ['init', '-b', 'main'])
+  return upsertRepo(path)
 }
+
+/**
+ * A yes/no question in a dialog of the main process, which a compromised
+ * page can neither show nor answer. Cancel is the default: Enter never
+ * agrees by accident.
+ */
+async function ask(message: string, detail: string, button: string): Promise<boolean> {
+  const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+  const opts = { type: 'question' as const, buttons: [button, 'Cancel'], defaultId: 1, cancelId: 1, message, detail }
+  const { response } = win ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts)
+  return response === 0
+}
+
+/**
+ * Folders the user picked in a folder dialog of this session, or confirmed
+ * as a destination: creating, cloning or adding a worktree inside one asks
+ * nothing more.
+ */
+const chosenFolders = new Set<string>()
+/** Worktrees git listed for one of the user's repositories: folders the app may open elsewhere. */
+const knownWorktrees = new Set<string>()
+const folderKey = (p: string) => {
+  const r = resolvePath(p)
+  return process.platform === 'win32' || process.platform === 'darwin' ? r.toLowerCase() : r
+}
+const inChosen = (path: string) => {
+  const p = folderKey(path)
+  return [...chosenFolders].some(f => p === f || p.startsWith(f.endsWith(sep) ? f : f + sep))
+}
+
+/**
+ * Where a repository or a worktree is created: a folder the user chose, or
+ * one confirmed in a dialog of the main process, which a compromised page
+ * can neither show nor answer. Without it, a page could create a repository
+ * in ~/.config/git or the Startup folder and fill it with files of its own.
+ */
+export async function confirmDestination(path: string, message: string, button: string, remember: string): Promise<void> {
+  if (inChosen(path)) return
+  if (!(await ask(message, path, button))) throw new GitError('Cancelled: nothing was created.', 'CANCELLED')
+  chosenFolders.add(folderKey(remember))
+}
+
+/** Stops the clone under way, if any: a large one or a stalled network no longer leaves only waiting. */
+let cloneAbort: AbortController | null = null
 
 /** A folder the app was launched with; the renderer opens it instead of the last repo. */
 let launchPath: string | null = null
@@ -58,13 +110,14 @@ export function openFolder(path: string): void {
 }
 
 export function registerIpc(watcher: RepoWatcher): void {
+  onAbandon(id => send('askpass:cancel', { id, reason: 'gone' }))
   const h: Handlers = {
     'app:state': async () => {
       const s = getState()
       const open = launchPath
       launchPath = null
       stateRead = true
-      return { repos: s.repos, lastRepo: s.lastRepo, settings: s.settings, platform: process.platform, version: app.getVersion(), home: homedir(), launchPath: open, stateUnreadable: stateUnreadable(), git: await gitVersion() }
+      return { repos: s.repos, lastRepo: s.lastRepo, settings: s.settings, platform: process.platform, version: app.getVersion(), home: homedir(), launchPath: open, stateUnreadable: stateUnreadable(), git: await gitVersion(), updateReady: updateReady(), stateReset: stateReset() }
     },
     'app:settings': async patch => {
       // Commands the app runs change only once confirmed in a dialog of the main process, which a
@@ -72,20 +125,27 @@ export function registerIpc(watcher: RepoWatcher): void {
       const current = getState().settings
       const commands = (['editorCommand', 'terminalCommand'] as const).filter(k => patch[k] && patch[k] !== current[k])
       if (commands.length) {
-        const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
-        const opts = {
-          type: 'question' as const, buttons: ['Use them', 'Cancel'], defaultId: 0, cancelId: 1,
-          message: 'GaetanDev Git will run these commands to open your editor or terminal.',
-          detail: commands.map(k => `${k === 'editorCommand' ? 'Editor' : 'Terminal'}: ${patch[k]}`).join('\n'),
+        // One line each, shown with the program it runs: line breaks or a run of spaces could push
+        // the real end of a command out of sight, and Enter (Cancel now) agreed to what was seen.
+        const lines = commands.map(k => {
+          const command = patch[k]!
+          if ([...command].some(c => c.charCodeAt(0) < 0x20)) throw new GitError('A command cannot hold line breaks or other control characters.')
+          const program = resolveProgram(command).line.replace(/^"([^"]+)".*$/s, '$1')
+          return `${k === 'editorCommand' ? 'Editor' : 'Terminal'}: ${command.replace(/ {2,}/g, ' ')}\n    runs ${program}`
+        })
+        if (!(await ask('GaetanDev Git will run these commands to open your editor or terminal.', lines.join('\n'), 'Use them'))) {
+          throw new GitError('Integrations were not changed.', 'CANCELLED')
         }
-        const { response } = win ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts)
-        if (response !== 0) throw new GitError('Integrations were not changed.', 'CANCELLED')
       }
       return updateSettings(patch)
     },
     // "Restart now" during a commit or a checkout: the update waits for it (ten seconds at most).
     'app:installUpdate': async () => {
+      // No new git work starts (an auto-fetch, say), what runs gets ten seconds, and the state is
+      // saved now: the installer may end the app before its own quit handlers have run.
+      closeQueues()
       await settleQueues(10_000)
+      flush()
       installUpdate()
     },
     'repo:list': async () => getState().repos,
@@ -104,6 +164,7 @@ export function registerIpc(watcher: RepoWatcher): void {
       return result
     },
     'repo:init': async path => {
+      await confirmDestination(path, 'This folder is not a Git repository yet. Create one in it?', 'Create repository', path)
       mkdirSync(path, { recursive: true })
       await git(path, ['init', '-b', 'main'])
       return upsertRepo(path)
@@ -111,10 +172,18 @@ export function registerIpc(watcher: RepoWatcher): void {
     'repo:clone': async (url, parent, name) => {
       const target = join(parent, name)
       if (existsSync(target)) throw new GitError(`"${target}" already exists.`)
+      await confirmDestination(target, 'Clone the repository into this folder?', 'Clone', parent)
       mkdirSync(parent, { recursive: true })
-      await ops.clone(url, parent, name, progress)
+      const abort = new AbortController()
+      cloneAbort = abort
+      try {
+        await ops.clone(url, parent, name, progress, abort.signal)
+      } finally {
+        if (cloneAbort === abort) cloneAbort = null
+      }
       return upsertRepo(target)
     },
+    'repo:cancelClone': async () => cloneAbort?.abort(),
     'repo:remove': async id => removeRepo(id),
     'repo:open': async id => {
       const r = repoById(id)
@@ -130,7 +199,9 @@ export function registerIpc(watcher: RepoWatcher): void {
       const win = BrowserWindow.getFocusedWindow()
       const opts = { title, properties: ['openDirectory', 'createDirectory'] as ('openDirectory' | 'createDirectory')[] }
       const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
-      return r.canceled ? null : r.filePaths[0] ?? null
+      const picked = r.canceled ? null : r.filePaths[0] ?? null
+      if (picked) chosenFolders.add(folderKey(picked))
+      return picked
     },
 
     'git:status': async repo => status(repo),
@@ -149,11 +220,11 @@ export function registerIpc(watcher: RepoWatcher): void {
     'git:preparedMessage': async repo => ops.preparedMessage(repo),
     'git:undoCommit': async (repo, expect) => ops.undoCommit(repo, expect),
     'git:resolve': async (repo, path, side) => ops.resolve(repo, path, side),
-    'git:continue': async repo => ops.continueOp(repo),
+    'git:continue': async (repo, message) => ops.continueOp(repo, message),
     'git:abort': async repo => ops.abortOp(repo),
     'git:skip': async repo => ops.skipOp(repo),
     'git:conflict': async (repo, path) => conflict(repo, path),
-    'git:resolveContent': async (repo, path, content, encoding) => resolveContent(repo, path, content, encoding),
+    'git:resolveContent': async (repo, path, content, encoding, expect) => resolveContent(repo, path, content, encoding, expect),
     'git:resolveWhole': async (repo, path, choice) => resolveWhole(repo, path, choice),
 
     'git:log': async (repo, q) => log(repo, q),
@@ -175,7 +246,12 @@ export function registerIpc(watcher: RepoWatcher): void {
     'git:rebaseRun': async (repo, base, steps, head) => rebaseRun(repo, base, steps, head),
 
     'git:refs': async repo => refs(repo),
-    'git:extras': async repo => extras(repo),
+    'git:extras': async repo => {
+      const x = await extras(repo)
+      // The worktrees git lists may be opened in Explorer, an editor or a terminal (see checkArgs).
+      for (const w of x.worktrees) knownWorktrees.add(folderKey(w.path))
+      return x
+    },
     'git:checkout': async (repo, branch, opts) => ops.checkout(repo, branch, opts),
     'git:createBranch': async (repo, name, from, co) => ops.createBranch(repo, name, from, co),
     'git:renameBranch': async (repo, from, to) => ops.renameBranch(repo, from, to),
@@ -194,7 +270,16 @@ export function registerIpc(watcher: RepoWatcher): void {
     'git:removeRemote': async (repo, name) => ops.removeRemote(repo, name),
     'git:submoduleUpdate': async (repo, path) => submoduleUpdate(repo, path, progress),
     'git:lfsPull': async repo => lfsPull(repo, progress),
-    'git:worktreeAdd': async (repo, path, branch, create, from) => worktreeAdd(repo, path, branch, create, from),
+    'git:worktreeAdd': async (repo, path, branch, create, from) => {
+      // Where the dialog puts it needs no confirmation: "<repo>-<branch>" next to the repository.
+      // Not any folder there: next to a repository in the home folder, ".config" holds git's global config.
+      const name = (p: string) => (process.platform === 'win32' || process.platform === 'darwin' ? basename(p).toLowerCase() : basename(p))
+      const suggested = folderKey(dirname(path)) === folderKey(dirname(repo)) && name(path).startsWith(`${name(repo)}-`)
+      if (!suggested) {
+        await confirmDestination(path, 'Create the worktree in this folder?', 'Create worktree', dirname(path))
+      }
+      return worktreeAdd(repo, path, branch, create, from)
+    },
     'git:worktreeRemove': async (repo, path, force) => worktreeRemove(repo, path, force),
     'repo:fsmonitor': async repo => fsmonitorInfo(repo),
     'repo:setFsmonitor': async (repo, on) => setFsmonitor(repo, on),
@@ -224,7 +309,9 @@ export function registerIpc(watcher: RepoWatcher): void {
     'shell:editor': async (repo, path) => openEditor(getState().settings.editorCommand, repo, path ? join(repo, path) : repo),
     'shell:terminal': async repo => openTerminal(getState().settings.terminalCommand, repo),
     'clipboard:write': async text => clipboard.writeText(text),
-    'clipboard:read': async () => clipboard.readText(),
+    // Only while the user is in the app (the Clone dialog pastes a URL as it opens): a compromised
+    // page could otherwise read the clipboard at any time and send it off through a remote.
+    'clipboard:read': async () => (BrowserWindow.getFocusedWindow() ? clipboard.readText() : ''),
     'app:openLogs': async () => {
       mkdirSync(logDir(), { recursive: true })
       await shell.openPath(logDir())
@@ -290,12 +377,25 @@ const networkQueues = new Map<string, Promise<unknown>>()
 
 /** Runs `fn` after every earlier call on the same queue and repository has settled. */
 function serial<T>(queues: Map<string, Promise<unknown>>, repo: string, fn: () => Promise<T>): Promise<T> {
-  const key = repo.replace(/\\/g, '/').toLowerCase()
+  // Case folded only where the file system ignores it: two Linux repositories differing by case are two queues.
+  const key = foldPath(repo).replace(/\\/g, '/')
   const result = (queues.get(key) ?? Promise.resolve()).catch(() => undefined).then(fn)
   const tail = result.catch(() => undefined)
   queues.set(key, tail)
   tail.then(() => { if (queues.get(key) === tail) queues.delete(key) })
   return result
+}
+
+/**
+ * The git folder a repository shares with its linked worktrees, which keep
+ * their refs (remote-tracking branches included) there: a fetch in one
+ * worktree and a pull in another updated the same refs at once ("cannot lock
+ * ref"), each on its own queue. Network commands queue by it.
+ */
+function sharedGitDir(repo: string): string {
+  const f = gitFolders(repo)
+  const dir = f ? f.common ?? f.dir : join(repo, '.git')
+  try { return realpathSync.native(dir) } catch { return dir }
 }
 
 /** Whether queued git work (a write or a network command) is still running. */
@@ -309,9 +409,16 @@ export function settleQueues(ms: number): Promise<void> {
 }
 
 /** Runs a channel's handler on the queues it belongs to (none for reads). */
+/** Set once the app is quitting or installing an update: writes and network commands no longer start. */
+let closing = false
+export function closeQueues(): void {
+  closing = true
+}
+
 export function schedule<T>(channel: string, repo: string, fn: () => Promise<T>): Promise<T> {
+  if (closing && (WRITES.has(channel) || NETWORK.has(channel))) return Promise.reject(new GitError('The app is closing: nothing was started.'))
   const write = WRITES.has(channel) ? () => serial(writeQueues, repo, fn) : fn
-  return NETWORK.has(channel) ? serial(networkQueues, repo, write) : write()
+  return NETWORK.has(channel) ? serial(networkQueues, sharedGitDir(repo), write) : write()
 }
 
 /** Arguments, by position, that name a revision, branch, tag or remote. */
@@ -331,6 +438,19 @@ const PATH_ARGS: Record<string, number[]> = {
   'shell:reveal': [1], 'shell:editor': [1],
 }
 
+/**
+ * Names Windows resolves to the .git folder besides ".git" itself: its 8.3
+ * short name ("GIT~1"), the directory stream (".git::$INDEX_ALLOCATION",
+ * ".git:$I30:$INDEX_ALLOCATION"), and trailing dots or spaces, which Win32
+ * drops. Git refuses to check out any of them (core.protectNTFS), so no file
+ * shown can be one; any ":" goes too, as it names a stream or a drive.
+ */
+const isGitDir = (part: string) => {
+  const p = part.toLowerCase()
+  if (p === '.git') return true
+  return process.platform === 'win32' && (p.includes(':') || /^git~\d+$/.test(p) || p.replace(/[. ]+$/, '') === '.git')
+}
+
 /** A path relative to the repository that stays inside it: files are read and written at `join(repo, path)`. */
 function insideRepo(path: string): boolean {
   // "c:notes.md" names a drive on Windows only; elsewhere it is a file a commit can hold.
@@ -338,7 +458,7 @@ function insideRepo(path: string): boolean {
   const parts = posix.normalize(path.replace(/\\/g, '/'))
   if (parts === '..' || parts.startsWith('../')) return false
   // Nor inside a .git folder (hooks, config): git never tracks a path through one, so no file shown is.
-  return !parts.split('/').some(p => p.toLowerCase() === '.git')
+  return !parts.split('/').some(isGitDir)
 }
 
 /** Channels whose first argument may be null (the global identity, no repo to watch). */
@@ -361,6 +481,11 @@ export function checkArgs(channel: string, args: unknown[]): void {
     if (repo === null && NULL_REPO_OK.has(channel)) return
     if (typeof repo !== 'string') throw new GitError('A repository path is required.')
     if (OPENS_FOLDER.has(channel)) {
+      // A repository, a folder inside one (a submodule) or a worktree git listed for one: any other
+      // folder (the Startup folder in Explorer, a network path looked up) is not the app's to open.
+      if (!isRegistered(repo) && !isInsideRegistered(repo) && !knownWorktrees.has(folderKey(repo))) {
+        throw new GitError(`"${repo}" is not one of your repositories, or a folder of one.`)
+      }
       let isDir = false
       try { isDir = statSync(repo).isDirectory() } catch { /* missing */ }
       if (!isDir) throw new GitError(`"${repo}" is not a folder.`)
@@ -385,6 +510,22 @@ export function checkArgs(channel: string, args: unknown[]): void {
     if (source?.index !== undefined && !(Number.isInteger(source.index) && (source.index as number) >= 0)) throw new GitError('Invalid stash entry.')
   }
   if (channel === 'git:restore') refs.push((args[1] as { sha?: unknown; branch?: unknown } | undefined)?.sha, (args[1] as { branch?: unknown } | undefined)?.branch)
+  // Branches searched for in the recovery channels: each one's name and known tip reach git too.
+  if (channel === 'git:newerTips' || channel === 'git:remoteSearch') {
+    if (!Array.isArray(args[1])) throw new GitError('Invalid branches.')
+    for (const b of args[1] as { name?: unknown; sha?: unknown }[]) {
+      if (typeof b?.name !== 'string' || typeof b?.sha !== 'string' || !/^[0-9a-f]{4,64}$/i.test(b.sha)) throw new GitError('Invalid branches.')
+      refs.push(b.name)
+    }
+  }
+  // Words that become git options ("--ours", "--hard"): only the ones the channel offers.
+  const CHOICES: Record<string, [number, string[]]> = {
+    'git:resolve': [2, ['ours', 'theirs']], 'git:resolveWhole': [2, ['ours', 'theirs', 'delete', 'disk']], 'git:reset': [2, ['soft', 'mixed', 'hard']],
+  }
+  const choice = CHOICES[channel]
+  if (choice && !choice[1].includes(args[choice[0]] as string)) throw new GitError(`"${String(args[choice[0]])}" is not one of ${choice[1].join(', ')}.`)
+  if (channel === 'repo:pin' && typeof args[1] !== 'boolean') throw new GitError('Invalid pin.')
+  if (channel === 'askpass:respond' && (typeof args[0] !== 'string' || (args[1] !== null && typeof args[1] !== 'string'))) throw new GitError('Invalid answer.')
   for (const r of refs) {
     if (typeof r === 'string' && (r.startsWith('-') || r.includes('\0'))) throw new GitError(`"${r}" is not a valid name or revision.`)
   }
@@ -417,10 +558,15 @@ export function askRenderer(req: { id: string; prompt: string; kind: 'password' 
     // Unanswered, the prompt is declined, and its dialog closes: an answer typed later would go nowhere.
     const timer = setTimeout(() => {
       respond(req.id, null)
-      send('askpass:cancel', req.id)
+      send('askpass:cancel', { id: req.id, reason: 'timeout' })
     }, 5 * 60_000)
+    // A page reloaded meanwhile (a crash recovered) lost the dialog: it is asked again, rather than
+    // git waiting five minutes for an answer, holding the repository's network queue.
+    const again = () => win.webContents.send('askpass', req)
+    win.webContents.on('did-finish-load', again)
     registerPending(req.id, value => {
       clearTimeout(timer)
+      if (!win.isDestroyed()) win.webContents.removeListener('did-finish-load', again)
       resolve(value)
     })
     if (win.isMinimized()) win.restore()

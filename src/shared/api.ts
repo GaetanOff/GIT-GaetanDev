@@ -19,6 +19,10 @@ export interface Api {
   'app:state'(): Promise<{
     repos: RepoEntry[]; lastRepo: string | null; settings: Settings; platform: string; version: string; home: string; launchPath: string | null
     stateUnreadable: boolean; git: { version: string; supported: boolean; recommended: boolean; minimum: string } | null
+    /** A version already downloaded, waiting to install. */
+    updateReady: string | null
+    /** Where a damaged state.json was set aside, the app starting with an empty list. */
+    stateReset: string | null
   }>
   'app:settings'(patch: Partial<Settings>): Promise<Settings>
   'repo:list'(): Promise<RepoEntry[]>
@@ -27,6 +31,8 @@ export interface Api {
   'repo:importGithubDesktop'(): Promise<RepoImport>
   'repo:init'(path: string): Promise<RepoEntry>
   'repo:clone'(url: string, parent: string, name: string): Promise<RepoEntry>
+  /** Stops the clone under way; it then fails with code CANCELLED and its folder is removed. */
+  'repo:cancelClone'(): Promise<void>
   'repo:remove'(id: string): Promise<RepoEntry[]>
   'repo:open'(id: string): Promise<RepoEntry>
   'repo:pin'(id: string, pinned: boolean): Promise<RepoEntry[]>
@@ -50,11 +56,13 @@ export interface Api {
   /** `expect`: the commit to undo; refused if HEAD is another one by now. */
   'git:undoCommit'(repo: string, expect?: string): Promise<string>
   'git:resolve'(repo: string, path: string, side: 'ours' | 'theirs'): Promise<void>
-  'git:continue'(repo: string): Promise<void>
+  /** `message`: the commit message the user wrote, for a merge, cherry-pick or revert; git's own otherwise. */
+  'git:continue'(repo: string, message?: string): Promise<void>
   'git:abort'(repo: string): Promise<void>
   'git:skip'(repo: string): Promise<void>
   'git:conflict'(repo: string, path: string): Promise<ConflictFile>
-  'git:resolveContent'(repo: string, path: string, content: string, encoding?: TextEncoding): Promise<void>
+  /** `expect`: the conflict's `disk` fingerprint; a file changed since is not overwritten. */
+  'git:resolveContent'(repo: string, path: string, content: string, encoding?: TextEncoding, expect?: string): Promise<void>
   'git:resolveWhole'(repo: string, path: string, choice: 'ours' | 'theirs' | 'delete' | 'disk'): Promise<void>
 
   /* History */
@@ -109,7 +117,8 @@ export interface Api {
 
   /* Config & integrations */
   'git:identity'(repo: string | null): Promise<GitIdentity & { scope: 'local' | 'global' | 'none' }>
-  'git:setIdentity'(repo: string | null, identity: GitIdentity): Promise<void>
+  /** `identity` null, or an empty field: that identity, or that part of it, is removed instead of written empty. */
+  'git:setIdentity'(repo: string | null, identity: GitIdentity | null): Promise<void>
   'provider:url'(repo: string, link: ProviderLink): Promise<string | null>
   'shell:openUrl'(url: string): Promise<void>
   'shell:reveal'(repo: string, path?: string): Promise<void>
@@ -127,7 +136,7 @@ export interface Api {
 export type ApiChannel = keyof Api
 
 export const API_CHANNELS: ApiChannel[] = [
-  'app:state', 'app:installUpdate', 'app:settings', 'repo:list', 'repo:add', 'repo:importGithubDesktop', 'repo:init', 'repo:clone', 'repo:remove', 'repo:open', 'repo:pin',
+  'app:state', 'app:installUpdate', 'app:settings', 'repo:list', 'repo:add', 'repo:importGithubDesktop', 'repo:init', 'repo:clone', 'repo:cancelClone', 'repo:remove', 'repo:open', 'repo:pin',
   'dialog:pickFolder',
   'git:status', 'git:diff', 'git:stage', 'git:unstage', 'git:stageLines', 'git:unstageLines', 'git:discard',
   'git:discardLines', 'git:ignore', 'git:commit', 'git:lastCommitMessage', 'git:preparedMessage', 'git:undoCommit', 'git:resolve',
@@ -146,14 +155,20 @@ export interface ApiEvents {
   'repo:changed': RepoChangeEvent
   'progress': Progress | null
   'askpass': AskPassRequest
-  /** A credential prompt git stopped waiting for (it timed out): its dialog closes. */
-  'askpass:cancel': string
+  /** A credential prompt withdrawn: unanswered for five minutes, or git stopped waiting (`gone`). */
+  'askpass:cancel': { id: string; reason: 'timeout' | 'gone' }
   'menu': string
   /** A folder passed to a second launch of the app ("Open with"). */
   'open:path': string
   /** A newer version was downloaded; it installs on quit. */
   'update:ready': string
 }
+
+/** The events the page may listen to: the bridge subscribes to these channels and no other. */
+export const API_EVENTS = ['repo:changed', 'progress', 'askpass', 'askpass:cancel', 'menu', 'open:path', 'update:ready'] as const satisfies readonly (keyof ApiEvents)[]
+type MissingEvent = Exclude<keyof ApiEvents, (typeof API_EVENTS)[number]>
+/** A compile error here names an event of ApiEvents left out of API_EVENTS. */
+export const EVENTS_COMPLETE: MissingEvent extends never ? true : MissingEvent = true
 
 /** Errors cross IPC as plain data so the renderer gets a clean message. */
 export interface IpcEnvelope<T> {
@@ -178,3 +193,5 @@ export type GitErrorCode =
   | 'CANCELLED'
   | 'GIT_NOT_FOUND'
   | 'HOOK_FAILED'
+  /** The file changed on disk since it was shown: nothing was written. */
+  | 'CHANGED_ON_DISK'

@@ -1,6 +1,7 @@
 import type { FileChange } from '@shared/types'
 import { api } from './api'
 import { basename } from './format'
+import { ignoreLiteral } from './gitignore'
 import { app, type Area } from './state.svelte'
 import { confirm, openDialog, prompt, toast, type MenuItem } from './ui.svelte'
 
@@ -35,6 +36,26 @@ export async function ignorePattern(pattern: string): Promise<void> {
   await app.run('Updating .gitignore', () => api['git:ignore'](repo(), pattern), { success: `Added “${pattern}” to .gitignore.` })
 }
 
+/**
+ * Stages a conflicted file as it is on disk. Conflict markers still in it are said first, as
+ * the conflict view does: staged without a word, a "<<<<<<<" line went into the commit Continue
+ * then made.
+ */
+export async function markResolved(path: string): Promise<void> {
+  const target = repo()
+  const c = await api['git:conflict'](target, path).catch(() => null)
+  if (c && c.mode === 'text' && !c.resolvedOnDisk) {
+    const ok = await confirm({
+      title: 'Conflict markers remain',
+      message: `“${basename(path)}” still contains <<<<<<< / ======= / >>>>>>> lines. Mark it resolved anyway?`,
+      confirmLabel: 'Mark resolved anyway',
+      danger: true,
+    })
+    if (!ok) return
+  }
+  await app.run('Staging', () => api['git:stage'](target, [path]))
+}
+
 /** Takes one side of a conflicted file whole; any hand edits in the file are replaced, so ask first. */
 export async function resolveWith(path: string, side: 'ours' | 'theirs'): Promise<void> {
   const target = repo()
@@ -57,7 +78,7 @@ export function fileMenu(file: FileChange, area: Area, selection: string[]): Men
     items.push(
       { label: 'Use my version (ours)', icon: 'check', run: () => resolveWith(file.path, 'ours') },
       { label: 'Use their version (theirs)', icon: 'check', run: () => resolveWith(file.path, 'theirs') },
-      { label: 'Mark as resolved', icon: 'check', hint: 'Stage', run: () => stagePaths([file.path]) },
+      { label: 'Mark as resolved', icon: 'check', hint: 'Stage', run: () => markResolved(file.path) },
       'sep',
     )
   } else if (area === 'staged') {
@@ -71,9 +92,9 @@ export function fileMenu(file: FileChange, area: Area, selection: string[]): Men
   }
   items.push('sep')
   if (file.untracked) {
-    items.push({ label: `Ignore ${basename(file.path)}`, icon: 'eyeOff', run: () => ignorePattern(`/${file.path}`) })
-    if (ext) items.push({ label: `Ignore all *${ext} files`, icon: 'eyeOff', run: () => ignorePattern(`*${ext}`) })
-    if (dir) items.push({ label: `Ignore folder ${dir}`, icon: 'eyeOff', run: () => ignorePattern(`/${dir}`) })
+    items.push({ label: `Ignore ${basename(file.path)}`, icon: 'eyeOff', run: () => ignorePattern(`/${ignoreLiteral(file.path)}`) })
+    if (ext) items.push({ label: `Ignore all *${ext} files`, icon: 'eyeOff', run: () => ignorePattern(`*${ignoreLiteral(ext)}`) })
+    if (dir) items.push({ label: `Ignore folder ${dir}`, icon: 'eyeOff', run: () => ignorePattern(`/${ignoreLiteral(dir)}`) })
     items.push('sep')
   }
   if (!file.untracked && app.status?.hasCommits) {

@@ -2,8 +2,9 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { RebasePlan, RebaseStep, RebaseTodoItem } from '@shared/types'
 import { git, gitOut, GitError } from './exec'
+import { keepingIndex } from './ops'
 import { upstreamOf, currentBranch } from './refs'
-import { gitDir } from './status'
+import { gitDir, operation } from './status'
 
 const RS = '\x1e'
 const US = '\x1f'
@@ -139,7 +140,12 @@ export async function rebaseRun(repo: string, base: string | null, steps: Rebase
     throw new GitError('The branch changed since this plan was shown. Reopen "Edit history" to see the new commits.')
   }
 
-  const dir = join(await gitDir(repo), 'gdg-rebase')
+  const gd = await gitDir(repo)
+  // A rebase stopped on a conflict still reads its messages from gdg-rebase when it continues:
+  // removing them first, then failing on "already a rebase-merge directory", lost them.
+  const busy = operation(gd).operation
+  if (busy) throw new GitError(`A ${busy} is in progress. Continue or abort it before editing history again.`)
+  const dir = join(gd, 'gdg-rebase')
   await rm(dir, { recursive: true, force: true })
   await mkdir(dir, { recursive: true })
 
@@ -182,7 +188,9 @@ export async function rebaseRun(repo: string, base: string | null, steps: Rebase
   const merges = steps.some(s => s.action === 'line')
   const todoFile = join(dir, 'todo')
   await writeFile(todoFile, `${todo.join('\n')}\n`, 'utf8')
-  await git(repo, ['rebase', '-i', ...(merges ? ['--rebase-merges'] : []), '--autostash', ...(base ? [base] : ['--root'])], {
-    env: { GIT_SEQUENCE_EDITOR: `cp ${quote(todoFile)}`, GIT_EDITOR: 'true' },
-  })
+  // Staged changes come back staged afterwards (see keepingIndex), not all unstaged.
+  await keepingIndex(repo, 'Changes set aside by GaetanDev Git before editing history', autostash =>
+    git(repo, ['rebase', '-i', ...(merges ? ['--rebase-merges'] : []), autostash ? '--autostash' : '--no-autostash', ...(base ? [base] : ['--root'])], {
+      env: { GIT_SEQUENCE_EDITOR: `cp ${quote(todoFile)}`, GIT_EDITOR: 'true' },
+    }))
 }
