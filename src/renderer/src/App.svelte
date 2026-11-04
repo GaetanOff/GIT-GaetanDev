@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte'
-  import { COMMANDS, eventKeys } from '@/lib/commands'
+  import { COMMANDS, eventKeys, isTyping } from '@/lib/commands'
   import { app } from '@/lib/state.svelte'
   import { menu, overlayOpen } from '@/lib/ui.svelte'
   import TitleBar from '@/components/TitleBar.svelte'
@@ -34,7 +34,7 @@
     }
     if (overlayOpen()) return
     const keys = eventKeys(e)
-    const cmd = COMMANDS.find(c => c.keys === keys && (!c.when || c.when()))
+    const cmd = COMMANDS.find(c => c.keys === keys && (!c.when || c.when()) && !(c.notWhileTyping && isTyping()))
     if (!cmd) return
     e.preventDefault()
     cmd.run()

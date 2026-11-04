@@ -11,6 +11,11 @@ export interface Command {
   /** e.g. "mod+shift+p"; `mod` is Ctrl on Windows/Linux and ⌘ on macOS. */
   keys?: string
   when?: () => boolean
+  /**
+   * Its shortcut does nothing while typing (Ctrl+Z undoes text there). Kept out of `when`, which
+   * the palette checks too: opened from a text field, the command was missing from it.
+   */
+  notWhileTyping?: boolean
   run: () => unknown
 }
 
@@ -140,14 +145,14 @@ export const COMMANDS: Command[] = [
   { id: 'blame', title: 'Blame the selected file', group: 'Changes', icon: 'user', keys: 'mod+shift+b', when: () => !!app.selected && !!app.status?.hasCommits, run: () => app.openFile(app.selected!.path, 'blame') },
   { id: 'stash', title: 'Stash all changes…', group: 'Changes', icon: 'stash', keys: 'mod+shift+s', when: () => app.files.length > 0, run: () => openDialog({ kind: 'stash' }) },
   { id: 'discardAll', title: 'Discard all changes…', group: 'Changes', icon: 'trash', keys: 'mod+shift+backspace', when: () => app.files.length > 0, run: discardAll },
-  { id: 'undo', title: 'Undo last commit', group: 'Changes', icon: 'undo', keys: 'mod+z', when: () => !!app.status?.hasCommits && app.view !== 'history' && !isTyping(), run: () => undoLastCommit({ ask: true }) },
+  { id: 'undo', title: 'Undo last commit', group: 'Changes', icon: 'undo', keys: 'mod+z', when: () => !!app.status?.hasCommits && app.view !== 'history', notWhileTyping: true, run: () => undoLastCommit({ ask: true }) },
   { id: 'explorer', title: 'Show in Explorer', group: 'Repository', icon: 'folder', keys: 'mod+shift+e', when: hasRepo, run: () => api['shell:reveal'](app.repo!.path) },
   { id: 'editor', title: 'Open in editor', group: 'Repository', icon: 'code', keys: 'mod+shift+a', when: hasRepo, run: () => api['shell:editor'](app.repo!.path).catch(e => toast('error', e.message)) },
   { id: 'terminal', title: 'Open in terminal', group: 'Repository', icon: 'terminal', keys: 'mod+`', when: hasRepo, run: () => api['shell:terminal'](app.repo!.path).catch(e => toast('error', e.message)) },
   { id: 'refresh', title: 'Refresh', group: 'Repository', icon: 'fetch', keys: 'f5', when: hasRepo, run: () => app.refreshAll() },
   { id: 'addRemote', title: 'Add remote…', group: 'Repository', icon: 'cloud', when: hasRepo, run: () => openDialog({ kind: 'remote' }) },
   { id: 'undoHistory', title: 'Show undo history', group: 'View', icon: 'undo', keys: 'mod+3', when: hasRepo, run: () => (app.view = 'undo') },
-  { id: 'undoOp', title: 'Undo last operation (checkout, merge, rebase, reset…)', group: 'Repository', icon: 'undo', keys: 'mod+shift+z', when: () => hasRepo() && !isTyping(), run: undoLastOperation },
+  { id: 'undoOp', title: 'Undo last operation (checkout, merge, rebase, reset…)', group: 'Repository', icon: 'undo', keys: 'mod+shift+z', when: hasRepo, notWhileTyping: true, run: undoLastOperation },
   { id: 'rebase', title: 'Edit history (interactive rebase)…', group: 'Branch', icon: 'edit', keys: 'mod+alt+r', when: onBranch, run: startRebase },
   { id: 'compare', title: 'Compare branches…', group: 'Branch', icon: 'split', keys: 'mod+alt+c', when: hasRepo, run: () => app.openCompare(defaultBase(), app.status?.branch ?? 'HEAD') },
   { id: 'syntax', title: 'Toggle syntax highlighting', group: 'View', icon: 'code', run: () => app.updateSettings({ syntaxHighlight: !app.settings.syntaxHighlight }) },
