@@ -8,7 +8,7 @@
   import { pickAndAddRepo, pickAndInitRepo } from '@/lib/commands'
   import { rank } from '@/lib/fuzzy'
   import { app } from '@/lib/state.svelte'
-  import { contextMenu, openDialog, toast } from '@/lib/ui.svelte'
+  import { confirm, contextMenu, openDialog, toast } from '@/lib/ui.svelte'
   import { tone } from '@/lib/format'
 
   let { open = $bindable() }: { open: boolean } = $props()
@@ -59,8 +59,19 @@
       { label: 'Open in terminal', icon: 'terminal', run: () => api['shell:terminal'](r.path).catch(err => toast('error', err.message)) },
       { label: 'Copy path', icon: 'copy', run: () => app.copy(r.path, 'Path copied') },
       'sep',
-      { label: 'Remove from list', icon: 'x', danger: true, run: () => app.removeRepo(r.id) },
+      { label: 'Remove from list…', icon: 'x', danger: true, run: () => removeFromList(r) },
     ])
+  }
+
+  /** What the app keeps for a repository goes with it for good: asked first, saying what. */
+  async function removeFromList(r: RepoEntry) {
+    const ok = await confirm({
+      title: `Remove ${r.name} from the list?`,
+      message: 'The folder stays on disk, untouched. The app forgets its commit draft and the exact tips of branches deleted here, which Undo history uses to bring them back.',
+      confirmLabel: 'Remove',
+      danger: true,
+    })
+    if (ok) await app.removeRepo(r.id)
   }
 </script>
 
