@@ -599,6 +599,23 @@ describe('conflicts', () => {
     expect((await conflict(repo, 'big.psd')).mode).toBe('whole')
   })
 
+  it('never writes a result over edits made in an editor since the conflict was read', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'base\n' })
+    sh(repo, 'checkout', '-q', '-b', 'other')
+    commit(repo, 'theirs', { 'a.txt': 'theirs\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'ours', { 'a.txt': 'ours\n' })
+    await git(repo, ['merge', 'other'], { okCodes: [1] })
+    const f = await conflict(repo, 'a.txt')
+    write(repo, 'a.txt', 'merged by hand in an editor\n')
+    await expect(resolveContent(repo, 'a.txt', 'ours\n', f.encoding, f.disk)).rejects.toMatchObject({ code: 'CHANGED_ON_DISK' })
+    expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('merged by hand in an editor\n')
+    const again = await conflict(repo, 'a.txt')
+    await resolveContent(repo, 'a.txt', 'ours\n', again.encoding, again.disk)
+    expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('ours\n')
+  })
+
   it('writes only a file that is in conflict', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a.txt': 'a\n', 'hooks.txt': 'kept\n' })

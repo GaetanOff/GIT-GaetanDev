@@ -54,7 +54,8 @@ export interface Api {
   'git:abort'(repo: string): Promise<void>
   'git:skip'(repo: string): Promise<void>
   'git:conflict'(repo: string, path: string): Promise<ConflictFile>
-  'git:resolveContent'(repo: string, path: string, content: string, encoding?: TextEncoding): Promise<void>
+  /** `expect`: the conflict's `disk` fingerprint; a file changed since is not overwritten. */
+  'git:resolveContent'(repo: string, path: string, content: string, encoding?: TextEncoding, expect?: string): Promise<void>
   'git:resolveWhole'(repo: string, path: string, choice: 'ours' | 'theirs' | 'delete' | 'disk'): Promise<void>
 
   /* History */
@@ -178,3 +179,5 @@ export type GitErrorCode =
   | 'CANCELLED'
   | 'GIT_NOT_FOUND'
   | 'HOOK_FAILED'
+  /** The file changed on disk since it was shown: nothing was written. */
+  | 'CHANGED_ON_DISK'

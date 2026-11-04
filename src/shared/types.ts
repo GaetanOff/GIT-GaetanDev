@@ -380,6 +380,8 @@ export interface ConflictFile {
   finalNewline: boolean
   /** The file on disk has no conflict markers left: it was resolved elsewhere. */
   resolvedOnDisk: boolean
+  /** The file on disk when the conflict was read (a hash): a result is never written over edits made since. */
+  disk: string
   /** Blob ids of the base, ours and theirs stages: the same file in another merge is another conflict. */
   stages: string
 }

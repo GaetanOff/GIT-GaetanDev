@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { lstat, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, sep } from 'node:path'
@@ -41,6 +42,13 @@ async function stages(repo: string, path: string): Promise<{ blobs: [Buffer | nu
 async function readDisk(file: string): Promise<Buffer | null> {
   const size = await stat(file).then(s => s.size, () => -1)
   return size >= 0 && size <= MAX_SIDE ? readFile(file).catch(() => null) : null
+}
+
+/** What the file on disk is, to tell whether it changed: a hash of its bytes, else its size and time. */
+async function fingerprint(file: string, bytes?: Buffer | null): Promise<string> {
+  const data = bytes === undefined ? await readDisk(file) : bytes
+  if (data) return createHash('sha1').update(data).digest('hex')
+  return stat(file).then(s => `${s.size}:${s.mtimeMs}`, () => 'missing')
 }
 
 const isBinary = (b: Buffer | null) => !!b && b.subarray(0, 8000).includes(0)
@@ -115,8 +123,8 @@ export async function conflict(repo: string, path: string): Promise<ConflictFile
   const resolvedOnDisk = !!disk && !isBinary(disk) && !/^<<<<<<< /m.test(disk.toString('utf8'))
 
   const result: ConflictFile = {
-    path, mode: 'text', oursLabel: lbl.ours, theirsLabel: lbl.theirs, hasBase: !!base,
-    oursExists: !!ours, theirsExists: !!theirs, chunks: [], eol: '\n', finalNewline: true, resolvedOnDisk, encoding: 'utf8', stages: ids,
+    path, mode: 'text', oursLabel: lbl.ours, theirsLabel: lbl.theirs, hasBase: !!base, oursExists: !!ours, theirsExists: !!theirs,
+    chunks: [], eol: '\n', finalNewline: true, resolvedOnDisk, encoding: 'utf8', stages: ids, disk: await fingerprint(join(repo, path), disk),
   }
   // Git LFS keeps pointers in the index: mixing their lines makes an invalid pointer, and the
   // file written back would be the pointer's text instead of the real content.
@@ -179,9 +187,11 @@ export async function conflict(repo: string, path: string): Promise<ConflictFile
  * Writes the resolved content and marks the file resolved. Only a file git
  * lists as unmerged, and never through a symbolic link: this is the one
  * place the app writes a file of the repository itself, so it writes no
- * other (a hook, a config read through a link to .git).
+ * other (a hook, a config read through a link to .git). With `expect`, the
+ * conflict's `disk` fingerprint: the result was built from the file as it
+ * was then, and edits made since in an editor are not overwritten.
  */
-export async function resolveContent(repo: string, path: string, content: string, encoding: TextEncoding = 'utf8'): Promise<void> {
+export async function resolveContent(repo: string, path: string, content: string, encoding: TextEncoding = 'utf8', expect?: string): Promise<void> {
   const unmerged = (await git(repo, ['ls-files', '-u', '-z', '--', path])).stdout
   if (!unmerged.split('\0').some(l => l.split('\t')[1] === path.replace(/\\/g, '/'))) {
     throw new GitError(`${path} is not in conflict, so nothing was written.`)
@@ -191,6 +201,9 @@ export async function resolveContent(repo: string, path: string, content: string
   const link = await lstat(file).then(s => s.isSymbolicLink(), () => false)
   if (link || (parent !== root && !parent.startsWith(root.endsWith(sep) ? root : root + sep))) {
     throw new GitError(`${path} is reached through a symbolic link, so it was not written. Resolve it from the command line.`)
+  }
+  if (expect !== undefined && (await fingerprint(file)) !== expect) {
+    throw new GitError(`${path} changed on disk since it was opened here (in an editor?), so nothing was written. It is shown again as it is now.`, 'CHANGED_ON_DISK')
   }
   await writeFile(file, encode(content, encoding))
   await git(repo, ['add', '--', path])

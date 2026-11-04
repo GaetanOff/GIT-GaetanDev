@@ -204,7 +204,7 @@ export function registerIpc(watcher: RepoWatcher): void {
     'git:abort': async repo => ops.abortOp(repo),
     'git:skip': async repo => ops.skipOp(repo),
     'git:conflict': async (repo, path) => conflict(repo, path),
-    'git:resolveContent': async (repo, path, content, encoding) => resolveContent(repo, path, content, encoding),
+    'git:resolveContent': async (repo, path, content, encoding, expect) => resolveContent(repo, path, content, encoding, expect),
     'git:resolveWhole': async (repo, path, choice) => resolveWhole(repo, path, choice),
 
     'git:log': async (repo, q) => log(repo, q),

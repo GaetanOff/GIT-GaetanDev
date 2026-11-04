@@ -54,6 +54,8 @@
   let body = $state<HTMLDivElement>()
   let expanded = $state<Set<number>>(new Set())
   let token = 0
+  /** Bumped to read the conflict again: the file changed on disk since it was shown. */
+  let reload = $state(0)
 
   function loadShowBase() {
     try { return localStorage.getItem('conflict-base') === '1' } catch { return false }
@@ -62,6 +64,7 @@
   $effect(() => {
     const p = path
     const repo = app.repo?.path
+    void reload
     if (!repo) return
     const t = ++token
     file = null
@@ -267,11 +270,11 @@
     try {
       // The editor works with \n; write the file back with its own line endings and encoding.
       const text = file.eol === '\r\n' ? resultText.replace(/\r?\n/g, '\r\n') : resultText
-      await api['git:resolveContent'](repo, path, text, file.encoding)
+      await api['git:resolveContent'](repo, path, text, file.encoding, file.disk)
       forget()
       toast('success', `${basename(path)} resolved and staged.`)
     } catch (e) {
-      toast('error', asError(e).message)
+      failed(e)
     } finally {
       saving = false
       await app.refreshAll()
@@ -282,11 +285,11 @@
     if (!file || !allResolved || !app.repo) return
     saving = true
     try {
-      await api['git:resolveContent'](app.repo.path, path, content(), file.encoding)
+      await api['git:resolveContent'](app.repo.path, path, content(), file.encoding, file.disk)
       forget()
       toast('success', `${basename(path)} resolved and staged.`)
     } catch (e) {
-      toast('error', asError(e).message)
+      failed(e)
     } finally {
       saving = false
       await app.refreshAll()
@@ -302,6 +305,13 @@
     }
     const done = await app.run('Resolving', () => api['git:resolveWhole'](repo, path, choice).then(() => true), { success: `${basename(path)} resolved.` })
     if (done) forget()
+  }
+
+  /** A file edited elsewhere since it was read is shown again as it is now; the choices made stay. */
+  function failed(e: unknown) {
+    const err = asError(e)
+    toast('error', err.message)
+    if (err.code === 'CHANGED_ON_DISK') reload++
   }
 
   /** The conflict is resolved: its choices and Result text have nothing left to restore. */
