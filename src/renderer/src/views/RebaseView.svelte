@@ -4,6 +4,7 @@
   import { api, asError } from '@/lib/api'
   import { initials, relativeTime, shortSha, tone } from '@/lib/format'
   import { app } from '@/lib/state.svelte'
+  import { messageAfterSquash } from '@/lib/squash'
   import { confirm, toast } from '@/lib/ui.svelte'
 
   interface Row {
@@ -19,6 +20,8 @@
     line?: string
     /** Edited message: for a reword, or for a commit absorbing squashes. */
     message?: string
+    /** The user typed in that message: it is no longer rebuilt, only added to. */
+    edited?: boolean
   }
 
   let last = app.rebaseTarget!
@@ -93,22 +96,24 @@
   /** Members squashed into row `i`. */
   const members = (i: number) => rows.filter((_, j) => j !== i && owner[j] === i)
 
+  /** The messages squashed into row `i`, in order. */
+  const squashedInto = (i: number) => members(i).filter(m => m.action === 'squash').map(fullMessage)
+
   /** What git would propose: the head message followed by every squashed message. */
-  function defaultGroupMessage(i: number): string {
-    const parts = [rows[i].message ?? fullMessage(rows[i])]
-    for (const m of members(i)) if (m.action === 'squash') parts.push(fullMessage(m))
-    return parts.join('\n\n')
-  }
+  const defaultGroupMessage = (i: number) => messageAfterSquash({}, fullMessage(rows[i]), squashedInto(i), '')
 
   function setAction(i: number, action: RebaseAction) {
     if (rows[i].merge || rows[i].line) return
     rows[i].action = action
     if (action === 'reword' && rows[i].message === undefined) rows[i].message = fullMessage(rows[i])
-    if (action === 'pick' && !members(i).some(m => m.action === 'squash')) rows[i].message = undefined
+    if (action === 'pick' && !members(i).some(m => m.action === 'squash')) {
+      rows[i].message = undefined
+      rows[i].edited = false
+    }
     // A squash makes the receiving commit's message editable, prefilled like git does.
     if (action === 'squash') {
       const o = owner[i]
-      if (o >= 0) rows[o].message = defaultGroupMessage(o)
+      if (o >= 0) rows[o].message = messageAfterSquash(rows[o], fullMessage(rows[o]), squashedInto(o), fullMessage(rows[i]))
     }
   }
 
@@ -269,7 +274,7 @@
       <aside class="side">
         {#if editing >= 0 && rows[editing]}
           <div class="label">{rows[editing].action === 'reword' ? 'New message' : `Message of the combined commit (${members(editing).length + 1} commits)`}</div>
-          <textarea class="input msg" bind:value={rows[editing].message} spellcheck="true"></textarea>
+          <textarea class="input msg" bind:value={rows[editing].message} oninput={() => editing !== null && (rows[editing].edited = true)} spellcheck="true"></textarea>
           <p class="hint">The first line is the summary. Lines starting with # are removed.</p>
         {:else if sel}
           <div class="label">Selected commit</div>

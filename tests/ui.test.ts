@@ -4,6 +4,7 @@ import { splitRows, unifiedRows } from '../src/renderer/src/lib/diffrows'
 import { fuzzy, rank } from '../src/renderer/src/lib/fuzzy'
 import { pairLines, wordDiff } from '../src/renderer/src/lib/intraline'
 import { lineStates } from '../src/renderer/src/lib/syntax'
+import { messageAfterSquash } from '../src/renderer/src/lib/squash'
 
 const line = (type: DiffLine['type'], text: string): DiffLine => ({ type, text }) as DiffLine
 const fileDiff = (lines: DiffLine[]): FileDiff =>
@@ -53,6 +54,20 @@ describe('fuzzy matching', () => {
   it('ranks word starts and consecutive characters first', () => {
     const ranked = rank(['refactor-bus', 'feature/bar', 'fab'], 'fb', s => s).map(r => r.item)
     expect(ranked[0]).toBe('feature/bar')
+  })
+})
+
+describe('squash messages', () => {
+  it('lists each squashed message once, however many are squashed', () => {
+    // A, then B squashed into it, then C: the message prefilled after B is no source for the next one.
+    let head: { message?: string; edited?: boolean } = {}
+    head = { message: messageAfterSquash(head, 'A', ['B'], 'B') }
+    expect(head.message).toBe('A\n\nB')
+    expect(messageAfterSquash(head, 'A', ['B', 'C'], 'C')).toBe('A\n\nB\n\nC')
+  })
+
+  it('keeps what the user wrote and adds the new message below', () => {
+    expect(messageAfterSquash({ message: 'Login rework', edited: true }, 'A', ['B', 'C'], 'C')).toBe('Login rework\n\nC')
   })
 })
 
