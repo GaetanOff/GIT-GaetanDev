@@ -6,6 +6,8 @@ export default defineConfig({
   test: {
     include: ['tests/**/*.test.ts'],
     environment: 'node',
+    // Git as a fresh install: none of the machine's config, none of the variables a hook exports.
+    setupFiles: ['tests/setup.ts'],
     // Each test drives real git processes in temporary repositories.
     testTimeout: 120_000,
     hookTimeout: 120_000,
