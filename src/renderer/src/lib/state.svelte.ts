@@ -215,6 +215,9 @@ class AppState {
     if (s.stateUnreadable) {
       toast('error', 'Your repository list and settings could not be read (another program may hold the file). Nothing is saved until you restart the app.', undefined, 20_000)
     }
+    if (s.stateReset) {
+      toast('error', `Your repository list and settings were damaged, so the app started afresh. The old file is kept as ${s.stateReset}.`, undefined, 30_000)
+    }
   }
 
   saveDrafts(): void {

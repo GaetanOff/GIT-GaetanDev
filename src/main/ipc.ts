@@ -24,7 +24,7 @@ import { logDir } from './log'
 import { detectProvider, providerUrl } from './provider'
 import { installUpdate, updateReady } from './updater'
 import { githubDesktopRepos } from './importers'
-import { addRepoEntry, flush, foldPath, getState, isInsideRegistered, isRegistered, removeRepo, repoById, save, stateUnreadable, updateSettings, upsertRepo } from './store'
+import { addRepoEntry, flush, foldPath, getState, isInsideRegistered, isRegistered, removeRepo, repoById, save, stateReset, stateUnreadable, updateSettings, upsertRepo } from './store'
 import { gitFolders, type RepoWatcher } from './watcher'
 
 type Handlers = { [K in ApiChannel]: (...args: Parameters<Api[K]>) => ReturnType<Api[K]> }
@@ -117,7 +117,7 @@ export function registerIpc(watcher: RepoWatcher): void {
       const open = launchPath
       launchPath = null
       stateRead = true
-      return { repos: s.repos, lastRepo: s.lastRepo, settings: s.settings, platform: process.platform, version: app.getVersion(), home: homedir(), launchPath: open, stateUnreadable: stateUnreadable(), git: await gitVersion(), updateReady: updateReady() }
+      return { repos: s.repos, lastRepo: s.lastRepo, settings: s.settings, platform: process.platform, version: app.getVersion(), home: homedir(), launchPath: open, stateUnreadable: stateUnreadable(), git: await gitVersion(), updateReady: updateReady(), stateReset: stateReset() }
     },
     'app:settings': async patch => {
       // Commands the app runs change only once confirmed in a dialog of the main process, which a

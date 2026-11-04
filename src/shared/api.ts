@@ -21,6 +21,8 @@ export interface Api {
     stateUnreadable: boolean; git: { version: string; supported: boolean; recommended: boolean; minimum: string } | null
     /** A version already downloaded, waiting to install. */
     updateReady: string | null
+    /** Where a damaged state.json was set aside, the app starting with an empty list. */
+    stateReset: string | null
   }>
   'app:settings'(patch: Partial<Settings>): Promise<Settings>
   'repo:list'(): Promise<RepoEntry[]>

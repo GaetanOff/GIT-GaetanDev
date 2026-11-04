@@ -57,19 +57,38 @@ function load(): State {
   }
   try {
     const raw = JSON.parse(text) as Partial<State>
-    const isRepo = (r: unknown): r is RepoEntry =>
-      !!r && typeof (r as RepoEntry).id === 'string' && typeof (r as RepoEntry).path === 'string'
+    // A hand edit may leave an entry half there: one without its name or with a pinned that is not
+    // a boolean is rebuilt from what is valid, one without an id or a path is dropped.
+    const repos: RepoEntry[] = []
+    for (const r of Array.isArray(raw.repos) ? raw.repos as Partial<RepoEntry>[] : []) {
+      if (!r || typeof r.id !== 'string' || typeof r.path !== 'string') continue
+      repos.push({
+        id: r.id, path: r.path, name: typeof r.name === 'string' && r.name ? r.name : basename(r.path),
+        lastOpened: typeof r.lastOpened === 'number' ? r.lastOpened : 0, ...(r.pinned === true ? { pinned: true } : {}),
+      })
+    }
     return {
-      repos: Array.isArray(raw.repos) ? raw.repos.filter(isRepo) : [],
+      repos,
       lastRepo: typeof raw.lastRepo === 'string' ? raw.lastRepo : null,
       settings: validSettings(raw.settings),
       window: raw.window && typeof raw.window === 'object' ? raw.window : undefined,
     }
   } catch {
-    // Unreadable: set it aside instead of overwriting it with defaults on the next save.
-    try { renameSync(file(), join(app.getPath('userData'), `state.corrupt-${Date.now()}.json`)) } catch { /* keep going */ }
+    // Unreadable: set it aside instead of overwriting it with defaults on the next save, and say so.
+    const aside = join(app.getPath('userData'), `state.corrupt-${Date.now()}.json`)
+    try {
+      renameSync(file(), aside)
+      resetFrom = aside
+    } catch { /* keep going */ }
     return fresh()
   }
+}
+
+/** Where a damaged state.json was set aside at startup, the app starting with an empty list instead. */
+let resetFrom: string | null = null
+export function stateReset(): string | null {
+  getState()
+  return resetFrom
 }
 
 let state: State | null = null
