@@ -469,8 +469,14 @@ class AppState {
   }
 
   private lastHead = ''
+  /**
+   * What the history shows besides its commits: HEAD and the branch it names, every branch and tag.
+   * A tag created or deleted, or a switch to a branch on the same commit, changed its labels (and,
+   * in "All" scope, its commits) without reloading it, F5 included.
+   */
   private headKey(): string {
-    return `${this.repo?.id}|${this.status?.head}|${this.refs.branches.map(b => b.sha).join(',')}`
+    const refs = [...this.refs.branches.map(b => `${b.name}@${b.sha}`), ...this.refs.tags.map(t => `tag:${t.name}@${t.sha}`)]
+    return `${this.repo?.id}|${this.status?.head}|${this.status?.branch}|${refs.join(',')}`
   }
 
   async refreshAll(): Promise<void> {
