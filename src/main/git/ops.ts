@@ -7,7 +7,7 @@ import { selectionFingerprint, type Author, type DiffOptions, type FileChange, t
 import { applyPatch, buildPartialPatch, diff } from './diff'
 import { assertRefName, git, gitOut, GitError, literal } from './exec'
 import { currentBranch, defaultRemote, remoteOf, upstreamOf } from './refs'
-import { gitDir, status } from './status'
+import { gitDir, operation, status } from './status'
 import { withPruneJournal } from './recovery'
 
 /* ─── Staging ───────────────────────────────────────────────────────────────── */
@@ -523,9 +523,13 @@ export async function pull(repo: string, mode: PullMode, report: Reporter): Prom
  * came back unstaged. With staged changes the app stashes them itself and
  * restores them with the index; without, git's --autostash does (`run`
  * receives which). An operation that stops on a conflict leaves the stash
- * for later, and says so.
+ * for later, and says so. Never during a merge, cherry-pick, revert or
+ * rebase: stashing its resolved files ended it (MERGE_HEAD gone), and the
+ * next commit recorded no merge.
  */
 export async function keepingIndex<T>(repo: string, label: string, run: (autostash: boolean) => Promise<T>): Promise<T> {
+  const busy = operation(await gitDir(repo)).operation
+  if (busy) throw new GitError(`A ${busy} is in progress. Continue or abort it first.`)
   const staged = (await git(repo, ['diff', '--cached', '--quiet'], { okCodes: [1, 128] })).code === 1
   if (!staged) return run(true)
   const top = () => git(repo, ['rev-parse', '-q', '--verify', 'refs/stash'], { okCodes: [1] }).then(r => r.stdout.trim())

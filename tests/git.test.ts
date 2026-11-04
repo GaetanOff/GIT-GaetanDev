@@ -452,6 +452,27 @@ describe('changes kept across a pull or a rebase', () => {
     expect(kept()).toEqual(['a.txt', 'b.txt'])
     expect(sh(repo, 'stash', 'list')).toBe('')
   })
+
+  it('pulls nothing during a merge, which setting its resolved files aside would end', async () => {
+    const bare = join(makeRepo(), '..', 'remote.git')
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare])
+    const repo = makeRepo()
+    sh(repo, 'remote', 'add', 'origin', bare)
+    commit(repo, 'base', { 'a.txt': 'base\n' })
+    await ops.push(repo, { setUpstream: true }, () => undefined)
+    sh(repo, 'checkout', '-q', '-b', 'side')
+    commit(repo, 'side', { 'a.txt': 'side\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'main', { 'a.txt': 'main\n' })
+    await git(repo, ['merge', 'side'], { okCodes: [1] })
+    // Resolved and staged: "Ready to continue", while the sync button still offers a pull.
+    write(repo, 'a.txt', 'resolved\n')
+    sh(repo, 'add', 'a.txt')
+    await expect(ops.pull(repo, 'merge', () => undefined)).rejects.toThrow(/merge is in progress/)
+    expect(existsSync(join(repo, '.git', 'MERGE_HEAD'))).toBe(true)
+    expect(sh(repo, 'diff', '--cached', '--name-only')).toBe('a.txt')
+    expect(sh(repo, 'stash', 'list')).toBe('')
+  })
 })
 
 describe('undo and force push', () => {
