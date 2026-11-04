@@ -57,6 +57,7 @@ export class RepoWatcher {
     if (repo === this.repo && (this.watcher || this.retry)) return
     this.close()
     this.repo = repo
+    this.failures = 0
     if (!repo) return
     this.ignore = new IgnoreCache(repo)
     this.start(repo)
@@ -88,6 +89,12 @@ export class RepoWatcher {
     } catch { /* unreadable: focus-based refresh still works */ }
   }
 
+  /**
+   * Watches again after an error, each failure in a row waiting twice as long (up to a minute):
+   * a watch failing at once again (a network share dropping in and out) restarted every two
+   * seconds, and each restart refreshed the whole repository.
+   */
+  private failures = 0
   private restartLater(repo: string): void {
     this.watcher?.close()
     this.watcher = null
@@ -95,10 +102,16 @@ export class RepoWatcher {
     this.overflow = true
     this.schedule()
     if (this.retry) clearTimeout(this.retry)
+    const wait = Math.min(RETRY_MS * 2 ** this.failures, 60_000)
+    this.failures++
     this.retry = setTimeout(() => {
       this.retry = null
-      if (this.repo === repo) this.start(repo)
-    }, RETRY_MS)
+      if (this.repo !== repo) return
+      this.start(repo)
+      // Still watching a while later: the failures in a row are over.
+      const started = this.watcher
+      setTimeout(() => { if (started && this.watcher === started) this.failures = 0 }, 30_000).unref()
+    }, wait)
   }
 
   private onChange(name: string): void {
