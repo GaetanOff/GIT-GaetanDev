@@ -157,12 +157,17 @@ export function registerIpc(watcher: RepoWatcher): void {
     },
     // "Restart now" during a commit or a checkout: the update waits for it (ten seconds at most).
     'app:installUpdate': async () => {
+      // A newer download that failed since took the one offered with it: nothing to install.
+      if (!updateReady()) throw new GitError('The update is no longer ready to install. It will be downloaded again at the next check.')
       // No new git work starts (an auto-fetch, say), what runs gets ten seconds, and the state is
       // saved now: the installer may end the app before its own quit handlers have run.
       closeQueues()
       await settleQueues(10_000)
       flush()
       installUpdate()
+      // Still running a while later, the install did not happen: closed for good, the queues
+      // refused every write and fetch for the rest of the session.
+      setTimeout(reopenQueues, 30_000).unref()
     },
     'repo:list': async () => getState().repos,
     'repo:add': async path => addRepo(path),
@@ -406,7 +411,12 @@ const networkQueues = new Map<string, Promise<unknown>>()
 function serial<T>(queues: Map<string, Promise<unknown>>, repo: string, fn: () => Promise<T>): Promise<T> {
   // Case folded only where the file system ignores it: two Linux repositories differing by case are two queues.
   const key = foldPath(repo).replace(/\\/g, '/')
-  const result = (queues.get(key) ?? Promise.resolve()).catch(() => undefined).then(fn)
+  // Checked again when its turn comes: a pull queued behind an auto-fetch started during the wait
+  // before quitting, and was killed half-way when the wait ended.
+  const result = (queues.get(key) ?? Promise.resolve()).catch(() => undefined).then(() => {
+    if (closing) throw closingError()
+    return fn()
+  })
   const tail = result.catch(() => undefined)
   queues.set(key, tail)
   tail.then(() => { if (queues.get(key) === tail) queues.delete(key) })
@@ -435,15 +445,20 @@ export function settleQueues(ms: number): Promise<void> {
   return Promise.race([Promise.all(pending).then(() => undefined), new Promise<void>(resolve => setTimeout(resolve, ms))])
 }
 
-/** Runs a channel's handler on the queues it belongs to (none for reads). */
 /** Set once the app is quitting or installing an update: writes and network commands no longer start. */
 let closing = false
+const closingError = () => new GitError('The app is closing: nothing was started.')
 export function closeQueues(): void {
   closing = true
 }
+/** The quit or the install did not happen after all: git work starts again. */
+export function reopenQueues(): void {
+  closing = false
+}
 
+/** Runs a channel's handler on the queues it belongs to (none for reads). */
 export function schedule<T>(channel: string, repo: string, fn: () => Promise<T>): Promise<T> {
-  if (closing && (WRITES.has(channel) || NETWORK.has(channel))) return Promise.reject(new GitError('The app is closing: nothing was started.'))
+  if (closing && (WRITES.has(channel) || NETWORK.has(channel))) return Promise.reject(closingError())
   const write = WRITES.has(channel) ? () => serial(writeQueues, repo, fn) : fn
   return NETWORK.has(channel) ? serial(networkQueues, sharedGitDir(repo), write) : write()
 }

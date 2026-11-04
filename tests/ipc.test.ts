@@ -10,7 +10,7 @@ const registered = vi.hoisted(() => vi.fn((_path: string) => true))
 vi.mock('../src/main/store', () => ({ isRegistered: registered, isInsideRegistered: () => false, foldPath: (p: string) => (process.platform === 'linux' ? p : p.toLowerCase()), getState: () => ({ settings: {} }) }))
 vi.mock('../src/main/updater', () => ({ installUpdate: () => undefined }))
 
-const { checkArgs, closeQueues, confirmDestination, opensAsProgram, queuesBusy, schedule, settleQueues } = await import('../src/main/ipc')
+const { checkArgs, closeQueues, confirmDestination, opensAsProgram, queuesBusy, reopenQueues, schedule, settleQueues } = await import('../src/main/ipc')
 
 const REPO = 'C:/repos/app'
 
@@ -203,6 +203,21 @@ describe('scheduling', () => {
     release()
     await Promise.all([commit, pull, push])
     expect(order).toEqual(['commit', 'push elsewhere', 'commit done', 'pull'])
+  })
+
+  it('starts no queued work whose turn comes once closing, and starts again if the quit does not happen', async () => {
+    let release!: () => void
+    const first = schedule('git:commit', 'C:/repos/queued', () => new Promise<void>(resolve => { release = resolve }))
+    let ran = false
+    const second = schedule('git:pull', 'C:/repos/queued', async () => { ran = true })
+    await tick()
+    closeQueues()
+    release()
+    await first
+    await expect(second).rejects.toThrow(/closing/)
+    expect(ran).toBe(false)
+    reopenQueues()
+    await expect(schedule('git:commit', 'C:/repos/queued', async () => 'ran')).resolves.toBe('ran')
   })
 
   // Last: once closing, the queues stay closed for the rest of this file.

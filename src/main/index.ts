@@ -52,6 +52,7 @@ else start()
 
 function start(): void {
   const watcher = new RepoWatcher(e => send('repo:changed', e))
+  let quitting = false
   setLaunchPath(folderArg(process.argv))
   // Read as given, the folder the app was started from is let go: Windows keeps a process's working
   // folder locked, and "gaetandev-git ." made it impossible to rename or delete while the app ran.
@@ -97,6 +98,12 @@ function start(): void {
 
   app.on('second-instance', (_e, argv, cwd) => {
     const folder = folderArg(argv, cwd)
+    // This instance is on its way out (git work finishing, ten seconds at most): a window opened now
+    // refused every write and closed with it. The launch is made again once this one is gone.
+    if (quitting) {
+      if (app.isPackaged) app.relaunch({ args: folder ? [folder] : [] })
+      return
+    }
     const win = BrowserWindow.getAllWindows()[0]
     // Every window was closed (macOS keeps the app running): open one for this launch.
     if (!win && app.isReady()) {
@@ -119,6 +126,7 @@ function start(): void {
   // a fetch a ref lock: quitting waits for queued git work first, ten seconds at most.
   let waited = false
   app.on('before-quit', e => {
+    quitting = true
     // Nothing new starts meanwhile: an auto-fetch begun during the wait would be cut off.
     closeQueues()
     if (waited || !queuesBusy()) return
