@@ -64,8 +64,16 @@
     loadHistory()
   })
 
+  /**
+   * The commit the view was opened on is selected once it is loaded, then left alone: applied
+   * again at every page loaded, it took the selection back from the commit clicked meanwhile.
+   */
+  let appliedRev = ''
   $effect(() => {
-    if (target.tab === 'history' && target.rev && commits.some(c => c.sha === target.rev)) selected = target.rev
+    const want = target.tab === 'history' && target.rev ? `${target.path}\0${target.rev}` : ''
+    if (!want || want === appliedRev || !commits.some(c => c.sha === target.rev)) return
+    appliedRev = want
+    selected = target.rev
   })
 
   const current = $derived(commits.find(c => c.sha === selected) ?? null)
