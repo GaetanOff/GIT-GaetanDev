@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { ConflictFile, TextEncoding } from '@shared/types'
@@ -6,15 +6,19 @@ import { decode, detect, encode } from './encoding'
 import { git } from './exec'
 import { gitDir, operation } from './status'
 
-async function blob(repo: string, sha: string): Promise<Buffer> {
-  return (await git(repo, ['cat-file', 'blob', sha])).raw
-}
+/**
+ * Past this size a side is not read and merged line by line (four copies of
+ * it would sit in memory): the conflict is resolved by picking a side, as for
+ * a binary file.
+ */
+const MAX_SIDE = 16 * 1024 * 1024
 
 /**
  * Raw bytes of the index stages (1 base, 2 ours, 3 theirs), null where a side
  * has no file, and their blob ids, which tell one conflict from another.
+ * `large`: a side is over MAX_SIDE, and its bytes are only the beginning.
  */
-async function stages(repo: string, path: string): Promise<{ blobs: [Buffer | null, Buffer | null, Buffer | null]; ids: string }> {
+async function stages(repo: string, path: string): Promise<{ blobs: [Buffer | null, Buffer | null, Buffer | null]; ids: string; large: boolean }> {
   const out = (await git(repo, ['ls-files', '-s', '--', path])).stdout
   const sha: Record<string, string> = {}
   for (const line of out.split('\n')) {
@@ -22,9 +26,21 @@ async function stages(repo: string, path: string): Promise<{ blobs: [Buffer | nu
     const [, objectId, n] = meta.split(' ')
     if (n) sha[n] = objectId
   }
-  const read = (n: string) => (sha[n] ? blob(repo, sha[n]) : Promise.resolve(null))
+  let large = false
+  const read = async (n: string) => {
+    if (!sha[n]) return null
+    const r = await git(repo, ['cat-file', 'blob', sha[n]], { maxBytes: MAX_SIDE })
+    if (r.truncated) large = true
+    return r.raw
+  }
   const blobs = await Promise.all([read('1'), read('2'), read('3')])
-  return { blobs, ids: ['1', '2', '3'].map(n => sha[n] ?? '-').join(' ') }
+  return { blobs, ids: ['1', '2', '3'].map(n => sha[n] ?? '-').join(' '), large }
+}
+
+/** The file on disk, unless it is missing or too large to read whole. */
+async function readDisk(file: string): Promise<Buffer | null> {
+  const size = await stat(file).then(s => s.size, () => -1)
+  return size >= 0 && size <= MAX_SIDE ? readFile(file).catch(() => null) : null
 }
 
 const isBinary = (b: Buffer | null) => !!b && b.subarray(0, 8000).includes(0)
@@ -73,14 +89,18 @@ const MARK = {
 
 const isAscii = (b: Buffer) => b.every(c => c < 0x80)
 
+const hasBom = (b: Buffer | null) => !!b && detect(b) === 'utf8-bom'
+
 /**
- * The encoding the resolved file is written back in, so it round-trips: ours
- * (Windows-1252, UTF-8 with BOM…), unless ours is plain ASCII, which any of
- * them reads the same; then the first other side whose bytes tell.
+ * The encoding the resolved file is written back in, so it round-trips.
+ * Windows-1252 when the first side whose text is not plain ASCII (ours first)
+ * is in it. The BOM is merged like any other change: theirs only when ours
+ * left it as the base had it, so a BOM ours removed does not come back.
  */
-function fileEncoding(...sides: (Buffer | null)[]): TextEncoding {
-  const telling = sides.find(b => b && (detect(b) === 'utf8-bom' || !isAscii(b)))
-  return telling ? detect(telling) : 'utf8'
+function fileEncoding(ours: Buffer, theirs: Buffer, base: Buffer | null): TextEncoding {
+  const telling = [ours, theirs, base].find(b => b && !isAscii(hasBom(b) ? b.subarray(3) : b))
+  if (telling && detect(telling) === 'windows-1252') return 'windows-1252'
+  return (hasBom(ours) === hasBom(base) ? hasBom(theirs) : hasBom(ours)) ? 'utf8-bom' : 'utf8'
 }
 
 /**
@@ -89,15 +109,15 @@ function fileEncoding(...sides: (Buffer | null)[]): TextEncoding {
  * the result into common and conflicting chunks.
  */
 export async function conflict(repo: string, path: string): Promise<ConflictFile> {
-  const [{ blobs: [base, ours, theirs], ids }, lbl] = await Promise.all([stages(repo, path), labels(repo)])
-  const disk = await readFile(join(repo, path)).catch(() => null)
+  const [{ blobs: [base, ours, theirs], ids, large }, lbl] = await Promise.all([stages(repo, path), labels(repo)])
+  const disk = await readDisk(join(repo, path))
   const resolvedOnDisk = !!disk && !isBinary(disk) && !/^<<<<<<< /m.test(disk.toString('utf8'))
 
   const result: ConflictFile = {
     path, mode: 'text', oursLabel: lbl.ours, theirsLabel: lbl.theirs, hasBase: !!base,
     oursExists: !!ours, theirsExists: !!theirs, chunks: [], eol: '\n', finalNewline: true, resolvedOnDisk, encoding: 'utf8', stages: ids,
   }
-  if (!ours || !theirs || isBinary(ours) || isBinary(theirs) || isBinary(base)) {
+  if (large || !ours || !theirs || isBinary(ours) || isBinary(theirs) || isBinary(base)) {
     result.mode = 'whole'
     return result
   }

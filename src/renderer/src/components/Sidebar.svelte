@@ -8,7 +8,7 @@
   import { api } from '@/lib/api'
   import { relativeTime } from '@/lib/format'
   import { app } from '@/lib/state.svelte'
-  import { confirm, contextMenu, openDialog } from '@/lib/ui.svelte'
+  import { confirm, contextMenu, openDialog, toast } from '@/lib/ui.svelte'
 
   let filter = $state('')
   let collapsed = $state<Record<string, boolean>>(loadCollapsed())
@@ -34,8 +34,11 @@
       const i = name.indexOf('/')
       if (i < 0) loose.push(b)
       else {
+        // Pushed in place: copying the group for each branch was quadratic in a big folder.
         const prefix = name.slice(0, i)
-        map.set(prefix, [...(map.get(prefix) ?? []), b])
+        const group = map.get(prefix)
+        if (group) group.push(b)
+        else map.set(prefix, [b])
       }
     }
     const groups = [...map.entries()].map(([prefix, branches]) => ({ prefix, branches })).sort((a, b) => a.prefix.localeCompare(b.prefix))
@@ -90,7 +93,7 @@
     contextMenu(e, [
       { label: 'Open as repository', icon: 'repo', disabled: w.current, run: () => app.addRepo(w.path) },
       { label: 'Show in Explorer', icon: 'folder', run: () => api['shell:reveal'](w.path) },
-      { label: 'Open in terminal', icon: 'terminal', run: () => api['shell:terminal'](w.path) },
+      { label: 'Open in terminal', icon: 'terminal', run: () => api['shell:terminal'](w.path).catch(e => toast('error', e.message)) },
       'sep',
       { label: 'Remove worktree…', icon: 'trash', danger: true, disabled: w.current || w.bare, run: async () => {
         const repo = app.repo!.path

@@ -23,7 +23,7 @@
       } },
       'sep',
       { label: 'Show in Explorer', icon: 'folder', run: () => api['shell:reveal'](path) },
-      { label: 'Open in terminal', icon: 'terminal', run: () => api['shell:terminal'](path) },
+      { label: 'Open in terminal', icon: 'terminal', run: () => api['shell:terminal'](path).catch(e => toast('error', e.message)) },
     ])
   }
 

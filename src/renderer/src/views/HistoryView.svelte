@@ -8,7 +8,7 @@
   import { commitMenu, commitsMenu } from '@/lib/actions'
   import { initials, relativeTime, shortSha, tone } from '@/lib/format'
   import { app } from '@/lib/state.svelte'
-  import { contextMenu, isMenuKey, menuAt } from '@/lib/ui.svelte'
+  import { contextMenu, isMenuKey, menuAt, overlayOpen } from '@/lib/ui.svelte'
   import type { SearchMode } from '@shared/types'
   import type { IconName } from '@/lib/icons'
 
@@ -25,6 +25,11 @@
   const lanes = $derived(Math.min(12, app.graph.reduce((m, r) => Math.max(m, r.width), 1)))
   const selectedIndex = $derived(app.commits.findIndex(c => c.sha === app.selectedCommit))
   const headSha = $derived(app.status?.head)
+
+  // Refs moved while another view was shown: catch up now, keeping the depth and the selection.
+  $effect(() => {
+    if (app.historyStale) app.reloadHistory(true)
+  })
 
   // Reveal a commit selected from elsewhere (a branch or tag click in the sidebar).
   $effect(() => {
@@ -105,6 +110,7 @@
   }
 
   function onWindowKey(e: KeyboardEvent) {
+    if (overlayOpen()) return
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && !e.shiftKey) {
       e.preventDefault()
       searchInput?.focus()

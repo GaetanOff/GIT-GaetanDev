@@ -78,7 +78,7 @@
 
   async function paste() {
     try {
-      const text = await navigator.clipboard.readText()
+      const text = await api['clipboard:read']()
       if (/^(https?:\/\/|git@|ssh:\/\/)/.test(text.trim())) url = text.trim()
     } catch { /* clipboard unavailable */ }
   }

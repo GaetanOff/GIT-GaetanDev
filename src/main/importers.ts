@@ -1,5 +1,5 @@
 import { app, BrowserWindow, session } from 'electron'
-import { cpSync, existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { basename, join } from 'node:path'
 import { GitError } from './git/exec'
@@ -19,11 +19,27 @@ export interface ForeignRepo {
  * GitHub Desktop's IndexedDB folder. The copy leaves GitHub Desktop's own
  * files untouched, even while it runs.
  */
+const COPY_PREFIX = 'gdg-github-desktop-'
+
+/**
+ * Removes the copies earlier imports left in the temp folder: the session
+ * still held their files open when the import tried. Run at startup (no
+ * session holds them then) and before each import; one still held is skipped.
+ */
+export function sweepImportCopies(): void {
+  let names: string[] = []
+  try { names = readdirSync(tmpdir()) } catch { /* unreadable */ }
+  for (const name of names.filter(n => n.startsWith(COPY_PREFIX))) {
+    try { rmSync(join(tmpdir(), name), { recursive: true, force: true }) } catch { /* still held */ }
+  }
+}
+
 export async function githubDesktopRepos(): Promise<ForeignRepo[]> {
   const source = join(app.getPath('appData'), 'GitHub Desktop', 'IndexedDB')
   if (!existsSync(source)) throw new GitError('GitHub Desktop was not found on this computer.')
 
-  const dir = mkdtempSync(join(tmpdir(), 'gdg-github-desktop-'))
+  sweepImportCopies()
+  const dir = mkdtempSync(join(tmpdir(), COPY_PREFIX))
   // The page must be on the file:// origin, the one GitHub Desktop's database belongs to.
   cpSync(source, join(dir, 'IndexedDB'), { recursive: true, filter: p => basename(p) !== 'LOCK' })
   writeFileSync(join(dir, 'blank.html'), '<!doctype html><meta charset="utf-8"><title>import</title>')
@@ -48,7 +64,7 @@ export async function githubDesktopRepos(): Promise<ForeignRepo[]> {
     throw new GitError(`Could not read GitHub Desktop's repository list: ${(e as Error).message}`)
   } finally {
     win.destroy()
-    // The session may still hold the copy open on Windows; the temp folder is cleaned up later then.
-    try { rmSync(dir, { recursive: true, force: true }) } catch { /* left to the OS */ }
+    // The session usually still holds the copy open on Windows: sweepImportCopies removes it later.
+    try { rmSync(dir, { recursive: true, force: true }) } catch { /* swept later */ }
   }
 }

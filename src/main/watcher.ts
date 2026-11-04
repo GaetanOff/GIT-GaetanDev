@@ -1,10 +1,29 @@
-import { watch, type FSWatcher } from 'node:fs'
+import { readFileSync, watch, type FSWatcher } from 'node:fs'
+import { join, resolve } from 'node:path'
 import type { RepoChangeEvent } from '@shared/types'
 import { IgnoreCache } from './git/perf'
 
 /** Git metadata whose change means refs, HEAD, the index or an operation moved. */
 const META = /^\.git[\\/](index|HEAD|ORIG_HEAD|FETCH_HEAD|MERGE_HEAD|CHERRY_PICK_HEAD|REVERT_HEAD|packed-refs|refs[\\/]|rebase-(merge|apply)|logs[\\/]refs[\\/]stash)/
-const IGNORED = /^\.git[\\/](objects|logs|hooks|info|lfs|modules)[\\/]|\.lock$/
+const IGNORED = /^\.git[\\/](objects|logs|hooks|info|lfs|modules|worktrees)[\\/]|\.lock$/
+/** What a linked worktree shares with the main one: branches, tags, the stash. */
+const SHARED = /^(refs[\\/]|packed-refs|logs[\\/]refs[\\/]stash)/
+
+/**
+ * In a linked worktree or a submodule, `.git` is a file naming the real git
+ * folder, outside the watched tree; a worktree's also names the folder it
+ * shares refs with (commondir). Null when `.git` is a folder.
+ */
+export function gitFolders(repo: string): { dir: string; common: string | null } | null {
+  let text: string
+  try { text = readFileSync(join(repo, '.git'), 'utf8') } catch { return null } // a folder, or none
+  const m = /^gitdir:\s*(.+?)\s*$/m.exec(text)
+  if (!m) return null
+  const dir = resolve(repo, m[1])
+  let common: string | null = null
+  try { common = resolve(dir, readFileSync(join(dir, 'commondir'), 'utf8').trim()) } catch { /* a submodule */ }
+  return { dir, common }
+}
 
 /** Quiet time before a burst is reported, and the longest a steady stream of events can hold it back. */
 const SETTLE_MS = 250
@@ -19,6 +38,8 @@ const RETRY_MS = 2000
  */
 export class RepoWatcher {
   private watcher: FSWatcher | null = null
+  /** The git folders of a worktree or a submodule, outside the working tree. */
+  private extra: FSWatcher[] = []
   private timer: NodeJS.Timeout | null = null
   private retry: NodeJS.Timeout | null = null
   /** When the pending burst started: past MAX_WAIT_MS, new events no longer push the report back. */
@@ -49,11 +70,28 @@ export class RepoWatcher {
     } catch {
       this.watcher = null // unsupported filesystem: focus-based refresh still works
     }
+    // A worktree's or a submodule's git folder lies elsewhere: its events read as if under .git/.
+    const folders = gitFolders(repo)
+    if (folders) this.watchGitFolder(folders.dir, () => true)
+    if (folders?.common) this.watchGitFolder(folders.common, name => SHARED.test(name))
+  }
+
+  private watchGitFolder(dir: string, keep: (name: string) => boolean): void {
+    try {
+      const w = watch(dir, { recursive: true }, (_event, name) => {
+        const n = name?.toString() ?? ''
+        if (!n) this.onChange('')
+        else if (keep(n)) this.onChange(`.git/${n}`)
+      })
+      w.on('error', () => w.close()) // focus-based refresh still works
+      this.extra.push(w)
+    } catch { /* unreadable: focus-based refresh still works */ }
   }
 
   private restartLater(repo: string): void {
     this.watcher?.close()
     this.watcher = null
+    for (const w of this.extra.splice(0)) w.close() // start() watches them again
     this.overflow = true
     this.schedule()
     if (this.retry) clearTimeout(this.retry)
@@ -115,6 +153,7 @@ export class RepoWatcher {
   close(): void {
     this.watcher?.close()
     this.watcher = null
+    for (const w of this.extra.splice(0)) w.close()
     if (this.timer) clearTimeout(this.timer)
     if (this.retry) clearTimeout(this.retry)
     this.timer = null

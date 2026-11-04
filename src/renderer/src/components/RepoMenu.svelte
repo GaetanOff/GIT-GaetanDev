@@ -56,7 +56,7 @@
       'sep',
       { label: 'Show in Explorer', icon: 'folder', run: () => api['shell:reveal'](r.path) },
       { label: 'Open in editor', icon: 'code', run: () => api['shell:editor'](r.path).catch(err => toast('error', err.message)) },
-      { label: 'Open in terminal', icon: 'terminal', run: () => api['shell:terminal'](r.path) },
+      { label: 'Open in terminal', icon: 'terminal', run: () => api['shell:terminal'](r.path).catch(err => toast('error', err.message)) },
       { label: 'Copy path', icon: 'copy', run: () => app.copy(r.path, 'Path copied') },
       'sep',
       { label: 'Remove from list', icon: 'x', danger: true, run: () => app.removeRepo(r.id) },

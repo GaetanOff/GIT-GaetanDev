@@ -1,12 +1,14 @@
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { basename, join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { selectionFingerprint } from '@shared/types'
 import { cleanup, commit, makeRepo, sh, write } from './helpers'
 
 /** The recycle bin, in tests: a file "moved to the trash" is renamed next to itself. */
 const trashed: string[] = []
+/** What the last file of that name sent to the recycle bin held. */
+const binned = (name: string) => readFileSync(`${trashed.filter(p => basename(p) === name).at(-1)}.trashed`, 'utf8')
 vi.mock('electron', () => ({
   shell: {
     trashItem: async (path: string) => {
@@ -21,8 +23,10 @@ const { status } = await import('../src/main/git/status')
 const { diff } = await import('../src/main/git/diff')
 const { conflict, resolveContent } = await import('../src/main/git/conflict')
 const { refs } = await import('../src/main/git/refs')
+const { log } = await import('../src/main/git/log')
+const { fileLog, parseFileLog, unquote } = await import('../src/main/git/blame')
 const { rebasePlan, rebaseRun } = await import('../src/main/git/rebase')
-const { git, assertRefName } = await import('../src/main/git/exec')
+const { git, assertRefName, gitVersion, readGitVersion, stallGuards } = await import('../src/main/git/exec')
 
 afterAll(cleanup)
 
@@ -48,7 +52,28 @@ describe('discard', () => {
     write(repo, 'a.txt', 'work in progress\n')
     await ops.discard(repo, ['a.txt'])
     expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('old\n')
-    expect(readFileSync(join(repo, 'a.txt.trashed'), 'utf8')).toBe('work in progress\n')
+    expect(binned('a.txt')).toBe('work in progress\n')
+  })
+
+  it('sends a staged version that differs from the file to the recycle bin too', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'old\n' })
+    write(repo, 'a.txt', 'staged\n')
+    sh(repo, 'add', 'a.txt')
+    write(repo, 'a.txt', 'staged, then edited\n')
+    await ops.discard(repo, ['a.txt'])
+    expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('old\n')
+    expect(binned('a.txt')).toBe('staged, then edited\n')
+    expect(binned('a.txt (staged)')).toBe('staged\n')
+  })
+
+  it('leaves the files in place when the restore fails', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'old\n' })
+    write(repo, 'a.txt', 'work in progress\n')
+    writeFileSync(join(repo, '.git', 'index.lock'), '')
+    await expect(ops.discard(repo, ['a.txt'])).rejects.toThrow(/index.lock/)
+    expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('work in progress\n')
   })
 
   it('keeps an "add -N" file in the recycle bin instead of deleting it', async () => {
@@ -68,9 +93,9 @@ describe('discard', () => {
     sh(repo, 'rm', '--cached', '-q', 'a.txt')
     write(repo, 'a.txt', 'changed\n')
     await ops.discard(repo, ['a.txt'])
-    expect(changed(repo)).toEqual(['a.txt.trashed'])
+    expect(changed(repo)).toEqual([])
     expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('a\n')
-    expect(readFileSync(join(repo, 'a.txt.trashed'), 'utf8')).toBe('changed\n')
+    expect(binned('a.txt')).toBe('changed\n')
   })
 })
 
@@ -148,6 +173,17 @@ describe('commit', () => {
     await expect(assertRefName(repo, 'branch', 'feature/ok')).resolves.toBeUndefined()
   })
 
+  it('blames a failing hook in a linked worktree too', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'a\n' })
+    writeFileSync(join(repo, '.git', 'hooks', 'pre-commit'), '#!/bin/sh\nexit 1\n', { mode: 0o755 })
+    const wt = join(repo, '..', 'wt')
+    sh(repo, 'worktree', 'add', '-q', wt)
+    write(wt, 'a.txt', 'changed\n')
+    sh(wt, 'add', 'a.txt')
+    await expect(ops.commit(wt, 'blocked', false)).rejects.toMatchObject({ code: 'HOOK_FAILED' })
+  })
+
   it('undoes only the commit it was asked for', async () => {
     const repo = makeRepo()
     commit(repo, 'base')
@@ -201,6 +237,52 @@ describe('edit history', () => {
     expect(sh(repo, 'stash', 'list')).toBe('')
   })
 
+  it('reads the plan despite a lock file left by an earlier run', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': '1\n' })
+    sh(repo, 'checkout', '-q', '-b', 'side')
+    commit(repo, 'side', { 's.txt': 's\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'main', { 'm.txt': 'm\n' })
+    sh(repo, 'merge', '-q', '--no-edit', 'side')
+    mkdirSync(join(repo, '.git', 'gdg-rebase'), { recursive: true })
+    writeFileSync(join(repo, '.git', 'gdg-rebase', 'plan-index.lock'), '')
+    expect((await rebasePlan(repo, 'HEAD~2')).structure?.length).toBeGreaterThan(0)
+  })
+
+  it('reads the plan of a sparse checkout with a change inside its cone', async () => {
+    const repo = makeRepo()
+    for (const dir of ['in', 'out']) mkdirSync(join(repo, dir))
+    commit(repo, 'base', { 'in/a.txt': '1\n', 'out/b.txt': '1\n' })
+    sh(repo, 'checkout', '-q', '-b', 'side')
+    commit(repo, 'side', { 'in/s.txt': 's\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'main', { 'in/m.txt': 'm\n' })
+    sh(repo, 'merge', '-q', '--no-edit', 'side')
+    sh(repo, 'sparse-checkout', 'set', 'in')
+    write(repo, 'in/a.txt', '2\n')
+    const plan = await rebasePlan(repo, 'HEAD~2')
+    expect(plan.structure?.some(s => s.kind === 'line' && s.text.startsWith('merge '))).toBe(true)
+    expect(sh(repo, 'status', '--porcelain')).toBe('M in/a.txt')
+  })
+
+  it('lists "fixup!" commits as picks even with rebase.autoSquash', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': '1\n' })
+    sh(repo, 'checkout', '-q', '-b', 'side')
+    commit(repo, 'side', { 's.txt': 's\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'feature', { 'm.txt': 'm\n' })
+    commit(repo, 'fixup! feature', { 'm.txt': 'm2\n' })
+    sh(repo, 'merge', '-q', '--no-edit', 'side')
+    sh(repo, 'config', 'rebase.autoSquash', 'true')
+    const plan = await rebasePlan(repo, 'HEAD~3')
+    expect(plan.structure?.filter(s => s.kind === 'pick')).toHaveLength(3)
+    const steps = plan.structure!.map(s => (s.kind === 'pick' ? { sha: s.sha, action: 'pick' as const } : { sha: '', action: 'line' as const, line: s.text }))
+    await rebaseRun(repo, plan.base, steps, plan.head)
+    expect(sh(repo, 'log', '--format=%s', '-5').split('\n')).toContain('fixup! feature')
+  })
+
   it('refuses steps that would run a command', async () => {
     const repo = makeRepo()
     for (const i of [1, 2]) commit(repo, `c${i}`, { 'f.txt': `${i}\n` })
@@ -238,6 +320,18 @@ describe('line operations', () => {
     const sel = { 0: d.hunks[0].lines.flatMap((l, i) => (l.type === 'ctx' ? [] : [i])) }
     await ops.unstageLines(repo, 'new.txt', sel, undefined, selectionFingerprint(d, sel), 'old.txt')
     expect(sh(repo, 'status', '--porcelain')).toBe('RM old.txt -> new.txt')
+  })
+
+  it('stages lines whatever diff prefixes and log options the user configured', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'a\n\nb\n' })
+    for (const [k, v] of [['diff.noprefix', 'true'], ['diff.mnemonicPrefix', 'true'], ['diff.suppressBlankEmpty', 'true'], ['log.showSignature', 'true']]) sh(repo, 'config', k, v)
+    write(repo, 'a.txt', 'A\n\nb\nc\n')
+    const d = await diff(repo, { kind: 'worktree', path: 'a.txt' }, OPTS)
+    const sel = { 0: d.hunks[0].lines.flatMap((l, i) => (l.type === 'add' && l.text === 'c' ? [i] : [])) }
+    await ops.stageLines(repo, 'a.txt', sel, false, undefined, selectionFingerprint(d, sel))
+    expect(execFileSync('git', ['-C', repo, 'show', ':a.txt'], { encoding: 'utf8' })).toBe('a\n\nb\nc\n')
+    expect((await log(repo, { scope: 'current', skip: 0, limit: 5 })).map(c => c.subject)).toEqual(['base'])
   })
 
   // "\ No newline at end of file" may only follow the last line: a line kept before a selected one needs its newline.
@@ -296,6 +390,20 @@ describe('conflicts', () => {
     expect((await conflict(repo, 'f.txt')).stages).toBe(second.stages)
   })
 
+  it('resolves a conflict on a very large text file by picking a side', async () => {
+    const repo = makeRepo()
+    const big = (last: string) => 'line\n'.repeat(3_500_000) + last
+    commit(repo, 'base', { 'big.txt': big('base\n') })
+    sh(repo, 'checkout', '-q', '-b', 'other')
+    commit(repo, 'theirs', { 'big.txt': big('theirs\n') })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'ours', { 'big.txt': big('ours\n') })
+    await git(repo, ['merge', 'other'], { okCodes: [1] })
+    const f = await conflict(repo, 'big.txt')
+    expect(f.mode).toBe('whole')
+    expect(f.chunks).toEqual([])
+  })
+
   it('finds a conflict on the first line of a UTF-8 file with a BOM', async () => {
     const repo = makeRepo()
     const bom = '﻿'
@@ -312,6 +420,17 @@ describe('conflicts', () => {
     expect(readFileSync(join(repo, 'a.cs'), 'utf8')).toBe(`${bom}using C;\nclass X {}\n`)
   })
 
+  it('does not bring back a BOM that our side removed', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': '﻿line\n' })
+    sh(repo, 'checkout', '-q', '-b', 'other')
+    commit(repo, 'theirs', { 'a.txt': '﻿theirs\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'ours', { 'a.txt': 'ours\n' })
+    await git(repo, ['merge', 'other'], { okCodes: [1] })
+    expect((await conflict(repo, 'a.txt')).encoding).toBe('utf8')
+  })
+
   it('reads each side of a conflict in its own encoding', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a.txt': 'name = x\n' })
@@ -324,6 +443,48 @@ describe('conflicts', () => {
     const f = await conflict(repo, 'a.txt')
     expect(f.encoding).toBe('windows-1252')
     expect(f.chunks[0]).toEqual({ kind: 'conflict', ours: ['name = cafe'], base: ['name = x'], theirs: ['name = café'] })
+  })
+})
+
+describe('file history', () => {
+  it('follows a file across a rename, paths kept as they are', async () => {
+    const repo = makeRepo()
+    commit(repo, 'one', { 'a.txt': 'x\ny\nz\n' })
+    sh(repo, 'mv', 'a.txt', 'b c.txt')
+    commit(repo, 'two')
+    commit(repo, 'three', { 'b c.txt': 'x\ny\nz\nw\n' })
+    const commits = await fileLog(repo, 'b c.txt', 0, 10)
+    expect(commits.map(c => [c.subject, c.status, c.path, c.oldPath])).toEqual([
+      ['three', 'M', 'b c.txt', undefined], ['two', 'R', 'b c.txt', 'a.txt'], ['one', 'A', 'a.txt', undefined],
+    ])
+  })
+
+  it('unquotes the C-quoted paths of blame output', () => {
+    expect(unquote('plain name.txt')).toBe('plain name.txt')
+    expect(unquote('"a\\"b\\\\c\\td.txt"')).toBe('a"b\\c\td.txt')
+    expect(unquote('"caf\\303\\251.txt"')).toBe('café.txt')
+  })
+
+  // Git C-quotes such a name ("a\tb") unless -z; Windows file names cannot hold a tab, so the output is crafted.
+  it('reads -z output whose names hold tabs and quotes', () => {
+    const out = '\x1eabc\x1f\x1fA\x1fa@x\x1f1\x1fmove\x1f\0\nR100\0old\tname.txt\0new "name".txt\0'
+    expect(parseFileLog(out, 'x')[0]).toMatchObject({ status: 'R', oldPath: 'old\tname.txt', path: 'new "name".txt' })
+  })
+})
+
+describe('operations in progress', () => {
+  it('tells a git am session from a rebase, and aborts it with am', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'base\n' })
+    commit(repo, 'change', { 'a.txt': 'patched\n' })
+    const patch = sh(repo, 'format-patch', '-1', '--stdout') + '\n'
+    sh(repo, 'reset', '-q', '--hard', 'HEAD~1')
+    commit(repo, 'conflicting', { 'a.txt': 'other\n' })
+    await git(repo, ['am'], { input: patch, okCodes: [128] })
+    expect((await status(repo)).operation).toBe('am')
+    await ops.abortOp(repo)
+    expect((await status(repo)).operation).toBeNull()
+    expect(sh(repo, 'log', '-1', '--format=%s')).toBe('conflicting')
   })
 })
 
@@ -342,6 +503,40 @@ describe('history', () => {
     sh(repo, 'checkout', '-q', 'main')
     await ops.cherryPick(repo, [shas[2], shas[0], shas[1]])
     expect(sh(repo, 'log', '--format=%s', '-4').split('\n')).toEqual(['c3', 'c2', 'c1', 'base'])
+  })
+
+  it('does not read a tag that already exists on the remote as commits to pull', async () => {
+    const remote = makeRepo('remote.git')
+    sh(remote, 'config', 'receive.denyCurrentBranch', 'ignore')
+    commit(remote, 'base', { 'a.txt': 'a\n' })
+    sh(remote, 'tag', 'v1')
+    const repo = makeRepo()
+    commit(repo, 'other', { 'b.txt': 'b\n' })
+    sh(repo, 'remote', 'add', 'origin', remote)
+    sh(repo, 'tag', 'v1')
+    const err = await ops.pushTag(repo, 'origin', 'v1', () => undefined).then(() => null, (e: { code?: string }) => e)
+    expect(err).not.toBeNull()
+    expect(err?.code).not.toBe('NON_FAST_FORWARD')
+  })
+
+  it('orders commits picked from two branches by ancestry, then date', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'f.txt': 'base\n' })
+    // A commit adding its own file, at a given date.
+    const dated = async (name: string, date: string) => {
+      write(repo, `${name}.txt`, `${name}\n`)
+      sh(repo, 'add', `${name}.txt`)
+      await git(repo, ['commit', '-q', '-m', name], { env: { ...process.env, GIT_COMMITTER_DATE: date, GIT_AUTHOR_DATE: date } })
+      return sh(repo, 'rev-parse', 'HEAD')
+    }
+    sh(repo, 'checkout', '-q', '-b', 'one')
+    const oneA = await dated('one-a', '2026-01-01T10:00:00')
+    const oneB = await dated('one-b', '2026-01-03T10:00:00')
+    sh(repo, 'checkout', '-q', '-b', 'two', 'main')
+    const twoA = await dated('two-a', '2026-01-02T10:00:00')
+    sh(repo, 'checkout', '-q', 'main')
+    await ops.cherryPick(repo, [oneB, twoA, oneA])
+    expect(sh(repo, 'log', '--format=%s', '-3').split('\n')).toEqual(['one-b', 'two-a', 'one-a'])
   })
 
   it('lists remotes whose URL has spaces', async () => {
@@ -365,6 +560,23 @@ describe('history', () => {
     }
   })
 
+  it('reads the git version, and tells a supported or recommended one', async () => {
+    expect(readGitVersion('git version 2.56.0.windows.4')).toEqual({ version: '2.56.0', supported: true, recommended: true, minimum: '2.36.0' })
+    expect(readGitVersion('git version 2.45.2.windows.1')).toMatchObject({ version: '2.45.2', supported: true, recommended: false })
+    expect(readGitVersion('git version 2.35.8')).toMatchObject({ version: '2.35.8', supported: false, recommended: false })
+    expect(readGitVersion('git version 3.0')).toMatchObject({ supported: true, recommended: true })
+    expect(readGitVersion('not git')).toBeNull()
+    expect((await gitVersion())?.supported).toBe(true)
+  })
+
+  it('guards network commands against dead connections only, and not over the user\'s own limits', async () => {
+    const repo = makeRepo()
+    expect(await stallGuards(repo)).toMatchObject({ GIT_HTTP_LOW_SPEED_LIMIT: '1', GIT_HTTP_LOW_SPEED_TIME: '300' })
+    sh(repo, 'config', 'http.lowSpeedTime', '30')
+    sh(repo, 'config', 'core.sshCommand', 'plink -batch')
+    expect(await stallGuards(repo)).toEqual({})
+  })
+
   it('survives git exiting before it reads its input', async () => {
     const repo = makeRepo()
     commit(repo, 'base')
@@ -372,6 +584,18 @@ describe('history', () => {
     expect(r.stdout.trim()).toMatch(/^[0-9a-f]{40}$/)
     // A write error on stdin would surface on the next turns of the event loop.
     await new Promise(resolve => setTimeout(resolve, 200))
+  })
+
+  it('keeps only the end of a huge stderr, where the error is', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'a\n' })
+    // A hook printing 3 MB, then failing with its reason last.
+    writeFileSync(join(repo, '.git', 'hooks', 'pre-commit'), '#!/bin/sh\nhead -c 3000000 /dev/zero | tr "\\0" x >&2\necho "error: the real reason" >&2\nexit 1\n', { mode: 0o755 })
+    write(repo, 'a.txt', 'b\n')
+    sh(repo, 'add', 'a.txt')
+    const err = await ops.commit(repo, 'x', false).then(() => null, (e: { stderr: string; details: string }) => e)
+    expect(err?.stderr.length).toBeLessThanOrEqual(1024 * 1024 + 65_536)
+    expect(err?.details).toMatch(/the real reason/)
   })
 
   it('reports output cut at maxBytes', async () => {

@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { closeSync, fsyncSync, openSync, readFileSync, realpathSync, renameSync, rmSync, writeSync } from 'node:fs'
 import { open, rename, rm } from 'node:fs/promises'
 import { basename, join, normalize } from 'node:path'
-import { DEFAULT_SETTINGS, type RepoEntry, type Settings } from '@shared/types'
+import { DEFAULT_SETTINGS, isSettingKey, validSetting, type RepoEntry, type Settings } from '@shared/types'
 
 interface State {
   repos: RepoEntry[]
@@ -13,14 +13,47 @@ interface State {
 }
 
 const file = () => join(app.getPath('userData'), 'state.json')
+
+/** Saved settings, each one kept only if it is a value the setting may hold (a hand edit may not be). */
+function validSettings(saved: unknown): Settings {
+  const settings = { ...DEFAULT_SETTINGS }
+  if (!saved || typeof saved !== 'object') return settings
+  for (const [key, value] of Object.entries(saved)) {
+    if (isSettingKey(key) && validSetting(key, value)) (settings as Record<string, unknown>)[key] = value
+  }
+  return settings
+}
 const fresh = (): State => ({ repos: [], lastRepo: null, settings: { ...DEFAULT_SETTINGS } })
+
+const RETRYABLE = new Set(['EPERM', 'EBUSY', 'EACCES'])
+
+/**
+ * Set when state.json exists but cannot be read: the app starts empty, and
+ * nothing is saved, so the file is still there once whatever held it lets go.
+ */
+let unreadable = false
+
+/** Blocks the main process briefly: only while reading state.json at startup. */
+const pause = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
 
 function load(): State {
   let text: string
-  try {
-    text = readFileSync(file(), 'utf8')
-  } catch {
-    return fresh() // first launch
+  for (let attempt = 1; ; attempt++) {
+    try {
+      text = readFileSync(file(), 'utf8')
+      break
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code ?? ''
+      if (code === 'ENOENT') return fresh() // first launch
+      // Held by an antivirus or a sync client: a few retries, then start without it rather than over it.
+      if (attempt < 5 && RETRYABLE.has(code)) {
+        pause(100 * attempt)
+        continue
+      }
+      unreadable = true
+      console.error('Could not read settings, nothing will be saved this session:', (e as Error).message)
+      return fresh()
+    }
   }
   try {
     const raw = JSON.parse(text) as Partial<State>
@@ -29,7 +62,7 @@ function load(): State {
     return {
       repos: Array.isArray(raw.repos) ? raw.repos.filter(isRepo) : [],
       lastRepo: typeof raw.lastRepo === 'string' ? raw.lastRepo : null,
-      settings: { ...DEFAULT_SETTINGS, ...(raw.settings && typeof raw.settings === 'object' ? raw.settings : {}) },
+      settings: validSettings(raw.settings),
       window: raw.window && typeof raw.window === 'object' ? raw.window : undefined,
     }
   } catch {
@@ -50,7 +83,11 @@ export function getState(): State {
   return state
 }
 
-const RETRYABLE = new Set(['EPERM', 'EBUSY', 'EACCES'])
+/** Whether state.json could not be read at startup (and so is never written this session). */
+export function stateUnreadable(): boolean {
+  getState()
+  return unreadable
+}
 
 /**
  * Atomic write: the data goes to a temporary file of its own, is flushed to
@@ -82,6 +119,7 @@ async function write(): Promise<void> {
 
 /** Debounced; writes run one after another, and a failure is logged rather than lost silently. */
 export function save(): void {
+  if (unreadable) return
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = setTimeout(() => {
     saveTimer = null
@@ -96,7 +134,7 @@ export function save(): void {
  * would get to finish.
  */
 export function flush(): void {
-  if ((!saveTimer && !inFlight) || !state) return
+  if ((!saveTimer && !inFlight) || !state || unreadable) return
   if (saveTimer) clearTimeout(saveTimer)
   saveTimer = null
   const tmp = `${file()}.${process.pid}-${++seq}.tmp`

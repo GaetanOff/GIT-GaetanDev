@@ -86,7 +86,9 @@ export function operation(dir: string): { operation: RepoOperation; operationSte
     const read = (f: string) => { try { return readFileSync(join(dir, base, f), 'utf8').trim() } catch { return '' } }
     const step = read(base === 'rebase-merge' ? 'msgnum' : 'next')
     const end = read(base === 'rebase-merge' ? 'end' : 'last')
-    return { operation: 'rebase', operationStep: step && end ? `${step}/${end}` : undefined }
+    // rebase-apply also holds a "git am" session, marked by "applying": continued and aborted with am.
+    const op = base === 'rebase-apply' && has('rebase-apply/applying') ? 'am' : 'rebase'
+    return { operation: op, operationStep: step && end ? `${step}/${end}` : undefined }
   }
   if (has('MERGE_HEAD')) return { operation: 'merge' }
   if (has('CHERRY_PICK_HEAD')) return { operation: 'cherry-pick' }

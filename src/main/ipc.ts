@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, isAbsolute, join, posix } from 'node:path'
 import type { Api, ApiChannel, ApiEvents, IpcEnvelope } from '@shared/api'
-import { DEFAULT_SETTINGS, type Progress, type RepoImport, type Settings } from '@shared/types'
+import { isSettingKey, validSetting, type Progress, type RepoImport } from '@shared/types'
 import { registerPending, respond } from './askpass'
 import { blame, fileLog } from './git/blame'
 import { compare } from './git/compare'
@@ -14,16 +14,17 @@ import { deletedBranches, operations, restore, restoreBranch } from './git/reflo
 import { newerTips, remoteSearch } from './git/recovery'
 import { conflict, resolveContent, resolveWhole } from './git/conflict'
 import { diff } from './git/diff'
-import { git, GitError } from './git/exec'
+import { git, GitError, gitVersion } from './git/exec'
 import { commitDetail, log, stashDetail } from './git/log'
 import * as ops from './git/ops'
 import { defaultBranch, defaultRemote, extras, refs } from './git/refs'
 import { isRepo, status, topLevel } from './git/status'
 import { openEditor, openTerminal } from './integrations'
+import { logDir } from './log'
 import { detectProvider, providerUrl } from './provider'
 import { installUpdate } from './updater'
 import { githubDesktopRepos } from './importers'
-import { addRepoEntry, getState, isRegistered, removeRepo, repoById, save, updateSettings, upsertRepo } from './store'
+import { addRepoEntry, getState, isRegistered, removeRepo, repoById, save, stateUnreadable, updateSettings, upsertRepo } from './store'
 import type { RepoWatcher } from './watcher'
 
 type Handlers = { [K in ApiChannel]: (...args: Parameters<Api[K]>) => ReturnType<Api[K]> }
@@ -47,16 +48,46 @@ export function setLaunchPath(path: string | null): void {
   launchPath = path
 }
 
+/** Whether the page has read its start state (and so listens for open:path). */
+let stateRead = false
+
+/** A folder from a second launch: sent to the page, or kept for it while it is still starting. */
+export function openFolder(path: string): void {
+  if (stateRead) send('open:path', path)
+  else launchPath = path
+}
+
 export function registerIpc(watcher: RepoWatcher): void {
   const h: Handlers = {
     'app:state': async () => {
       const s = getState()
       const open = launchPath
       launchPath = null
-      return { repos: s.repos, lastRepo: s.lastRepo, settings: s.settings, platform: process.platform, version: app.getVersion(), home: homedir(), launchPath: open }
+      stateRead = true
+      return { repos: s.repos, lastRepo: s.lastRepo, settings: s.settings, platform: process.platform, version: app.getVersion(), home: homedir(), launchPath: open, stateUnreadable: stateUnreadable(), git: await gitVersion() }
     },
-    'app:settings': async patch => updateSettings(patch),
-    'app:installUpdate': async () => installUpdate(),
+    'app:settings': async patch => {
+      // Commands the app runs change only once confirmed in a dialog of the main process, which a
+      // compromised page could neither show nor answer: it cannot point the editor at any program.
+      const current = getState().settings
+      const commands = (['editorCommand', 'terminalCommand'] as const).filter(k => patch[k] && patch[k] !== current[k])
+      if (commands.length) {
+        const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+        const opts = {
+          type: 'question' as const, buttons: ['Use them', 'Cancel'], defaultId: 0, cancelId: 1,
+          message: 'GaetanDev Git will run these commands to open your editor or terminal.',
+          detail: commands.map(k => `${k === 'editorCommand' ? 'Editor' : 'Terminal'}: ${patch[k]}`).join('\n'),
+        }
+        const { response } = win ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts)
+        if (response !== 0) throw new GitError('Integrations were not changed.', 'CANCELLED')
+      }
+      return updateSettings(patch)
+    },
+    // "Restart now" during a commit or a checkout: the update waits for it (ten seconds at most).
+    'app:installUpdate': async () => {
+      await settleQueues(10_000)
+      installUpdate()
+    },
     'repo:list': async () => getState().repos,
     'repo:add': async path => addRepo(path),
     'repo:importGithubDesktop': async () => {
@@ -193,6 +224,11 @@ export function registerIpc(watcher: RepoWatcher): void {
     'shell:editor': async (repo, path) => openEditor(getState().settings.editorCommand, repo, path ? join(repo, path) : repo),
     'shell:terminal': async repo => openTerminal(getState().settings.terminalCommand, repo),
     'clipboard:write': async text => clipboard.writeText(text),
+    'clipboard:read': async () => clipboard.readText(),
+    'app:openLogs': async () => {
+      mkdirSync(logDir(), { recursive: true })
+      await shell.openPath(logDir())
+    },
     'askpass:respond': async (id, value) => respond(id, value),
     'watch:set': async repo => watcher.set(repo),
   }
@@ -214,14 +250,15 @@ export function registerIpc(watcher: RepoWatcher): void {
 
 /**
  * Only the app's own page, in the window's main frame, may call the bridge:
- * the built index.html, or the dev server while developing.
+ * app://bundle/index.html (see serveBundle in index.ts), or the dev server
+ * while developing. Any file:// page, the importer's included, is refused.
  */
 function trustedSender(e: IpcMainInvokeEvent): boolean {
   const frame = e.senderFrame
   if (!frame || frame !== e.sender.mainFrame) return false
   const dev = !app.isPackaged && process.env.ELECTRON_RENDERER_URL
-  if (dev && frame.url.startsWith(new URL(dev).origin)) return true
-  return frame.url.startsWith('file:') && /\/renderer\/index\.html(?:[?#].*)?$/.test(frame.url.replace(/\\/g, '/'))
+  if (dev && frame.url.startsWith(`${new URL(dev).origin}/`)) return true
+  return /^app:\/\/bundle\/index\.html(?:[?#].*)?$/.test(frame.url)
 }
 
 /**
@@ -243,9 +280,11 @@ const WRITES = new Set([
  * fail on ref locks ("cannot lock ref 'refs/remotes/origin/main'"), as when
  * the background fetch meets a pull. They run one at a time per repository on
  * a queue of their own, so a slow fetch or push never holds up staging or a
- * commit. A pull is on both: the network first, then the writes.
+ * commit. A pull is on both: the network first, then the writes. So is
+ * removing a remote, which deletes its remote-tracking refs (a fetch running
+ * meanwhile would fail on them, or write them back).
  */
-const NETWORK = new Set(['git:fetch', 'git:pull', 'git:push', 'git:pushTag', 'git:deleteRemoteBranch', 'git:remoteSearch'])
+const NETWORK = new Set(['git:fetch', 'git:pull', 'git:push', 'git:pushTag', 'git:deleteRemoteBranch', 'git:remoteSearch', 'git:removeRemote'])
 const writeQueues = new Map<string, Promise<unknown>>()
 const networkQueues = new Map<string, Promise<unknown>>()
 
@@ -257,6 +296,16 @@ function serial<T>(queues: Map<string, Promise<unknown>>, repo: string, fn: () =
   queues.set(key, tail)
   tail.then(() => { if (queues.get(key) === tail) queues.delete(key) })
   return result
+}
+
+/** Whether queued git work (a write or a network command) is still running. */
+export const queuesBusy = (): boolean => writeQueues.size + networkQueues.size > 0
+
+/** Resolves once every queued write and network command has settled, or after `ms`. */
+export function settleQueues(ms: number): Promise<void> {
+  const pending = [...writeQueues.values(), ...networkQueues.values()]
+  if (!pending.length) return Promise.resolve()
+  return Promise.race([Promise.all(pending).then(() => undefined), new Promise<void>(resolve => setTimeout(resolve, ms))])
 }
 
 /** Runs a channel's handler on the queues it belongs to (none for reads). */
@@ -284,9 +333,12 @@ const PATH_ARGS: Record<string, number[]> = {
 
 /** A path relative to the repository that stays inside it: files are read and written at `join(repo, path)`. */
 function insideRepo(path: string): boolean {
-  if (!path || path.includes('\0') || isAbsolute(path) || /^[a-z]:/i.test(path)) return false
+  // "c:notes.md" names a drive on Windows only; elsewhere it is a file a commit can hold.
+  if (!path || path.includes('\0') || isAbsolute(path) || (process.platform === 'win32' && /^[a-z]:/i.test(path))) return false
   const parts = posix.normalize(path.replace(/\\/g, '/'))
-  return parts !== '..' && !parts.startsWith('../')
+  if (parts === '..' || parts.startsWith('../')) return false
+  // Nor inside a .git folder (hooks, config): git never tracks a path through one, so no file shown is.
+  return !parts.split('/').some(p => p.toLowerCase() === '.git')
 }
 
 /** Channels whose first argument may be null (the global identity, no repo to watch). */
@@ -296,9 +348,10 @@ const OPENS_FOLDER = new Set(['shell:reveal', 'shell:editor', 'shell:terminal'])
 
 /**
  * Git and integration channels act on a repository the user added, never on
- * an arbitrary path; settings take known keys with the expected types. A
- * compromised page could otherwise run git in any folder or point the
- * editor command at any program.
+ * an arbitrary path, and on files inside it; settings take known keys with
+ * the expected types. Defence in depth against a compromised page, which
+ * could otherwise run git in any folder or write outside the repository.
+ * (Adding a repository takes any folder: the user picks or drops it.)
  */
 export function checkArgs(channel: string, args: unknown[]): void {
   const repoFirst = channel.startsWith('git:') || OPENS_FOLDER.has(channel) ||
@@ -345,8 +398,8 @@ export function checkArgs(channel: string, args: unknown[]): void {
     const patch = args[0]
     if (!patch || typeof patch !== 'object') throw new GitError('Invalid settings.')
     for (const [key, value] of Object.entries(patch)) {
-      if (!(key in DEFAULT_SETTINGS)) throw new GitError(`Unknown setting "${key}".`)
-      if (typeof value !== typeof DEFAULT_SETTINGS[key as keyof Settings]) throw new GitError(`Setting "${key}" has the wrong type.`)
+      if (!isSettingKey(key)) throw new GitError(`Unknown setting "${key}".`)
+      if (!validSetting(key, value)) throw new GitError(`"${String(value)}" is not a valid value for the setting "${key}".`)
     }
   }
 }
@@ -361,7 +414,11 @@ export function askRenderer(req: { id: string; prompt: string; kind: 'password' 
   return new Promise(resolve => {
     const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
     if (!win) return resolve(null)
-    const timer = setTimeout(() => respond(req.id, null), 5 * 60_000)
+    // Unanswered, the prompt is declined, and its dialog closes: an answer typed later would go nowhere.
+    const timer = setTimeout(() => {
+      respond(req.id, null)
+      send('askpass:cancel', req.id)
+    }, 5 * 60_000)
     registerPending(req.id, value => {
       clearTimeout(timer)
       resolve(value)

@@ -5,7 +5,7 @@
   import { undoLastCommit } from '@/lib/commands'
   import { initials, MOD, tone } from '@/lib/format'
   import { app } from '@/lib/state.svelte'
-  import { dialogs, menuAt, openDialog, showOutput, toast } from '@/lib/ui.svelte'
+  import { dialogs, menuAt, openDialog, overlayOpen, showOutput, toast } from '@/lib/ui.svelte'
   import { rank } from '@/lib/fuzzy'
   import type { Author } from '@shared/types'
 
@@ -82,11 +82,16 @@
     })))
   }
 
-  // Re-read after any dialog closes: the identity may have been edited in Settings.
+  // Re-read after any dialog closes: the identity may have been edited in Settings. Only the
+  // newest answer counts: after a quick tab switch, the previous repository's could land last.
+  let identityToken = 0
   $effect(() => {
     const repo = app.repo?.path
     if (!repo || dialogs.length) return
-    api['git:identity'](repo).then(id => (identity = id)).catch(() => (identity = null))
+    const t = ++identityToken
+    api['git:identity'](repo)
+      .then(id => { if (t === identityToken) identity = id })
+      .catch(() => { if (t === identityToken) identity = null })
   })
 
   const draft = $derived(app.draft)
@@ -207,6 +212,7 @@
 
   // Ctrl+Enter from anywhere in the Changes view commits; Ctrl+L focuses the summary.
   function onWindowKey(e: KeyboardEvent) {
+    if (overlayOpen()) return
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'l' && app.view === 'changes') {
       e.preventDefault()
       summaryEl?.focus()

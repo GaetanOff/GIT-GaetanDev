@@ -27,14 +27,15 @@ Built with Electron, Svelte 5 and TypeScript. All Git work goes through your ins
 - **Branches**: fuzzy switcher (`Ctrl+B`), create from anything, rename, delete (local or remote), merge (merge or squash), rebase, checkout of remote branches with tracking. Switching with local changes offers "stash and switch".
 - **Sync**: one smart button (publish, pull, push or fetch) with ahead/behind counts and live progress. Force push uses `--force-with-lease --force-if-includes`, so commits fetched in the background but never seen are not overwritten. Auto-fetch on a timer.
 - **Stashes, tags, remotes**: browse stash contents, apply, pop, drop; create, push and delete tags; add and remove remotes.
-- **Providers**: detected from the remote URL to open the repository, a commit, a file, or a new pull/merge request in the browser.
-- **Authentication**: HTTPS goes through Git Credential Manager (bundled with Git for Windows). SSH passphrases, host-key confirmations and any other git prompt are shown in the app.
-- **Live**: a file watcher refreshes status as you edit; refs and history refresh after any Git change, including from the command line.
+- **Providers**: detected from the remote URL to open the repository, a commit, a file, or a new pull/merge request in the browser: GitHub, GitLab, Azure DevOps (and Azure DevOps Server), Bitbucket Cloud and Server, Gitea/Codeberg. SSH aliases of `~/.ssh/config` are followed to their host.
+- **Authentication**: HTTPS goes through Git Credential Manager (bundled with Git for Windows). SSH passphrases, host-key confirmations (with the key's fingerprint) and any other git prompt are shown in the app.
+- **Live**: a file watcher refreshes status as you edit; refs and history refresh after any Git change, including from the command line, in linked worktrees and submodules too.
+- **Safe by default**: git is run by its full path (a `git.exe` inside a cloned repository is never run), writes to a repository run one at a time and network commands one at a time, a dead connection fails instead of hanging, and quitting waits for running git work. Errors of the app are kept in log files ("Show log files" in the command palette).
 - **Keyboard**: command palette (`Ctrl+K`), go to changed file (`Ctrl+P`), and shortcuts for everything (`Ctrl+/` lists them).
 
 ## Development
 
-Requires Node 22+ and Git.
+Requires Node 22+ and Git 2.36 or later (2.50.1 or later recommended: the app says so at startup).
 
 ```bash
 npm install
@@ -46,15 +47,15 @@ npm run build      # production bundles in out/
 npm run dist       # Windows installer in release/
 ```
 
-CI (`.github/workflows/ci.yml`) runs lint, check, tests and build on Windows and Linux for every push and pull request.
+CI (`.github/workflows/ci.yml`) runs lint, check, tests and build on Windows and Linux for every push to `main` and every pull request.
 
 ## Releases
 
-Push a tag such as `v0.2.0` (after bumping `version` in package.json): `.github/workflows/release.yml` builds the Windows installer and publishes it as a GitHub release. Installed copies check for a newer release at startup and every six hours, download it in the background and install it on quit (or at once from the "Restart now" toast). Auto-update reads the releases of `GaetanOff/GIT-GaetanDev`, so the repository must be public (or the update feed hosted elsewhere).
+Push a tag such as `v0.2.0` (after bumping `version` in package.json): `.github/workflows/release.yml` checks that the tag matches that version, runs lint, check and tests, builds the Windows installer and publishes it as a GitHub release (published at once, not left as a draft). Installed copies check for a newer release at startup and every six hours, download it in the background and install it on quit (or at once from the "Restart now" toast). Auto-update reads the releases of `GaetanOff/GIT-GaetanDev`, so the repository must be public (or the update feed hosted elsewhere).
 
 - **Code signing**: set the `WIN_CSC_LINK` (base64 or URL of a .pfx) and `WIN_CSC_KEY_PASSWORD` repository secrets. Without them the installer is unsigned and SmartScreen warns on first launch.
-- **Hardening**: Electron fuses turn off `NODE_OPTIONS` and `--inspect`, validate the asar archive and load the app only from it. `runAsNode` stays on: the credential prompt helper (askpass) runs the app's executable as Node.
-- **Explorer**: the installer adds "Open in GaetanDev Git" to the context menu of folders; a folder given on the command line opens as a repository.
+- **Hardening**: Electron fuses turn off `NODE_OPTIONS` and `--inspect`, validate the asar archive and load the app only from it. `runAsNode` stays on: the credential prompt helper (askpass) runs the app's executable as Node. The UI is served from `app://bundle`, not `file://`, so the page cannot read local files; `GrantFileProtocolExtraPrivileges` stays on for the GitHub Desktop importer, which reads its database from a `file://` page of its own. Changing the editor or terminal command asks for confirmation in a native dialog.
+- **Explorer**: the installer adds "Open in GaetanDev Git" to the context menu of folders and drives, for every user of an all-users install; a folder given on the command line opens as a repository.
 
 `scripts/make-icon.cjs` regenerates `build/icon.png` (`npx electron scripts/make-icon.cjs`).
 

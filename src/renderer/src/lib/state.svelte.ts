@@ -1,8 +1,8 @@
-import type { Commit, FileChange, Progress, Refs, RepoEntry, RepoStatus, RestorePoint, SearchMode, Settings } from '@shared/types'
+import type { Commit, FileChange, LogQuery, Progress, Refs, RepoEntry, RepoStatus, RestorePoint, SearchMode, Settings } from '@shared/types'
 import { DEFAULT_SETTINGS } from '@shared/types'
 import { api, asError, on, type AppError } from './api'
 import { GraphBuilder, type GraphRow } from './graph'
-import { choose, confirm, openDialog, toast } from './ui.svelte'
+import { choose, closeDialog, confirm, dialogs, openDialog, toast } from './ui.svelte'
 
 export type View = 'changes' | 'history' | 'stash' | 'file' | 'rebase' | 'undo' | 'compare'
 type MainView = 'changes' | 'history' | 'stash' | 'undo'
@@ -12,6 +12,8 @@ export interface CompareTarget { base: string; head: string; threeDot: boolean; 
 export type Area = 'staged' | 'unstaged' | 'conflicted'
 
 const PAGE = 400
+/** How deep a refresh reloads a history the user scrolled through. */
+const REFRESH_DEPTH = 5000
 
 const emptyRefs = (): Refs => ({
   branches: [], tags: [], remotes: [], stashes: [], submodules: [], worktrees: [], lfs: { used: false, installed: true },
@@ -61,6 +63,8 @@ class AppState {
   graph = $state.raw<GraphRow[]>([])
   historyDone = $state(false)
   historyLoading = $state(false)
+  /** Refs moved while the history was not shown: it reloads once it is. */
+  historyStale = $state(false)
   historySearch = $state('')
   historySearchMode = $state<SearchMode>('message')
   selectedCommit = $state<string | null>(null)
@@ -80,9 +84,14 @@ class AppState {
   private busyId = 0
   private fetchTimer: ReturnType<typeof setInterval> | null = null
   private historyToken = 0
+  /** What the list in History was loaded with, for its next pages. */
+  private historyQuery: { repoId: string; path: string; query: Omit<LogQuery, 'skip' | 'limit'> } | null = null
+  private refsToken = 0
   private openToken = 0
   private memory = new Map<string, TabMemory>()
   private fsmonitorAsked = new Set<string>()
+  /** Repositories with a background fetch running. */
+  private backgroundFetches = new Set<string>()
 
   /* ─── Derived ─────────────────────────────────────────────────────────────── */
 
@@ -167,6 +176,11 @@ class AppState {
         resolve: v => api['askpass:respond'](req.id, v),
       })
     })
+    on('askpass:cancel', id => {
+      const d = dialogs.find(x => x.kind === 'askpass' && x.id === id)
+      if (d) closeDialog(d)
+      toast('info', 'A credential prompt went unanswered for five minutes and was declined.')
+    })
     on('menu', m => {
       if (m === 'focus' && this.repo) this.refreshAll()
     })
@@ -183,15 +197,28 @@ class AppState {
     else if (s.lastRepo && s.repos.some(r => r.id === s.lastRepo)) await this.openRepo(s.lastRepo).catch(() => undefined)
     this.ready = true
     this.scheduleAutoFetch()
+    if (!s.git) toast('error', 'Git was not found. Install Git for Windows (git-scm.com), then restart the app.', undefined, 30_000)
+    else if (!s.git.supported) toast('error', `Git ${s.git.version} is too old for this app, which needs ${s.git.minimum} or later: some views will fail. Update Git for Windows.`, undefined, 30_000)
+    else if (!s.git.recommended) toast('info', `Git ${s.git.version} predates fixes for repositories that run code when cloned with submodules. Updating Git for Windows is recommended.`, undefined, 15_000)
+    if (s.stateUnreadable) {
+      toast('error', 'Your repository list and settings could not be read (another program may hold the file). Nothing is saved until you restart the app.', undefined, 20_000)
+    }
   }
 
   saveDrafts(): void {
     try { localStorage.setItem('drafts', JSON.stringify(this.drafts)) } catch { /* storage unavailable */ }
   }
 
+  /** Shown at once; put back if the main process refuses it (a command change not confirmed). */
   async updateSettings(patch: Partial<Settings>): Promise<void> {
+    const before = { ...this.settings }
     Object.assign(this.settings, patch)
-    this.settings = await api['app:settings'](patch)
+    try {
+      this.settings = await api['app:settings'](patch)
+    } catch (e) {
+      this.settings = before
+      throw e
+    }
     if ('autoFetchMinutes' in patch) this.scheduleAutoFetch()
   }
 
@@ -400,16 +427,23 @@ class AppState {
     return run.done
   }
 
+  /**
+   * Watcher events, window focus, finished operations and fetches overlap:
+   * only the newest call's answers are applied, so an older one arriving last
+   * never puts back a branch, a count or a current branch that has changed.
+   */
   async refreshRefs(): Promise<void> {
     const repo = this.repo
     if (!repo) return
+    const t = ++this.refsToken
+    const current = () => t === this.refsToken && this.repo?.id === repo.id
     try {
       const r = await api['git:refs'](repo.path)
-      if (this.repo?.id !== repo.id) return
+      if (!current()) return
       // Keep the previous extras until fresh ones arrive, so sections do not flicker.
       this.refs = { ...r, submodules: this.refs.submodules, worktrees: this.refs.worktrees, lfs: this.refs.lfs }
       api['git:extras'](repo.path).then(x => {
-        if (this.repo?.id === repo.id) this.refs = { ...this.refs, ...x }
+        if (current()) this.refs = { ...this.refs, ...x }
       }).catch(() => undefined)
     } catch { /* status reports the error */ }
   }
@@ -424,7 +458,9 @@ class AppState {
     const head = this.headKey()
     if (head !== this.lastHead) {
       this.lastHead = head
-      this.reloadHistory(true)
+      // Out of sight, the history reloads when it is shown again (HistoryView), not on every fetch.
+      if (this.view === 'history') this.reloadHistory(true)
+      else this.historyStale = true
     }
   }
 
@@ -453,22 +489,29 @@ class AppState {
 
   /* ─── History ─────────────────────────────────────────────────────────────── */
 
+  /**
+   * `keepSelection`: a refresh of the same list (refs moved, a fetch). It keeps
+   * the depth scrolled to (up to REFRESH_DEPTH) and the selected commit, even
+   * one that is no longer in the list, instead of jumping back to the top.
+   */
   async reloadHistory(keepSelection = false): Promise<void> {
     const token = ++this.historyToken
+    this.historyStale = false
     this.graphBuilder.reset(!!this.historySearch)
     this.historyDone = false
     const repo = this.repo
     if (!repo) return
     this.historyLoading = true
+    const limit = keepSelection ? Math.min(Math.max(PAGE, this.commits.length), REFRESH_DEPTH) : PAGE
+    const query = { scope: this.settings.historyScope, search: this.historySearch || undefined, searchMode: this.historySearchMode }
     try {
-      const commits = await api['git:log'](repo.path, {
-        scope: this.settings.historyScope, skip: 0, limit: PAGE, search: this.historySearch || undefined, searchMode: this.historySearchMode,
-      })
+      const commits = await api['git:log'](repo.path, { ...query, skip: 0, limit })
       if (token !== this.historyToken) return
+      this.historyQuery = { repoId: repo.id, path: repo.path, query }
       this.commits = commits
       this.graph = this.graphBuilder.add(commits)
-      this.historyDone = commits.length < PAGE
-      if (!keepSelection || !commits.some(c => c.sha === this.selectedCommit)) this.selectedCommit = commits[0]?.sha ?? null
+      this.historyDone = commits.length < limit
+      if (!keepSelection || !this.selectedCommit) this.selectedCommit = commits[0]?.sha ?? null
     } catch (e) {
       if (token === this.historyToken) toast('error', asError(e).message)
     } finally {
@@ -477,17 +520,18 @@ class AppState {
   }
 
   async loadMoreHistory(): Promise<void> {
-    if (this.historyDone || this.historyLoading || !this.repo) return
+    // The next page of the list shown: same repository and query as its first page. A tab
+    // restored from memory, or a search typed but not run yet, must not get another list's page.
+    const q = this.historyQuery
+    if (this.historyDone || this.historyLoading || !q || q.repoId !== this.repo?.id) return
     const token = this.historyToken
     this.historyLoading = true
     try {
       // Each page makes git walk and sort the history again (topo order): pages double in
       // size, so scrolling through N commits costs log(N) walks rather than N / 400.
       const limit = Math.max(PAGE, this.commits.length)
-      const more = await api['git:log'](this.repo.path, {
-        scope: this.settings.historyScope, skip: this.commits.length, limit, search: this.historySearch || undefined, searchMode: this.historySearchMode,
-      })
-      if (token !== this.historyToken) return
+      const more = await api['git:log'](q.path, { ...q.query, skip: this.commits.length, limit })
+      if (token !== this.historyToken || this.repo?.id !== q.repoId) return
       this.commits = [...this.commits, ...more]
       this.graph = [...this.graph, ...this.graphBuilder.add(more)]
       this.historyDone = more.length < limit
@@ -506,6 +550,8 @@ class AppState {
    * get a helpful follow-up instead of a raw error.
    */
   async run<T>(label: string, fn: () => Promise<T>, opts: { refresh?: boolean; quiet?: boolean; success?: string } = {}): Promise<T | undefined> {
+    // The repository the operation runs on: another tab may be in front when it fails.
+    const id = this.repo?.id
     const end = this.beginBusy(label)
     try {
       const r = await fn()
@@ -513,7 +559,7 @@ class AppState {
       return r
     } catch (e) {
       const err = asError(e)
-      if (!opts.quiet) this.reportError(err)
+      if (!opts.quiet) this.reportError(err, id)
       return undefined
     } finally {
       end()
@@ -521,11 +567,11 @@ class AppState {
     }
   }
 
-  private reportError(err: AppError): void {
-    const id = this.repo?.id
+  /** `id`: the repository the failed operation ran on, so a follow-up never lands on another one. */
+  private reportError(err: AppError, id: string | undefined): void {
     switch (err.code) {
       case 'CONFLICTS':
-        this.view = 'changes'
+        if (this.repo?.id === id) this.view = 'changes'
         toast('error', 'Conflicts need your attention. Resolve them in the Changes view, then continue.')
         break
       case 'AUTH_FAILED':
@@ -547,7 +593,11 @@ class AppState {
     // The time of the last fetch belongs to the repository fetched, whichever is in front by then.
     const fetched = () => { if (this.repo?.path === repo) this.lastFetched = Date.now() }
     if (background) {
-      try { await api['git:fetch'](repo) } catch { return }
+      // Each tab switch asks for one, and fetches of a repository run one at a time: unchecked,
+      // they would queue up in front of the user's own push or pull. One at a time, none right after another.
+      if (this.backgroundFetches.has(repo) || (this.lastFetched && Date.now() - this.lastFetched < 60_000)) return
+      this.backgroundFetches.add(repo)
+      try { await api['git:fetch'](repo) } catch { return } finally { this.backgroundFetches.delete(repo) }
       fetched()
       await this.refreshAll()
       return
@@ -600,7 +650,7 @@ class AppState {
         })
         return
       }
-      this.reportError(err)
+      this.reportError(err, id)
     } finally {
       end()
       await this.refreshAll()
@@ -619,7 +669,7 @@ class AppState {
 
   async checkout(branch: string): Promise<void> {
     if (!this.repo) return
-    const repo = this.repo.path
+    const { id, path: repo } = this.repo
     const end = this.beginBusy(`Switching to ${branch}`)
     try {
       await api['git:checkout'](repo, branch)
@@ -639,7 +689,7 @@ class AppState {
         }
         return
       }
-      this.reportError(err)
+      this.reportError(err, id)
     } finally {
       end()
       this.selected = null

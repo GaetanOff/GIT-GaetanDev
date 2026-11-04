@@ -28,21 +28,25 @@
 
   const mode = $derived(app.settings.diffMode)
   const sourceKey = $derived(JSON.stringify(source))
+  // As values: saving any setting replaces app.settings, which must not reload the diff by itself.
+  const context = $derived(app.settings.diffContext)
+  const ignoreWhitespace = $derived(app.settings.ignoreWhitespace)
 
-  // Reload on a new file, new options, or (for working-tree diffs) any status change.
+  // Reload on a new file, new options, "Show anyway", or (for working-tree diffs) any status change.
   $effect(() => {
     const key = sourceKey
-    const opts = { context: app.settings.diffContext, ignoreWhitespace: app.settings.ignoreWhitespace, force }
-    if (source.kind === 'worktree' || source.kind === 'index') void app.status
     if (key !== lastKey) {
       selected = new Set()
+      // A new file starts without "Show anyway". Reset before `force` is read below: written after
+      // the read, it ran this effect a second time and the diff loaded twice.
       force = false
-      opts.force = false
       // Never show the previous file under the new one's name, with the new one's actions.
       diff = null
       error = null
     }
     lastKey = key
+    const opts = { context, ignoreWhitespace, force }
+    if (source.kind === 'worktree' || source.kind === 'index') void app.status
     load(source, opts)
   })
 
@@ -55,8 +59,11 @@
       const d = await api['git:diff'](repo, $state.snapshot(src) as DiffSource, opts)
       if (t !== token) return
       const before = diff
-      diff = d
       error = null
+      // Every status refresh reloads a working-tree diff (any file may have changed). When this one
+      // did not, the rows already built (word diff, highlighting) stay as they are.
+      if (before && JSON.stringify(before) === JSON.stringify(d)) return
+      diff = d
       // After a refresh, a key keeps its selection only if it still names the same line: a hunk
       // added above (an editor autosave) shifts positions, and the old key would select another line.
       if (selected.size) {

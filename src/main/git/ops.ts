@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { appendFile, copyFile, lstat, mkdir, readFile } from 'node:fs/promises'
+import { appendFile, copyFile, lstat, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { basename, isAbsolute, join } from 'node:path'
 import { shell } from 'electron'
@@ -75,7 +75,8 @@ export async function discardLines(repo: string, path: string, selection: LineSe
 
 /**
  * Drops every local change (staged and unstaged) to the given files. Nothing
- * is lost for good: the current version of each file goes to the recycle bin.
+ * is lost for good: the current version of each file goes to the recycle bin,
+ * and so does its staged version when that is another one.
  */
 export async function discard(repo: string, paths: string[]): Promise<void> {
   const st = await status(repo)
@@ -94,20 +95,45 @@ export async function discard(repo: string, paths: string[]): Promise<void> {
     // A rename is undone by restoring the original file as well.
     if (f.oldPath && f.index === 'R') tracked.push(f.oldPath)
   }
-  // The changed file goes to the recycle bin first (the GitHub Desktop way), then HEAD's version comes back.
+  // The versions being dropped are copied aside first, then HEAD's comes back, then the copies go to the
+  // recycle bin (the GitHub Desktop way). Copied rather than moved: if the restore fails (index.lock
+  // held elsewhere), every file is still where it was instead of only in the recycle bin.
   const restore: string[] = []
   const failed: string[] = []
-  for (const p of tracked) {
+  const copies: string[] = []
+  const aside = join(tmpdir(), 'GaetanDev discarded', String(Date.now()))
+  for (const [i, p] of tracked.entries()) {
     // Only regular files: a deleted file has nothing to keep, a submodule is a whole checkout.
     const isFile = await lstat(join(repo, p)).then(s => s.isFile(), () => false)
-    if (!isFile) restore.push(p)
-    else await shell.trashItem(join(repo, p)).then(() => restore.push(p), () => failed.push(p))
+    if (!isFile) {
+      restore.push(p)
+      continue
+    }
+    try {
+      const dir = join(aside, String(i)) // one folder per file: two files may share a name
+      await mkdir(dir, { recursive: true })
+      await copyFile(join(repo, p), join(dir, basename(p)))
+      copies.push(join(dir, basename(p)))
+      // A staged version that is neither HEAD's nor the file's would be lost too.
+      const f = byPath.get(p)
+      if (f && f.index !== '.' && f.worktree !== '.') {
+        const stagedCopy = join(dir, `${basename(p)} (staged)`)
+        await writeFile(stagedCopy, (await git(repo, ['show', `:${p}`])).raw)
+        copies.push(stagedCopy)
+      }
+      restore.push(p)
+    } catch {
+      failed.push(p)
+    }
   }
   if (restore.length) await git(repo, ['restore', '--source=HEAD', '--staged', '--worktree', '--pathspec-from-file=-', '--pathspec-file-nul'], viaStdin(restore))
+  const binned: string[] = []
+  for (const c of copies) await shell.trashItem(c).catch(() => binned.push(c))
   const staged = created.filter(p => !byPath.get(p)?.untracked)
   if (staged.length) await git(repo, ['rm', '--cached', '-q', '-r', '--pathspec-from-file=-', '--pathspec-file-nul'], viaStdin(staged))
   for (const p of created) await shell.trashItem(join(repo, p)).catch(() => undefined)
-  if (failed.length) throw new GitError(`Could not move ${failed.length === 1 ? failed[0] : `${failed.length} files`} to the recycle bin, so ${failed.length === 1 ? 'it was' : 'they were'} left as is.`)
+  if (failed.length) throw new GitError(`Could not keep a copy of ${failed.length === 1 ? failed[0] : `${failed.length} files`}, so ${failed.length === 1 ? 'it was' : 'they were'} left as is.`)
+  if (binned.length) throw new GitError(`The changes were discarded, but the recycle bin refused the copies: they are in "${aside}".`)
 }
 
 export async function ignore(repo: string, pattern: string): Promise<void> {
@@ -136,9 +162,11 @@ export async function commit(repo: string, message: string, amend: boolean, opts
 }
 
 async function hasCommitHook(repo: string): Promise<boolean> {
-  const custom = (await git(repo, ['config', '--get', 'core.hooksPath'], { okCodes: [1] })).stdout.trim()
-  const dir = custom ? (isAbsolute(custom) ? custom : join(repo, custom)) : join(await gitDir(repo), 'hooks')
-  return ['pre-commit', 'commit-msg', 'prepare-commit-msg'].some(h => existsSync(join(dir, h)))
+  // --git-path follows core.hooksPath and, in a linked worktree, finds the hooks it shares with the
+  // main one (the worktree's own git folder has none).
+  const dir = (await gitOut(repo, ['rev-parse', '--git-path', 'hooks'])).trim()
+  const abs = isAbsolute(dir) ? dir : join(repo, dir)
+  return ['pre-commit', 'commit-msg', 'prepare-commit-msg'].some(h => existsSync(join(abs, h)))
 }
 
 /** People who committed here, most active first: suggestions for co-authors. */
@@ -229,29 +257,20 @@ export async function skipOp(repo: string): Promise<void> {
   if (op && op !== 'merge') await git(repo, [op, '--skip'], NO_EDITOR)
 }
 
-/** Oldest first, so several picked commits land in their original order. */
+/**
+ * Oldest first, so several picked commits land in their original order. Rebased commits
+ * often share the same second, so ancestry decides and the date only orders commits on
+ * separate lines: that is `rev-list --date-order`, walked once from the picked commits back
+ * to where they meet (pairwise ancestry checks took up to ~1,600 git processes for 40).
+ */
 async function chronological(repo: string, shas: string[]): Promise<string[]> {
   if (shas.length < 2) return shas
-  // "rev-list --no-walk" orders by commit date, and rebased commits often share the same
-  // second: ancestry decides instead, the date only orders commits on separate lines.
-  const dates = new Map((await gitOut(repo, ['log', '--no-walk=unsorted', '--format=%H %ct', ...shas])).trim().split('\n')
-    .map(l => l.split(' ')).map(([sha, t]) => [sha, +t] as const))
-  const ancestor = async (a: string, b: string) =>
-    (await git(repo, ['merge-base', '--is-ancestor', a, b], { okCodes: [1] })).code === 0
-  const older = (a: string, b: string) => (dates.get(a) ?? 0) < (dates.get(b) ?? 0)
-  // Past a few dozen commits, pairwise ancestry checks cost too much: dates only.
-  const before = async (a: string, b: string) =>
-    shas.length > 40 ? older(a, b) : (await ancestor(a, b)) || (!(await ancestor(b, a)) && older(a, b))
-  const out: string[] = []
-  for (const sha of shas) {
-    // Insertion before the first picked commit it must come before.
-    let at = out.length
-    for (let i = 0; i < out.length; i++) {
-      if (await before(sha, out[i])) { at = i; break }
-    }
-    out.splice(at, 0, sha)
-  }
-  return out
+  const base = (await git(repo, ['merge-base', '--octopus', ...shas], { okCodes: [1] })).stdout.trim()
+  // Down to the meeting point itself, which can be one of the picked commits; unrelated histories: to the roots.
+  const walk = (await gitOut(repo, ['rev-list', '--date-order', '--reverse', ...shas, ...(base ? [`^${base}^@`] : [])])).split('\n')
+  const wanted = new Set(shas)
+  const ordered = walk.filter(s => wanted.has(s))
+  return [...ordered, ...shas.filter(s => !ordered.includes(s))]
 }
 
 export async function cherryPick(repo: string, shas: string[]): Promise<void> {

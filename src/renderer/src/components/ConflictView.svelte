@@ -97,7 +97,8 @@
     let st: LexState = null
     const run = (key: string, lines: string[], from: LexState) => {
       let s = from
-      lines.forEach((l, i) => { map.set(`${key}:${i}`, s); s = nextState(l, lang, s) })
+      // Threaded from a known start, the state stays known: never undefined here.
+      lines.forEach((l, i) => { map.set(`${key}:${i}`, s); s = nextState(l, lang, s) ?? null })
       return s
     }
     file.chunks.forEach((c, ci) => {
@@ -243,7 +244,7 @@
       regions.push(m ? '' : region)
       states.push(st)
       if (m === 'end') region = ''
-      if (!m && codeLang) st = nextState(l, codeLang, st)
+      if (!m && codeLang) st = nextState(l, codeLang, st) ?? null
     }
     return { markers, regions, states }
   })

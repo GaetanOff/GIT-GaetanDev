@@ -1,11 +1,14 @@
-import { existsSync, statSync } from 'node:fs'
-import { app, BrowserWindow, Menu, screen, session, shell } from 'electron'
-import { join, resolve } from 'node:path'
+import { app, BrowserWindow, dialog, Menu, net, protocol, screen, session, shell } from 'electron'
+import { join, resolve, sep } from 'node:path'
+import { pathToFileURL } from 'node:url'
+import { folderArg as launchFolder } from './args'
 import { startAskPass, stopAskPass } from './askpass'
 import { killRunning, setGitEnv } from './git/exec'
 import { devShot } from './devshot'
-import { askRenderer, registerIpc, send, setLaunchPath } from './ipc'
+import { logToFile } from './log'
+import { askRenderer, openFolder, queuesBusy, registerIpc, send, setLaunchPath, settleQueues } from './ipc'
 import { flush, getState, save } from './store'
+import { sweepImportCopies } from './importers'
 import { startUpdates } from './updater'
 import { RepoWatcher } from './watcher'
 
@@ -13,24 +16,32 @@ app.setAppUserModelId('fr.gaetandev.git')
 // Development aids (a separate profile, a dev server URL, scripted screenshots) never apply to an installed build.
 const dev = !app.isPackaged
 if (dev && process.env.GDG_USER_DATA) app.setPath('userData', process.env.GDG_USER_DATA)
+logToFile()
 
 process.on('unhandledRejection', reason => console.error('Unhandled rejection in main:', reason))
 // One failed callback must not take every open repository down with it.
 process.on('uncaughtException', error => console.error('Uncaught exception in main:', error))
 
 /**
- * A folder given on the command line ("Open with", a shortcut, `gaetandev-git .`):
- * the first argument that names an existing directory. Development runs pass
- * the app's own folder first, which is skipped.
+ * The UI is served as app://bundle/…, not from file://. Electron lets a
+ * file:// page fetch any local file; a page on a scheme of its own reaches
+ * its bundle only. Registered before the app is ready, as Electron requires.
  */
-function folderArg(argv: string[], cwd = process.cwd()): string | null {
-  for (const arg of argv.slice(dev ? 2 : 1)) {
-    if (arg.startsWith('-')) continue
-    const full = resolve(cwd, arg)
-    try { if (existsSync(full) && statSync(full).isDirectory()) return full } catch { /* unreadable */ }
-  }
-  return null
+const APP_ORIGIN = 'app://bundle'
+protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true } }])
+
+function serveBundle(): void {
+  const root = join(__dirname, '../renderer')
+  protocol.handle('app', request => {
+    const { host, pathname } = new URL(request.url)
+    const file = resolve(root, `.${decodeURIComponent(pathname)}`)
+    if (host !== 'bundle' || !file.startsWith(root + sep)) return new Response('Not found', { status: 404 })
+    return net.fetch(pathToFileURL(file).toString()).catch(() => new Response('Not found', { status: 404 }))
+  })
 }
+
+/** The folder the app was launched on. Development runs pass the app's own folder first, which is skipped. */
+const folderArg = (argv: string[], cwd = process.cwd()) => launchFolder(argv, cwd, dev ? 2 : 1)
 
 // A second launch hands its folder to the running instance and exits before doing anything else.
 if (!app.requestSingleInstanceLock()) app.exit(0)
@@ -40,35 +51,67 @@ function start(): void {
   const watcher = new RepoWatcher(e => send('repo:changed', e))
   setLaunchPath(folderArg(process.argv))
 
+  /** Credential prompts in the app; without them (the helper could not be written) git still runs. */
+  const askpass = () => {
+    try {
+      setGitEnv(startAskPass(askRenderer))
+    } catch (e) {
+      console.error('Credential prompts unavailable:', (e as Error).message)
+    }
+  }
+
   app.whenReady().then(() => {
     Menu.setApplicationMenu(null)
     // The app needs no camera, microphone, location or notifications: refuse every request.
     session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
     session.defaultSession.setPermissionCheckHandler(() => false)
-    setGitEnv(startAskPass(askRenderer))
+    askpass()
+    serveBundle()
     registerIpc(watcher)
     createWindow()
     startUpdates(version => send('update:ready', version))
+    setTimeout(sweepImportCopies, 5_000).unref()
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) {
-        setGitEnv(startAskPass(askRenderer))
+        askpass()
         createWindow()
       }
     })
+  }).catch(e => {
+    // Without a window the process would hold the single-instance lock, and every later launch
+    // would exit at once: the app would look dead until killed. Say why, and let go.
+    dialog.showErrorBox('GaetanDev Git could not start', (e as Error).stack ?? String(e))
+    app.exit(1)
   })
 
   app.on('second-instance', (_e, argv, cwd) => {
+    const folder = folderArg(argv, cwd)
     const win = BrowserWindow.getAllWindows()[0]
+    // Every window was closed (macOS keeps the app running): open one for this launch.
+    if (!win && app.isReady()) {
+      if (folder) setLaunchPath(folder)
+      createWindow()
+      return
+    }
     if (!win) return
     if (win.isMinimized()) win.restore()
     win.focus()
-    const folder = folderArg(argv, cwd)
-    if (folder) send('open:path', folder)
+    if (folder) openFolder(folder)
   })
 
   app.on('window-all-closed', () => {
     watcher.close()
     if (process.platform !== 'darwin') app.quit()
+  })
+
+  // Killed mid-way, a commit, checkout or rebase leaves .git/index.lock and a half-done operation, and
+  // a fetch a ref lock: quitting waits for queued git work first, ten seconds at most.
+  let waited = false
+  app.on('before-quit', e => {
+    if (waited || !queuesBusy()) return
+    e.preventDefault()
+    waited = true
+    settleQueues(10_000).then(() => app.quit())
   })
 
   app.on('will-quit', () => {
@@ -134,9 +177,18 @@ function createWindow(): BrowserWindow {
     if (url !== win.webContents.getURL()) e.preventDefault()
   })
   win.on('focus', () => win.webContents.send('menu', 'focus'))
+  // A crashed or killed page leaves a blank window: load it again, unless it keeps crashing.
+  const crashes: number[] = []
+  win.webContents.on('render-process-gone', (_e, details) => {
+    console.error('Renderer gone:', details.reason)
+    if (details.reason === 'clean-exit' || win.isDestroyed()) return
+    const now = Date.now()
+    crashes.push(now)
+    if (crashes.filter(t => now - t < 60_000).length <= 3) win.webContents.reload()
+  })
 
   if (dev) devShot(win)
   if (dev && process.env.ELECTRON_RENDERER_URL) win.loadURL(process.env.ELECTRON_RENDERER_URL)
-  else win.loadFile(join(__dirname, '../renderer/index.html'))
+  else win.loadURL(`${APP_ORIGIN}/index.html`)
   return win
 }

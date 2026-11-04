@@ -18,7 +18,11 @@ export async function rebasePlan(repo: string, symbolicBase: string | null): Pro
   const head = await resolveCommit(repo, 'HEAD')
   const base = symbolicBase && await resolveCommit(repo, symbolicBase)
   const range = base ? `${base}..${head}` : head
-  const out = await gitOut(repo, ['log', '--reverse', `--format=%H${US}%P${US}%an${US}%ae${US}%at${US}%s${US}%b${RS}`, range])
+  // Full messages are needed (squashing combines them), so a range from the root of a long history is
+  // large: past 32 MB of it, the user is asked for a later start instead of the app filling memory.
+  const log = await git(repo, ['log', '--reverse', `--format=%H${US}%P${US}%an${US}%ae${US}%at${US}%s${US}%b${RS}`, range], { maxBytes: 32 * 1024 * 1024 })
+  if (log.truncated) throw new GitError('There are too many commits to edit at once. Start from a later commit ("Edit history from here").')
+  const out = log.stdout
   const commits = out.split(RS).map(r => r.replace(/^\n/, '')).filter(Boolean).map(r => {
     const [sha, parents, author, email, date, subject, body] = r.split(US)
     return { sha, parents: parents ? parents.split(' ') : [], author, email, date: +date, subject, body: (body ?? '').trim(), refs: [] }
@@ -56,24 +60,35 @@ async function extractTodo(repo: string, base: string | null, shas: string[]): P
   await mkdir(dir, { recursive: true })
   const out = join(dir, 'generated-todo')
   await rm(out, { force: true })
-  // No hooks for this dry run (pre-rebase could refuse or act), and full command names whatever the user's config.
+  // No hooks for this dry run (pre-rebase could refuse or act), full command names and no autosquash
+  // (rebase.autoSquash turns "fixup!" commits into fixup lines) whatever the user's config: the plan
+  // lists every commit as a pick, and squashing is the user's to do here.
   const noHooks = join(dir, 'no-hooks')
   await mkdir(noHooks, { recursive: true })
   const index = { GIT_INDEX_FILE: join(dir, 'plan-index') }
+  // Only this function uses that index, one call at a time per repository (the write queue): a lock
+  // file left by a git killed mid-way (the app quit) would otherwise refuse every later plan.
+  await rm(`${index.GIT_INDEX_FILE}.lock`, { force: true })
+  // In a sparse checkout git clears skip-worktree from files present on disk, and the throwaway
+  // index would read as changed: for these commands the checkout is not sparse.
+  const notSparse = ['-c', 'core.sparseCheckout=false']
+  let refusal: string
   try {
-    await git(repo, ['read-tree', 'HEAD'], { env: index })
-    const files = await git(repo, ['ls-files', '-z'], { env: index })
-    if (files.raw.length) await git(repo, ['update-index', '-z', '--skip-worktree', '--stdin'], { env: index, input: files.raw })
-    await git(repo, ['-c', `core.hooksPath=${posix(noHooks)}`, '-c', 'rebase.abbreviateCommands=false',
-      'rebase', '-i', '--rebase-merges', '--no-autostash', ...(base ? [base] : ['--root'])], {
+    await git(repo, [...notSparse, 'read-tree', 'HEAD'], { env: index })
+    const files = await git(repo, [...notSparse, 'ls-files', '-z'], { env: index })
+    if (files.raw.length) await git(repo, [...notSparse, 'update-index', '-z', '--skip-worktree', '--stdin'], { env: index, input: files.raw })
+    const r = await git(repo, [...notSparse, '-c', `core.hooksPath=${posix(noHooks)}`, '-c', 'rebase.abbreviateCommands=false',
+      'rebase', '-i', '--rebase-merges', '--no-autostash', '--no-autosquash', ...(base ? [base] : ['--root'])], {
       env: { ...index, GIT_SEQUENCE_EDITOR: `f() { cp "$1" ${quote(out)}; : > "$1"; }; f`, GIT_EDITOR: 'true' },
       okCodes: [1],
     })
+    refusal = r.stderr.split(/\r?\n/).filter(l => /^(error|fatal): /.test(l) && !/nothing to do/.test(l)).join('\n')
   } finally {
     await rm(index.GIT_INDEX_FILE, { force: true })
   }
   const text = await readFile(out, 'utf8').catch(() => '')
-  if (!text) throw new GitError('Git did not produce a rebase plan for this range.')
+  // Exit code 1 is the expected "nothing to do": anything git said besides it is why there is no plan.
+  if (!text) throw new GitError(`Git did not produce a rebase plan for this range.${refusal ? `\n${refusal}` : ''}`)
 
   const items: RebaseTodoItem[] = []
   for (const raw of text.split(/\r?\n/)) {

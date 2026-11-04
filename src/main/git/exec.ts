@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { accessSync, constants, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { delimiter, isAbsolute, join } from 'node:path'
 import type { GitErrorCode } from '@shared/api'
 
@@ -71,11 +72,22 @@ export function findOnPath(name: string, exts = process.platform === 'win32' ? [
   return null
 }
 
+const MAX_STDERR = 1024 * 1024
+
 /** Looked up on the first call, and again after it went missing (installed or moved while the app runs). */
 let gitPath: string | null = null
 const NOT_FOUND = 'Git was not found. Install Git for Windows and restart the app.'
 
-const GLOBAL_ARGS = ['-c', 'core.quotepath=false', '-c', 'color.ui=false', '-c', 'i18n.logOutputEncoding=UTF-8']
+/**
+ * Output the parsers rely on, whatever the user's config says: "a/" and "b/"
+ * diff prefixes (diff.noprefix made every line stage fail), a context line
+ * kept as " " when blank, no signature check printed into log output.
+ */
+const GLOBAL_ARGS = [
+  '-c', 'core.quotepath=false', '-c', 'color.ui=false', '-c', 'i18n.logOutputEncoding=UTF-8',
+  '-c', 'diff.noprefix=false', '-c', 'diff.mnemonicPrefix=false', '-c', 'diff.srcPrefix=a/', '-c', 'diff.dstPrefix=b/',
+  '-c', 'diff.relative=false', '-c', 'diff.suppressBlankEmpty=false', '-c', 'log.showSignature=false',
+]
 
 /** The git command an argument list runs: "stash" for ['-c', 'k=v', 'stash', 'push']. */
 function subcommand(args: string[]): string | undefined {
@@ -87,10 +99,67 @@ function subcommand(args: string[]): string | undefined {
 }
 
 /**
+ * `git status --show-stash` (porcelain v2) appeared in 2.35, `worktree list -z` and the
+ * built-in fsmonitor in 2.36: older versions fail on every refresh.
+ */
+const MINIMUM = [2, 36, 0]
+/** 2.50.1 fixed the last known ways a cloned repository (with submodules) could run code. */
+const RECOMMENDED = [2, 50, 1]
+
+const atLeast = (v: number[], min: number[]) => {
+  for (let i = 0; i < min.length; i++) if ((v[i] ?? 0) !== min[i]) return (v[i] ?? 0) > min[i]
+  return true
+}
+
+/** "git version 2.45.0.windows.1" → its version, and whether the app supports it and recommends it. */
+export function readGitVersion(text: string): { version: string; supported: boolean; recommended: boolean; minimum: string } | null {
+  const m = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(text)
+  if (!m) return null
+  const v = [+m[1], +m[2], +(m[3] ?? 0)]
+  return { version: v.join('.'), supported: atLeast(v, MINIMUM), recommended: atLeast(v, RECOMMENDED), minimum: MINIMUM.join('.') }
+}
+
+/** The installed git's version, or null when git cannot be run. */
+export async function gitVersion(): Promise<ReturnType<typeof readGitVersion>> {
+  try {
+    return readGitVersion((await run(tmpdir(), ['version'])).stdout)
+  } catch {
+    return null
+  }
+}
+
+/** Commands that talk to a remote. */
+const NETWORK_COMMANDS = new Set(['fetch', 'pull', 'push', 'clone', 'ls-remote', 'submodule', 'lfs'])
+
+/**
+ * A dead connection fails instead of holding its queue until the app restarts:
+ * HTTPS below 1 byte/s for five minutes, SSH after two minutes of unanswered
+ * keepalives. A server preparing a pack or running a push hook still sends
+ * progress, so only a silent connection trips them. Settings of the user's own
+ * (git config or environment) are left alone.
+ */
+export async function stallGuards(cwd: string): Promise<NodeJS.ProcessEnv> {
+  const r = await run(cwd, ['config', '--get-regexp', '^(http\\.lowspeed(limit|time)|core\\.sshcommand)$'], { okCodes: [1] })
+  const set = new Set(r.stdout.split('\n').map(l => l.split(' ')[0].toLowerCase()).filter(Boolean))
+  const env: NodeJS.ProcessEnv = {}
+  const http = ['http.lowspeedlimit', 'http.lowspeedtime'].some(k => set.has(k)) || process.env.GIT_HTTP_LOW_SPEED_LIMIT || process.env.GIT_HTTP_LOW_SPEED_TIME
+  if (!http) Object.assign(env, { GIT_HTTP_LOW_SPEED_LIMIT: '1', GIT_HTTP_LOW_SPEED_TIME: '300' })
+  if (!set.has('core.sshcommand') && !process.env.GIT_SSH_COMMAND && !process.env.GIT_SSH) {
+    env.GIT_SSH_COMMAND = 'ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=8'
+  }
+  return env
+}
+
+/**
  * Runs git and resolves with its output. Rejects with a GitError whose message
  * is the last meaningful stderr line, and whose code classifies the failure.
  */
-export function git(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecResult> {
+export async function git(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecResult> {
+  if (!NETWORK_COMMANDS.has(subcommand(args) ?? '')) return run(cwd, args, opts)
+  return run(cwd, args, { ...opts, env: { ...(await stallGuards(cwd)), ...opts.env } })
+}
+
+function run(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
     gitPath ??= findOnPath('git')
     if (!gitPath) return reject(new GitError(NOT_FOUND, 'GIT_NOT_FOUND'))
@@ -109,10 +178,6 @@ export function git(cwd: string, args: string[], opts: ExecOptions = {}): Promis
         // Except for stash, whose own pathspec magic (":/" to clear stashed untracked files)
         // breaks in literal mode: callers give it ":(literal)" paths instead.
         GIT_LITERAL_PATHSPECS: subcommand(args) === 'stash' ? '0' : '1',
-        // A stalled HTTPS transfer (under 1 KB/s for a minute) fails instead of holding its queue
-        // until the app restarts; sign-in prompts come before the transfer and are not timed.
-        GIT_HTTP_LOW_SPEED_LIMIT: process.env.GIT_HTTP_LOW_SPEED_LIMIT ?? '1000',
-        GIT_HTTP_LOW_SPEED_TIME: process.env.GIT_HTTP_LOW_SPEED_TIME ?? '60',
         ...opts.env,
       },
     })
@@ -123,6 +188,7 @@ export function git(cwd: string, args: string[], opts: ExecOptions = {}): Promis
     const out: Buffer[] = []
     const err: Buffer[] = []
     let outBytes = 0
+    let errBytes = 0
     let truncated = false
     let pending = ''
 
@@ -137,7 +203,10 @@ export function git(cwd: string, args: string[], opts: ExecOptions = {}): Promis
       out.push(chunk)
     })
     child.stderr.on('data', (chunk: Buffer) => {
+      // Only the end of stderr is kept past 1 MB (a chatty hook, endless progress): errors come last.
       err.push(chunk)
+      errBytes += chunk.length
+      while (errBytes > MAX_STDERR && err.length > 1) errBytes -= err.shift()!.length
       if (!opts.onStderrLine) return
       pending += chunk.toString('utf8')
       const parts = pending.split(/[\r\n]/)
@@ -185,7 +254,8 @@ export async function gitOut(cwd: string, args: string[], opts?: ExecOptions): P
 
 const PATTERNS: [RegExp, GitErrorCode][] = [
   [/would be overwritten by (checkout|merge)|Please commit your changes or stash them/i, 'LOCAL_CHANGES_OVERWRITTEN'],
-  [/\[rejected\].*\((non-fast-forward|fetch first)\)|Updates were rejected because/i, 'NON_FAST_FORWARD'],
+  // Not a tag that already exists on the remote: pulling would not help there.
+  [/\[rejected\].*\((non-fast-forward|fetch first)\)|Updates were rejected because (?!the tag already exists)/i, 'NON_FAST_FORWARD'],
   [/has no upstream branch|no tracking information/i, 'NO_UPSTREAM'],
   [/Authentication failed|could not read Username|Permission denied \(publickey|terminal prompts disabled|HTTP Basic: Access denied|returned error: 40[13]/i, 'AUTH_FAILED'],
   [/CONFLICT \(|Merge conflict|fix conflicts|could not apply|after resolving the conflicts/i, 'CONFLICTS'],

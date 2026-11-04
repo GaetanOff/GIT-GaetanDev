@@ -4,7 +4,7 @@ vi.mock('electron', () => ({ app: {}, BrowserWindow: {}, clipboard: {}, dialog: 
 vi.mock('../src/main/store', () => ({ isRegistered: () => true, getState: () => ({ settings: {} }) }))
 vi.mock('../src/main/updater', () => ({ installUpdate: () => undefined }))
 
-const { checkArgs, schedule } = await import('../src/main/ipc')
+const { checkArgs, queuesBusy, schedule, settleQueues } = await import('../src/main/ipc')
 
 const REPO = 'C:/repos/app'
 
@@ -16,13 +16,26 @@ describe('argument checks', () => {
   })
 
   it('refuses file paths outside the repository', () => {
-    for (const path of ['../outside.txt', 'src/../../outside.txt', '..\\outside.txt', 'C:\\Windows\\win.ini', '/etc/passwd', 'C:x.txt']) {
+    const win = process.platform === 'win32'
+    for (const path of ['../outside.txt', 'src/../../outside.txt', '..\\outside.txt', '/etc/passwd', '.git/hooks/pre-commit', '.GIT\\config', 'vendor/lib/.git/hooks/post-checkout', ...(win ? ['C:\\Windows\\win.ini', 'C:x.txt'] : [])]) {
       expect(() => checkArgs('git:resolveContent', [REPO, path, 'text']), path).toThrow(/inside the repository/)
     }
+    // A file a commit made on Linux or macOS can hold.
+    if (!win) expect(() => checkArgs('git:diff', [REPO, { kind: 'commit', sha: 'HEAD', path: 'c:notes.md' }, {}])).not.toThrow()
     expect(() => checkArgs('git:stage', [REPO, ['ok.txt', '../outside.txt']])).toThrow(/inside the repository/)
     expect(() => checkArgs('git:diff', [REPO, { kind: 'worktree', path: '../x', untracked: true }, {}])).toThrow(/inside the repository/)
     expect(() => checkArgs('git:conflict', [REPO, 'src/a b/[1].txt'])).not.toThrow()
     expect(() => checkArgs('shell:reveal', [process.cwd()])).not.toThrow()
+  })
+})
+
+describe('settings checks', () => {
+  it('takes only values a setting may hold', () => {
+    for (const patch of [{ diffContext: 2.5 }, { autoFetchMinutes: -1 }, { pullMode: 'octopus' }, { sidebarWidth: Infinity }, { editorCommand: null }]) {
+      expect(() => checkArgs('app:settings', [patch]), JSON.stringify(patch)).toThrow(/not a valid value/)
+    }
+    expect(() => checkArgs('app:settings', [JSON.parse('{"__proto__": {"x": 1}}')])).toThrow(/Unknown setting/)
+    expect(() => checkArgs('app:settings', [{ diffContext: 5, pullMode: 'rebase', autoFetchMinutes: 0, listWidth: 360 }])).not.toThrow()
   })
 })
 
@@ -43,6 +56,38 @@ describe('scheduling', () => {
     release()
     await Promise.all([fetch, pull, stage])
     expect(order).toEqual(['fetch', 'stage', 'fetch done', 'pull'])
+  })
+
+  it('makes removing a remote wait for a fetch in progress', async () => {
+    const order: string[] = []
+    let release!: () => void
+    const fetch = schedule('git:fetch', REPO, () => new Promise<void>(resolve => {
+      order.push('fetch')
+      release = () => { order.push('fetch done'); resolve() }
+    }))
+    const remove = schedule('git:removeRemote', REPO, async () => { order.push('remove') })
+    await tick()
+    expect(order).toEqual(['fetch'])
+    release()
+    await Promise.all([fetch, remove])
+    expect(order).toEqual(['fetch', 'fetch done', 'remove'])
+  })
+
+  it('lets quitting wait for running git work, up to a limit', async () => {
+    let done = false
+    const commit = schedule('git:commit', REPO, () => new Promise<void>(resolve => setTimeout(() => { done = true; resolve() }, 60)))
+    expect(queuesBusy()).toBe(true)
+    await settleQueues(5_000)
+    expect(done).toBe(true)
+    await commit
+    await tick()
+    expect(queuesBusy()).toBe(false)
+    // A repository of its own: this fetch never settles.
+    const stuck = schedule('git:fetch', 'C:/repos/stuck', () => new Promise<void>(() => undefined))
+    const started = Date.now()
+    await settleQueues(50)
+    expect(Date.now() - started).toBeLessThan(1_000)
+    void stuck
   })
 
   it('makes a pull wait for writes in progress', async () => {

@@ -104,7 +104,8 @@ export async function newerTips(repo: string, branches: { name: string; sha: str
   const [remotes, journal, fsck] = await Promise.all([
     remoteRefs(repo),
     readJournal(repo),
-    git(repo, ['fsck', '--unreachable', '--no-reflogs', '--no-progress'], { okCodes: [1, 2, 4, 8] }).then(r => r.stdout, () => ''),
+    // Years of rebases can leave millions of loose objects: only the first 16 MB of the list is read.
+    git(repo, ['fsck', '--unreachable', '--no-reflogs', '--no-progress'], { okCodes: [1, 2, 4, 8], maxBytes: 16 * 1024 * 1024 }).then(r => r.stdout, () => ''),
   ])
   const named = await bestDescendants(repo, branches, name => [
     ...[...remotes].filter(([ref]) => sameName(ref, name)).map(([ref, sha]): Candidate => ({ sha, via: 'remote', ref })),
