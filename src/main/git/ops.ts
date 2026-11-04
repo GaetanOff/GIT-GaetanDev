@@ -583,7 +583,9 @@ export async function pushTag(repo: string, remote: string, name: string, report
 
 export async function deleteRemoteBranch(repo: string, remote: string, branch: string, report: Reporter): Promise<void> {
   try {
-    await withPruneJournal(repo, () => git(repo, ['push', '--progress', remote, '--delete', branch], { onStderrLine: progressHandler('push', `Deleting ${remote}/${branch}`, report) }))
+    // By its full name: a bare one is resolved on the server, where a tag of that name (the branch
+    // itself already gone) was deleted instead.
+    await withPruneJournal(repo, () => git(repo, ['push', '--progress', remote, '--delete', `refs/heads/${branch}`], { onStderrLine: progressHandler('push', `Deleting ${remote}/${branch}`, report) }))
   } finally {
     report(null)
   }

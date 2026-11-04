@@ -377,6 +377,20 @@ describe('refs', () => {
     expect(execFileSync('git', ['-C', bare, 'log', '-1', '--format=%s', 'release'], { encoding: 'utf8' }).trim()).toBe('second')
   })
 
+  it('deletes a remote branch, never a remote tag of the same name', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base')
+    const bare = join(repo, '..', 'remote.git')
+    execFileSync('git', ['init', '-q', '--bare', bare])
+    sh(repo, 'remote', 'add', 'origin', bare)
+    sh(repo, 'push', '-q', 'origin', 'HEAD:refs/heads/release', 'HEAD:refs/tags/release')
+    sh(repo, 'fetch', '-q', 'origin')
+    // Deleted on the server meanwhile: origin/release here is stale, the tag is still there.
+    execFileSync('git', ['-C', bare, 'update-ref', '-d', 'refs/heads/release'])
+    await ops.deleteRemoteBranch(repo, 'origin', 'release', () => undefined)
+    expect(execFileSync('git', ['-C', bare, 'for-each-ref', '--format=%(refname)'], { encoding: 'utf8' }).trim()).toBe('refs/tags/release')
+  })
+
   it('reads and switches to a branch of a remote whose name holds a slash', async () => {
     const source = makeRepo()
     commit(source, 'base')
