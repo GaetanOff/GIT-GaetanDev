@@ -569,7 +569,10 @@ export async function push(repo: string, opts: { force?: boolean; setUpstream?: 
   const branch = await currentBranch(repo)
   if (!branch) throw new GitError('You are not on a branch (detached HEAD).')
   const upstream = await upstreamOf(repo, branch)
-  const args = ['push', '--progress']
+  // "Push" and "Force push" are about this branch: with push.default=matching, git pushed every
+  // branch that has a remote counterpart, and a force push rewrote them too.
+  const pushDefault = (await git(repo, ['config', '--get', 'push.default'], { okCodes: [1] })).stdout.trim().toLowerCase()
+  const args = [...(pushDefault === 'matching' ? ['-c', 'push.default=simple'] : []), 'push', '--progress']
   // The background fetch keeps origin/x current, which alone would satisfy the lease even
   // for commits nobody here has seen: --force-if-includes also requires them to be in HEAD's history.
   if (opts.force) args.push('--force-with-lease', '--force-if-includes')

@@ -551,6 +551,28 @@ describe('undo and force push', () => {
     expect(second).toMatchObject({ kind: 'rebase', before: { sha: otherTip, branch: 'other' } })
   })
 
+  it('pushes the current branch only, even where push.default says "matching"', async () => {
+    const bare = join(makeRepo(), '..', 'remote.git')
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare])
+    const repo = makeRepo()
+    sh(repo, 'remote', 'add', 'origin', bare)
+    commit(repo, 'base', { 'a.txt': 'a\n' })
+    sh(repo, 'push', '-q', '-u', 'origin', 'main')
+    sh(repo, 'push', '-q', 'origin', 'main:refs/heads/b')
+    sh(repo, 'fetch', '-q', 'origin')
+    sh(repo, 'branch', 'b', 'origin/b')
+    // A local rewrite of b, not meant to be pushed yet.
+    sh(repo, 'checkout', '-q', 'b')
+    commit(repo, 'rewritten b', { 'b.txt': 'b\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'main moves', { 'm.txt': 'm\n' })
+    sh(repo, 'config', 'push.default', 'matching')
+    await ops.push(repo, { force: true }, () => undefined)
+    const remoteLog = (ref: string) => execFileSync('git', ['-C', bare, 'log', '-1', '--format=%s', ref], { encoding: 'utf8' }).trim()
+    expect(remoteLog('main')).toBe('main moves')
+    expect(remoteLog('b')).toBe('base')
+  })
+
   it('never force pushes over a remote commit that was fetched but never looked at', async () => {
     const bare = join(makeRepo(), '..', 'remote.git')
     execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare])
