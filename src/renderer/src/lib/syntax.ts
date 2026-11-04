@@ -221,6 +221,9 @@ function tokenize(text: string, lang: string, start?: LexState): Lexed {
 }
 
 function remember(key: string, lexed: Lexed): Lexed {
+  // A line past 2000 characters (minified code) is not highlighted, quick to answer again, and
+  // its whole text would sit in the key: 30,000 of them were megabytes kept for nothing.
+  if (key.length > 2100) return lexed
   if (cache.size > 30_000) cache.clear()
   cache.set(key, lexed)
   return lexed
