@@ -823,6 +823,29 @@ describe('conflicts', () => {
     expect(readFileSync(join(repo, 'a.cs'), 'utf8')).toBe(`${bom}using C;\nclass X {}\n`)
   })
 
+  it('resolves a UTF-16 file that git converts (working-tree-encoding) without staging garbage', async () => {
+    const repo = makeRepo()
+    const utf16 = (s: string) => Buffer.concat([Buffer.from([0xff, 0xfe]), Buffer.from(s, 'utf16le')])
+    const save = (text: string, message: string) => {
+      writeFileSync(join(repo, 'a.txt'), utf16(text))
+      sh(repo, 'add', '-A')
+      sh(repo, 'commit', '-q', '-m', message)
+    }
+    writeFileSync(join(repo, '.gitattributes'), '*.txt text working-tree-encoding=UTF-16LE-BOM eol=crlf\n')
+    save('one\r\ntwo\r\nthree\r\n', 'base')
+    sh(repo, 'checkout', '-q', '-b', 'other')
+    save('one\r\nTHEIRS\r\nthree\r\n', 'theirs')
+    sh(repo, 'checkout', '-q', 'main')
+    save('one\r\nOURS\r\nthree\r\n', 'ours')
+    await git(repo, ['merge', 'other'], { okCodes: [1] })
+    const f = await conflict(repo, 'a.txt')
+    expect(f.chunks[1]).toEqual({ kind: 'conflict', ours: ['OURS'], base: ['two'], theirs: ['THEIRS'] })
+    await resolveContent(repo, 'a.txt', ['one', 'OURS+THEIRS', 'three', ''].join(f.eol), f.encoding, f.disk)
+    expect(sh(repo, 'show', ':a.txt')).toBe('one\nOURS+THEIRS\nthree')
+    expect(readFileSync(join(repo, 'a.txt'))).toEqual(utf16('one\r\nOURS+THEIRS\r\nthree\r\n'))
+    expect(sh(repo, 'status', '--porcelain')).toBe('M  a.txt')
+  })
+
   it('does not bring back a BOM that our side removed', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a.txt': '﻿line\n' })

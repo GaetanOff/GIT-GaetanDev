@@ -14,18 +14,33 @@ import { gitDir, operation } from './status'
  */
 const MAX_SIDE = 16 * 1024 * 1024
 
-/** The index stages of a path (1 base, 2 ours, 3 theirs): object ids, and whether one is a submodule's commit. */
-async function stageIds(repo: string, path: string): Promise<{ sha: Record<string, string>; gitlink: boolean }> {
+/** The index stages of a path (1 base, 2 ours, 3 theirs): object ids and modes, and whether one is a submodule's commit. */
+async function stageIds(repo: string, path: string): Promise<{ sha: Record<string, string>; mode: Record<string, string>; gitlink: boolean }> {
   const out = (await git(repo, ['ls-files', '-s', '--', path])).stdout
   const sha: Record<string, string> = {}
+  const modes: Record<string, string> = {}
   let gitlink = false
   for (const line of out.split('\n')) {
     const [meta] = line.split('\t')
     const [mode, objectId, n] = meta.split(' ')
-    if (n) sha[n] = objectId
+    if (n) {
+      sha[n] = objectId
+      modes[n] = mode
+    }
     if (mode === '160000') gitlink = true
   }
-  return { sha, gitlink }
+  return { sha, mode: modes, gitlink }
+}
+
+/**
+ * The encoding git converts the file from when it stores it, and back when it
+ * writes it (`working-tree-encoding`, as for UTF-16 files on Windows), unless
+ * it is UTF-8. Its index stages are then UTF-8 while the file on disk is not.
+ */
+async function treeEncoding(repo: string, path: string): Promise<string | null> {
+  const out = (await git(repo, ['check-attr', '-z', 'working-tree-encoding', '--', path])).stdout
+  const value = out.split('\0')[2] ?? ''
+  return value && !/^(unspecified|unset|set|utf-?8)$/i.test(value) ? value : null
 }
 
 /**
@@ -215,6 +230,16 @@ export async function resolveContent(repo: string, path: string, content: string
   }
   if (expect !== undefined && (await fingerprint(file)) !== expect) {
     throw new GitError(`${path} changed on disk since it was opened here (in an editor?), so nothing was written. It is shown again as it is now.`, 'CHANGED_ON_DISK')
+  }
+  if (await treeEncoding(repo, path)) {
+    // The sides merged here are UTF-8, as git stores the file. Written so to disk, "git add" read it
+    // as UTF-16 and staged garbage: the result is stored the way git stores it, then git writes the
+    // file in its own encoding and line endings.
+    const { mode } = await stageIds(repo, path)
+    const blob = (await git(repo, ['hash-object', '-w', '--no-filters', '--stdin'], { input: Buffer.from(content, 'utf8') })).stdout.trim()
+    await git(repo, ['update-index', '--cacheinfo', `${mode['2'] ?? mode['3'] ?? '100644'},${blob},${path}`])
+    await git(repo, ['checkout', '--', literal(path)])
+    return
   }
   await writeFile(file, encode(content, encoding))
   await git(repo, ['add', '--', path])
