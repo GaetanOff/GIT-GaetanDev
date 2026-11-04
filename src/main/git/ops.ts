@@ -210,8 +210,9 @@ const authorsCache = new Map<string, { head: string; at: number; list: Author[] 
 
 /** The commit.template file, without its comment lines, and whether commits get signed. */
 export async function commitSetup(repo: string): Promise<{ template: string; signing: boolean }> {
-  const read = (key: string) => git(repo, ['config', '--get', key], { okCodes: [1] }).then(r => r.stdout.trim())
-  const [templatePath, gpgsign] = await Promise.all([read('commit.template'), read('commit.gpgsign')])
+  const read = (key: string, type?: string) => git(repo, ['config', ...(type ? [`--type=${type}`] : []), '--get', key], { okCodes: [1, 128] }).then(r => r.stdout.trim())
+  // As a boolean: git also takes yes, on and 1, which a comparison with "true" read as off.
+  const [templatePath, gpgsign] = await Promise.all([read('commit.template'), read('commit.gpgsign', 'bool')])
   let template = ''
   if (templatePath) {
     const file = templatePath.replace(/^~(?=[\\/])/, homedir())

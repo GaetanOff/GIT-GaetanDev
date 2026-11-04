@@ -29,6 +29,7 @@ const { fileLog, parseFileLog, unquote } = await import('../src/main/git/blame')
 const { rebasePlan, rebaseRun } = await import('../src/main/git/rebase')
 const { restore } = await import('../src/main/git/reflog')
 const { newerTips } = await import('../src/main/git/recovery')
+const { fsmonitorInfo, setFsmonitor } = await import('../src/main/git/perf')
 const { git, assertRefName, gitVersion, killRunning, readGitVersion, stallGuards, windowsOpenSsh } = await import('../src/main/git/exec')
 const { classify } = await import('../src/main/askpass')
 const { ignoreLiteral } = await import('../src/renderer/src/lib/gitignore')
@@ -302,6 +303,22 @@ describe('commit', () => {
       else process.env.GIT_CONFIG_GLOBAL = saved
     }
     expect((await ops.identity(makeRepo())).scope).toBe('local')
+  })
+
+  it('reads git booleans in all their spellings, and turns fsmonitor off over a global one', async () => {
+    const repo = makeRepo()
+    sh(repo, 'config', 'commit.gpgsign', 'yes')
+    expect((await ops.commitSetup(repo)).signing).toBe(true)
+    sh(repo, 'config', 'commit.gpgsign', 'off')
+    expect((await ops.commitSetup(repo)).signing).toBe(false)
+    writeFileSync(process.env.GIT_CONFIG_GLOBAL!, '[core]\n\tfsmonitor = on\n')
+    try {
+      expect((await fsmonitorInfo(repo)).enabled).toBe(true)
+      await setFsmonitor(repo, false)
+      expect((await fsmonitorInfo(repo)).enabled).toBe(false)
+    } finally {
+      writeFileSync(process.env.GIT_CONFIG_GLOBAL!, '')
+    }
   })
 
   it('removes a repository identity instead of writing empty values', async () => {
