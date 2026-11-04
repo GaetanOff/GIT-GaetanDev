@@ -27,7 +27,8 @@ const { compare } = await import('../src/main/git/compare')
 const { log } = await import('../src/main/git/log')
 const { fileLog, parseFileLog, unquote } = await import('../src/main/git/blame')
 const { rebasePlan, rebaseRun } = await import('../src/main/git/rebase')
-const { git, assertRefName, gitVersion, readGitVersion, stallGuards } = await import('../src/main/git/exec')
+const { git, assertRefName, gitVersion, readGitVersion, stallGuards, windowsOpenSsh } = await import('../src/main/git/exec')
+const { classify } = await import('../src/main/askpass')
 
 afterAll(cleanup)
 
@@ -756,6 +757,18 @@ describe('history', () => {
     sh(repo, 'config', 'http.lowSpeedTime', '30')
     sh(repo, 'config', 'core.sshCommand', 'plink -batch')
     expect(await stallGuards(repo)).toEqual({})
+  })
+
+  it.runIf(process.platform === 'win32')('tells Windows\' OpenSSH, which runs no shell script for prompts, from Git\'s ssh', () => {
+    expect(windowsOpenSsh(null, true)).toBe(false)
+    expect(windowsOpenSsh(null, false)).toBe(true)
+    expect(windowsOpenSsh('ssh -o ServerAliveInterval=15', true)).toBe(false)
+    expect(windowsOpenSsh('C:/Windows/System32/OpenSSH/ssh.exe', true)).toBe(true)
+    expect(windowsOpenSsh('"C:\\Windows\\System32\\OpenSSH\\ssh.exe" -i key', true)).toBe(true)
+    expect(windowsOpenSsh('plink -batch', false)).toBe(false)
+    // Its helper cuts a host key question after the first line, which is still asked as one.
+    expect(classify("The authenticity of host 'h (1.2.3.4)' can't be established.")).toBe('confirm')
+    expect(classify('Enter passphrase for key /c/Users/me/.ssh/id_ed25519: ')).toBe('password')
   })
 
   it('survives git exiting before it reads its input', async () => {

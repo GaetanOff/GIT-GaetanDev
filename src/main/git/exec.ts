@@ -142,21 +142,48 @@ export const literal = (path: string) => `:(literal)${path}`
 const NETWORK_COMMANDS = new Set(['fetch', 'pull', 'push', 'clone', 'ls-remote', 'submodule', 'lfs'])
 
 /**
- * A dead connection fails instead of holding its queue until the app restarts:
- * HTTPS below 1 byte/s for five minutes, SSH after two minutes of unanswered
- * keepalives. A server preparing a pack or running a push hook still sends
- * progress, so only a silent connection trips them. Settings of the user's own
- * (git config or environment) are left alone.
+ * Whether the ssh git runs is Windows' own OpenSSH (System32\OpenSSH), which
+ * starts SSH_ASKPASS with CreateProcess: it cannot run a "#!/bin/sh" script
+ * ("error:193"), so it gets a .cmd. Git's own ssh reads the script. A bare
+ * "ssh" is Git's when Git for Windows ships one (usr\bin\ssh.exe, absent
+ * with its "Use external OpenSSH" option), else the one on PATH.
+ */
+export function windowsOpenSsh(command: string | null, bundledSsh: boolean): boolean {
+  if (process.platform !== 'win32') return false
+  const program = command?.trim().match(/^"([^"]+)"|^(\S+)/)
+  const name = program ? (program[1] ?? program[2]) : 'ssh'
+  if (/^ssh(\.exe)?$/i.test(name)) return !bundledSsh
+  return /[\\/]system32[\\/]openssh[\\/]/i.test(name)
+}
+
+/** Git for Windows' own ssh, next to the git found on PATH (…\cmd\git.exe or …\mingw64\bin\git.exe). */
+function bundledSsh(): boolean {
+  gitPath ??= findOnPath('git')
+  if (!gitPath) return true
+  const root = join(gitPath, '..', '..')
+  return [join(root, 'usr', 'bin', 'ssh.exe'), join(root, '..', 'usr', 'bin', 'ssh.exe')].some(p => { try { return statSync(p).isFile() } catch { return false } })
+}
+
+/**
+ * The environment of a command that talks to a remote. A dead connection
+ * fails instead of holding its queue until the app restarts: HTTPS below 1
+ * byte/s for five minutes, SSH after two minutes of unanswered keepalives. A
+ * server preparing a pack or running a push hook still sends progress, so
+ * only a silent connection trips them. Settings of the user's own (git config
+ * or environment) are left alone. Windows' OpenSSH gets the .cmd prompt helper.
  */
 export async function stallGuards(cwd: string): Promise<NodeJS.ProcessEnv> {
   const r = await run(cwd, ['config', '--get-regexp', '^(http\\.lowspeed(limit|time)|core\\.sshcommand)$'], { okCodes: [1] })
-  const set = new Set(r.stdout.split('\n').map(l => l.split(' ')[0].toLowerCase()).filter(Boolean))
+  const values = new Map(r.stdout.split('\n').filter(Boolean).map(l => {
+    const i = l.indexOf(' ')
+    return [(i < 0 ? l : l.slice(0, i)).toLowerCase(), i < 0 ? '' : l.slice(i + 1)] as const
+  }))
   const env: NodeJS.ProcessEnv = {}
-  const http = ['http.lowspeedlimit', 'http.lowspeedtime'].some(k => set.has(k)) || process.env.GIT_HTTP_LOW_SPEED_LIMIT || process.env.GIT_HTTP_LOW_SPEED_TIME
+  const http = ['http.lowspeedlimit', 'http.lowspeedtime'].some(k => values.has(k)) || process.env.GIT_HTTP_LOW_SPEED_LIMIT || process.env.GIT_HTTP_LOW_SPEED_TIME
   if (!http) Object.assign(env, { GIT_HTTP_LOW_SPEED_LIMIT: '1', GIT_HTTP_LOW_SPEED_TIME: '300' })
-  if (!set.has('core.sshcommand') && !process.env.GIT_SSH_COMMAND && !process.env.GIT_SSH) {
-    env.GIT_SSH_COMMAND = 'ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=8'
-  }
+  const sshCommand = process.env.GIT_SSH_COMMAND || process.env.GIT_SSH || values.get('core.sshcommand') || null
+  if (!sshCommand) env.GIT_SSH_COMMAND = 'ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=8'
+  if (baseEnv.GDG_ASKPASS_CMD && windowsOpenSsh(sshCommand, bundledSsh())) env.SSH_ASKPASS = baseEnv.GDG_ASKPASS_CMD
   return env
 }
 

@@ -1,6 +1,7 @@
 import { app } from 'electron'
+import { spawnSync } from 'node:child_process'
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
-import { chmodSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, writeFileSync } from 'node:fs'
 import { createServer, type Server } from 'node:net'
 import { join } from 'node:path'
 import type { AskPassRequest } from '@shared/types'
@@ -33,6 +34,27 @@ sock.on('end', () => {
 sock.on('error', () => process.exit(1))
 `
 
+const isAscii = (s: string) => /^[\x20-\x7e]*$/.test(s)
+
+/**
+ * A file's path in plain ASCII: Windows' OpenSSH cannot start a program
+ * whose path holds "ë" (CreateProcess "error:2"), as in a profile folder named
+ * after its user. The folder's 8.3 short name is ASCII when the volume keeps
+ * short names (the system drive does by default); otherwise the path stays.
+ */
+function asciiPath(dir: string, file: string): string {
+  const full = join(dir, file)
+  if (isAscii(full)) return full
+  try {
+    const comspec = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'cmd.exe')
+    // Run in the folder itself: its name never has to be quoted on a command line.
+    const short = spawnSync(comspec, ['/d', '/c', 'for %I in (.) do @echo %~sI'], { cwd: dir, encoding: 'utf8', windowsHide: true, windowsVerbatimArguments: true }).stdout.trim()
+    return isAscii(short) && short ? join(short, file) : full
+  } catch {
+    return full
+  }
+}
+
 type Ask = (req: AskPassRequest) => Promise<string | null>
 
 let server: Server | null = null
@@ -53,7 +75,14 @@ export function startAskPass(ask: Ask): NodeJS.ProcessEnv {
   const script = join(dir, 'askpass.sh')
   writeFileSync(script, '#!/bin/sh\nELECTRON_RUN_AS_NODE=1 exec "$GDG_ASKPASS_EXE" "$GDG_ASKPASS_JS" "$@"\n', 'utf8')
   if (process.platform !== 'win32') chmodSync(script, 0o755)
-  rmSync(join(dir, 'askpass.cmd'), { force: true }) // written by earlier versions
+  // Windows' own OpenSSH starts SSH_ASKPASS with CreateProcess, which runs no shell script: it
+  // gets this .cmd instead (see windowsOpenSsh). Plain ASCII, paths from the environment; cmd
+  // still cuts a prompt at its first line break, which classify() allows for.
+  let cmd = join(dir, 'askpass.cmd')
+  if (process.platform === 'win32') {
+    writeFileSync(cmd, '@echo off\r\nsetlocal\r\nset ELECTRON_RUN_AS_NODE=1\r\n"%GDG_ASKPASS_EXE%" "%GDG_ASKPASS_JS%" %*\r\n', 'ascii')
+    cmd = asciiPath(dir, 'askpass.cmd')
+  }
 
   const pipe = process.platform === 'win32'
     ? `\\\\.\\pipe\\gaetandev-git-askpass-${randomUUID()}`
@@ -93,12 +122,14 @@ export function startAskPass(ask: Ask): NodeJS.ProcessEnv {
     GDG_ASKPASS_TOKEN: secret,
     GDG_ASKPASS_EXE: process.execPath,
     GDG_ASKPASS_JS: client,
+    ...(process.platform === 'win32' ? { GDG_ASKPASS_CMD: cmd } : {}),
   }
   return env
 }
 
-function classify(prompt: string): AskPassRequest['kind'] {
-  if (/\(yes\/no/i.test(prompt)) return 'confirm'
+export function classify(prompt: string): AskPassRequest['kind'] {
+  // A host key question cut after its first line (the .cmd helper) is still one.
+  if (/\(yes\/no/i.test(prompt) || /^The authenticity of host .* can't be established\.?\s*$/i.test(prompt)) return 'confirm'
   if (/password|passphrase|token|PIN/i.test(prompt)) return 'password'
   return 'text'
 }
