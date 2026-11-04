@@ -31,17 +31,18 @@ function statesFor(lines: DiffLine[], lang: string | null): (LexState | undefine
   const out: (LexState | undefined)[] = []
   let older: LexState | undefined
   let newer: LexState | undefined
+  // The unknown start is passed on as such (not as plain code) until a line settles it.
   for (const l of lines) {
     if (l.type === 'del') {
       out.push(older)
-      older = nextState(l.text, lang, older ?? null)
+      older = nextState(l.text, lang, older)
     } else if (l.type === 'add') {
       out.push(newer)
-      newer = nextState(l.text, lang, newer ?? null)
+      newer = nextState(l.text, lang, newer)
     } else {
       out.push(newer)
-      older = nextState(l.text, lang, older ?? null)
-      newer = nextState(l.text, lang, newer ?? null)
+      older = nextState(l.text, lang, older)
+      newer = nextState(l.text, lang, newer)
     }
   }
   return out

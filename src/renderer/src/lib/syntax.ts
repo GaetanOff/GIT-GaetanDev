@@ -166,7 +166,8 @@ function openState(tok: string): LexState {
   return null
 }
 
-interface Lexed { spans: Span[]; end: LexState }
+/** `end` undefined: still unknown (a hunk that starts inside a comment, as guessed so far). */
+interface Lexed { spans: Span[]; end: LexState | undefined }
 
 const cache = new Map<string, Lexed>()
 
@@ -194,7 +195,8 @@ function tokenize(text: string, lang: string, start?: LexState): Lexed {
     i = m.index + c.len
   } else if (start === undefined && (lang === 'clike' || lang === 'css') && /^\s*\*(?!\*?\/\S)/.test(text) && !/^\s*\*\s*[\w$]+\s*[=(]/.test(text)) {
     spans.push({ s: 0, e: text.length, c: 'com' })
-    return remember(key, { spans, end: null })
+    // Still inside that comment, as far as anyone knows, unless the line closes it.
+    return remember(key, { spans, end: /\*\/\s*$/.test(text) ? null : undefined })
   }
 
   if (text.length <= 2000) {
@@ -227,13 +229,17 @@ export function lineStates(lines: string[], lang: string | null): LexState[] {
   let st: LexState = null
   for (const line of lines) {
     out.push(st)
-    st = lang ? tokenize(line, lang, st).end : null
+    st = lang ? tokenize(line, lang, st).end ?? null : null
   }
   return out
 }
 
-/** The state after one line, to thread a sequence by hand. */
-export function nextState(line: string, lang: string | null, st: LexState): LexState {
+/**
+ * The state after one line, to thread a sequence by hand. An unknown start
+ * (undefined) stays unknown while lines read as the inside of a comment, so
+ * every line of a hunk that starts in one is coloured as such.
+ */
+export function nextState(line: string, lang: string | null, st: LexState | undefined): LexState | undefined {
   return lang ? tokenize(line, lang, st).end : null
 }
 
