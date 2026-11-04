@@ -1,12 +1,14 @@
 import { execFileSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { basename, join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { selectionFingerprint } from '@shared/types'
 import { cleanup, commit, makeRepo, sh, write } from './helpers'
 
 /** The recycle bin, in tests: a file "moved to the trash" is renamed next to itself. */
 const trashed: string[] = []
+/** What the last file of that name sent to the recycle bin held. */
+const binned = (name: string) => readFileSync(`${trashed.filter(p => basename(p) === name).at(-1)}.trashed`, 'utf8')
 vi.mock('electron', () => ({
   shell: {
     trashItem: async (path: string) => {
@@ -49,7 +51,28 @@ describe('discard', () => {
     write(repo, 'a.txt', 'work in progress\n')
     await ops.discard(repo, ['a.txt'])
     expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('old\n')
-    expect(readFileSync(join(repo, 'a.txt.trashed'), 'utf8')).toBe('work in progress\n')
+    expect(binned('a.txt')).toBe('work in progress\n')
+  })
+
+  it('sends a staged version that differs from the file to the recycle bin too', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'old\n' })
+    write(repo, 'a.txt', 'staged\n')
+    sh(repo, 'add', 'a.txt')
+    write(repo, 'a.txt', 'staged, then edited\n')
+    await ops.discard(repo, ['a.txt'])
+    expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('old\n')
+    expect(binned('a.txt')).toBe('staged, then edited\n')
+    expect(binned('a.txt (staged)')).toBe('staged\n')
+  })
+
+  it('leaves the files in place when the restore fails', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'old\n' })
+    write(repo, 'a.txt', 'work in progress\n')
+    writeFileSync(join(repo, '.git', 'index.lock'), '')
+    await expect(ops.discard(repo, ['a.txt'])).rejects.toThrow(/index.lock/)
+    expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('work in progress\n')
   })
 
   it('keeps an "add -N" file in the recycle bin instead of deleting it', async () => {
@@ -69,9 +92,9 @@ describe('discard', () => {
     sh(repo, 'rm', '--cached', '-q', 'a.txt')
     write(repo, 'a.txt', 'changed\n')
     await ops.discard(repo, ['a.txt'])
-    expect(changed(repo)).toEqual(['a.txt.trashed'])
+    expect(changed(repo)).toEqual([])
     expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('a\n')
-    expect(readFileSync(join(repo, 'a.txt.trashed'), 'utf8')).toBe('changed\n')
+    expect(binned('a.txt')).toBe('changed\n')
   })
 })
 

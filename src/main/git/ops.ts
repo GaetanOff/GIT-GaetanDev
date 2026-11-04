@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { appendFile, copyFile, lstat, mkdir, readFile } from 'node:fs/promises'
+import { appendFile, copyFile, lstat, mkdir, readFile, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { basename, isAbsolute, join } from 'node:path'
 import { shell } from 'electron'
@@ -75,7 +75,8 @@ export async function discardLines(repo: string, path: string, selection: LineSe
 
 /**
  * Drops every local change (staged and unstaged) to the given files. Nothing
- * is lost for good: the current version of each file goes to the recycle bin.
+ * is lost for good: the current version of each file goes to the recycle bin,
+ * and so does its staged version when that is another one.
  */
 export async function discard(repo: string, paths: string[]): Promise<void> {
   const st = await status(repo)
@@ -94,20 +95,45 @@ export async function discard(repo: string, paths: string[]): Promise<void> {
     // A rename is undone by restoring the original file as well.
     if (f.oldPath && f.index === 'R') tracked.push(f.oldPath)
   }
-  // The changed file goes to the recycle bin first (the GitHub Desktop way), then HEAD's version comes back.
+  // The versions being dropped are copied aside first, then HEAD's comes back, then the copies go to the
+  // recycle bin (the GitHub Desktop way). Copied rather than moved: if the restore fails (index.lock
+  // held elsewhere), every file is still where it was instead of only in the recycle bin.
   const restore: string[] = []
   const failed: string[] = []
-  for (const p of tracked) {
+  const copies: string[] = []
+  const aside = join(tmpdir(), 'GaetanDev discarded', String(Date.now()))
+  for (const [i, p] of tracked.entries()) {
     // Only regular files: a deleted file has nothing to keep, a submodule is a whole checkout.
     const isFile = await lstat(join(repo, p)).then(s => s.isFile(), () => false)
-    if (!isFile) restore.push(p)
-    else await shell.trashItem(join(repo, p)).then(() => restore.push(p), () => failed.push(p))
+    if (!isFile) {
+      restore.push(p)
+      continue
+    }
+    try {
+      const dir = join(aside, String(i)) // one folder per file: two files may share a name
+      await mkdir(dir, { recursive: true })
+      await copyFile(join(repo, p), join(dir, basename(p)))
+      copies.push(join(dir, basename(p)))
+      // A staged version that is neither HEAD's nor the file's would be lost too.
+      const f = byPath.get(p)
+      if (f && f.index !== '.' && f.worktree !== '.') {
+        const stagedCopy = join(dir, `${basename(p)} (staged)`)
+        await writeFile(stagedCopy, (await git(repo, ['show', `:${p}`])).raw)
+        copies.push(stagedCopy)
+      }
+      restore.push(p)
+    } catch {
+      failed.push(p)
+    }
   }
   if (restore.length) await git(repo, ['restore', '--source=HEAD', '--staged', '--worktree', '--pathspec-from-file=-', '--pathspec-file-nul'], viaStdin(restore))
+  const binned: string[] = []
+  for (const c of copies) await shell.trashItem(c).catch(() => binned.push(c))
   const staged = created.filter(p => !byPath.get(p)?.untracked)
   if (staged.length) await git(repo, ['rm', '--cached', '-q', '-r', '--pathspec-from-file=-', '--pathspec-file-nul'], viaStdin(staged))
   for (const p of created) await shell.trashItem(join(repo, p)).catch(() => undefined)
-  if (failed.length) throw new GitError(`Could not move ${failed.length === 1 ? failed[0] : `${failed.length} files`} to the recycle bin, so ${failed.length === 1 ? 'it was' : 'they were'} left as is.`)
+  if (failed.length) throw new GitError(`Could not keep a copy of ${failed.length === 1 ? failed[0] : `${failed.length} files`}, so ${failed.length === 1 ? 'it was' : 'they were'} left as is.`)
+  if (binned.length) throw new GitError(`The changes were discarded, but the recycle bin refused the copies: they are in "${aside}".`)
 }
 
 export async function ignore(repo: string, pattern: string): Promise<void> {
