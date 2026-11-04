@@ -9,10 +9,11 @@ on:
 permissions:
   contents: read
 
-# A newer push to the same branch or pull request replaces the run in progress.
+# A newer push to a pull request replaces its run in progress. On main every commit keeps its
+# run: a cancelled one left that commit with no result.
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   check:
@@ -30,7 +31,8 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 22
+          # The Node the app runs on: Electron 45 embeds Node 24.
+          node-version: 24
           cache: npm
       # Lint, types and tests need no Electron binary.
       - run: npm ci

@@ -36,7 +36,7 @@ jobs:
           fi
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
-          node-version: 22
+          node-version: 24
           cache: npm
       # The release is named after package.json: a tag that says otherwise would publish another version.
       - name: Tag matches package.json
