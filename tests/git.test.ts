@@ -27,7 +27,7 @@ const { compare } = await import('../src/main/git/compare')
 const { log } = await import('../src/main/git/log')
 const { fileLog, parseFileLog, unquote } = await import('../src/main/git/blame')
 const { rebasePlan, rebaseRun } = await import('../src/main/git/rebase')
-const { git, assertRefName, gitVersion, readGitVersion, stallGuards, windowsOpenSsh } = await import('../src/main/git/exec')
+const { git, assertRefName, gitVersion, killRunning, readGitVersion, stallGuards, windowsOpenSsh } = await import('../src/main/git/exec')
 const { classify } = await import('../src/main/askpass')
 
 afterAll(cleanup)
@@ -769,6 +769,16 @@ describe('history', () => {
     // Its helper cuts a host key question after the first line, which is still asked as one.
     expect(classify("The authenticity of host 'h (1.2.3.4)' can't be established.")).toBe('confirm')
     expect(classify('Enter passphrase for key /c/Users/me/.ssh/id_ed25519: ')).toBe('password')
+  })
+
+  it('stops what git started too when the app quits', async () => {
+    const repo = makeRepo()
+    const running = git(repo, ['-c', 'alias.slow=!sleep 4 && echo done > marker', 'slow']).catch(() => undefined)
+    await new Promise(resolve => setTimeout(resolve, 1500))
+    killRunning()
+    await running
+    await new Promise(resolve => setTimeout(resolve, 4000))
+    expect(existsSync(join(repo, 'marker'))).toBe(false)
   })
 
   it('survives git exiting before it reads its input', async () => {

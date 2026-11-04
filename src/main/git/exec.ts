@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
 import { accessSync, constants, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, isAbsolute, join } from 'node:path'
@@ -37,9 +37,24 @@ export interface ExecResult {
 /** Git processes still running, so quitting the app can stop them. */
 const running = new Set<ChildProcess>()
 
-/** Stops every git process still running (clone, fetch, push…): called on quit. */
+/**
+ * Stops git processes with everything they started. On Windows killing
+ * git.exe leaves its children running (git-remote-https, index-pack, ssh, a
+ * hook), still holding files open after the app is gone: taskkill /T ends the
+ * whole tree.
+ */
+function stop(children: ChildProcess[]): void {
+  const pids = children.map(c => c.pid).filter((p): p is number => !!p)
+  if (process.platform === 'win32' && pids.length) {
+    const taskkill = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'taskkill.exe')
+    spawnSync(taskkill, ['/T', '/F', ...pids.flatMap(p => ['/PID', String(p)])], { windowsHide: true, stdio: 'ignore' })
+  }
+  for (const child of children) child.kill()
+}
+
+/** Stops every git process still running (clone, fetch, push…) and what it started: called on quit. */
 export function killRunning(): void {
-  for (const child of running) child.kill()
+  stop([...running])
   running.clear()
 }
 
@@ -235,7 +250,7 @@ function run(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecR
       if (truncated) return
       if (opts.maxBytes && outBytes + chunk.length > opts.maxBytes) {
         truncated = true
-        child.kill()
+        stop([child])
         return
       }
       outBytes += chunk.length
