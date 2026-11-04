@@ -70,7 +70,11 @@ async function bestDescendants(repo: string, branches: { name: string; sha: stri
   for (const b of branches) {
     const candidates = pool(b.name)
     if (!candidates.length) continue
-    const r = await git(repo, ['rev-list', '--ancestry-path', '--date-order', '-n1', '--stdin'], {
+    // The known tip itself must exist: --ignore-missing would drop the "^" and walk all history.
+    const known = await git(repo, ['cat-file', '-e', `${b.sha}^{commit}`], { okCodes: [1, 128] })
+    if (known.code !== 0) continue
+    // A journaled commit collected by gc since made the whole query fail, hiding the valid ones.
+    const r = await git(repo, ['rev-list', '--ancestry-path', '--date-order', '-n1', '--ignore-missing', '--stdin'], {
       input: [`^${b.sha}`, ...new Set(candidates.map(c => c.sha))].join('\n') + '\n', okCodes: [128],
     })
     const newest = r.stdout.trim()

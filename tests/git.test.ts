@@ -28,6 +28,7 @@ const { log } = await import('../src/main/git/log')
 const { fileLog, parseFileLog, unquote } = await import('../src/main/git/blame')
 const { rebasePlan, rebaseRun } = await import('../src/main/git/rebase')
 const { restore } = await import('../src/main/git/reflog')
+const { newerTips } = await import('../src/main/git/recovery')
 const { git, assertRefName, gitVersion, killRunning, readGitVersion, stallGuards, windowsOpenSsh } = await import('../src/main/git/exec')
 const { classify } = await import('../src/main/askpass')
 
@@ -385,6 +386,25 @@ describe('undo and force push', () => {
     commit(repo, 'amended locally', { 'a.txt': 'mine\n' })
     await expect(ops.push(repo, { force: true }, () => undefined)).rejects.toThrow()
     expect(execFileSync('git', ['-C', bare, 'log', '-1', '--format=%s', 'main'], { encoding: 'utf8' }).trim()).toBe('theirs')
+  })
+})
+
+describe('deleted branches', () => {
+  it('finds a deleted branch on its remote even when a journaled commit is gone', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base')
+    sh(repo, 'checkout', '-q', '-b', 'feat')
+    commit(repo, 'known tip')
+    const tip = sh(repo, 'rev-parse', 'HEAD')
+    commit(repo, 'pushed from elsewhere')
+    const newer = sh(repo, 'rev-parse', 'HEAD')
+    sh(repo, 'update-ref', 'refs/remotes/origin/feat', newer)
+    sh(repo, 'checkout', '-q', 'main')
+    sh(repo, 'branch', '-q', '-D', 'feat')
+    // A commit of the prune journal that gc has collected since.
+    writeFileSync(join(repo, '.git', 'gdg-pruned-refs.json'), JSON.stringify([{ ref: 'origin2/feat', sha: 'f'.repeat(40), date: 1 }]))
+    const [found] = await newerTips(repo, [{ name: 'feat', sha: tip }])
+    expect(found).toMatchObject({ name: 'feat', sha: newer, via: 'remote', ahead: 1 })
   })
 })
 
