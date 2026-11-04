@@ -159,6 +159,7 @@ export const COMMANDS: Command[] = [
   { id: 'lfsPull', title: 'Download Git LFS objects', group: 'Sync', icon: 'cloud', when: () => app.refs.lfs.used && app.refs.lfs.installed, run: () => app.run('Downloading LFS objects', () => api['git:lfsPull'](app.repo!.path)) },
   { id: 'settings', title: 'Settings', group: 'App', icon: 'cog', keys: 'mod+,', run: () => openDialog({ kind: 'settings' }) },
   { id: 'shortcuts', title: 'Keyboard shortcuts', group: 'App', icon: 'command', keys: 'mod+/', run: () => openDialog({ kind: 'shortcuts' }) },
+  { id: 'logs', title: 'Show log files', group: 'App', icon: 'folder', run: () => api['app:openLogs']().catch(e => toast('error', e.message)) },
 ]
 
 /** The branch most work is compared against: the remote default, else main/master/develop. */

@@ -20,6 +20,7 @@ import * as ops from './git/ops'
 import { defaultBranch, defaultRemote, extras, refs } from './git/refs'
 import { isRepo, status, topLevel } from './git/status'
 import { openEditor, openTerminal } from './integrations'
+import { logDir } from './log'
 import { detectProvider, providerUrl } from './provider'
 import { installUpdate } from './updater'
 import { githubDesktopRepos } from './importers'
@@ -224,6 +225,10 @@ export function registerIpc(watcher: RepoWatcher): void {
     'shell:terminal': async repo => openTerminal(getState().settings.terminalCommand, repo),
     'clipboard:write': async text => clipboard.writeText(text),
     'clipboard:read': async () => clipboard.readText(),
+    'app:openLogs': async () => {
+      mkdirSync(logDir(), { recursive: true })
+      await shell.openPath(logDir())
+    },
     'askpass:respond': async (id, value) => respond(id, value),
     'watch:set': async repo => watcher.set(repo),
   }

@@ -4,6 +4,7 @@ import { folderArg as launchFolder } from './args'
 import { startAskPass, stopAskPass } from './askpass'
 import { killRunning, setGitEnv } from './git/exec'
 import { devShot } from './devshot'
+import { logToFile } from './log'
 import { askRenderer, openFolder, queuesBusy, registerIpc, send, setLaunchPath, settleQueues } from './ipc'
 import { flush, getState, save } from './store'
 import { sweepImportCopies } from './importers'
@@ -14,6 +15,7 @@ app.setAppUserModelId('fr.gaetandev.git')
 // Development aids (a separate profile, a dev server URL, scripted screenshots) never apply to an installed build.
 const dev = !app.isPackaged
 if (dev && process.env.GDG_USER_DATA) app.setPath('userData', process.env.GDG_USER_DATA)
+logToFile()
 
 process.on('unhandledRejection', reason => console.error('Unhandled rejection in main:', reason))
 // One failed callback must not take every open repository down with it.
