@@ -1,0 +1,10 @@
+{
+  // The tests and their config, type-checked like the code: vitest only strips the types.
+  "extends": "./tsconfig.node.json",
+  "compilerOptions": {
+    // The renderer's pure modules are tested too, and some read the DOM's types.
+    "lib": ["ES2023", "DOM"],
+    "paths": { "@shared/*": ["./src/shared/*"], "@/*": ["./src/renderer/src/*"] }
+  },
+  "include": ["tests/**/*", "vitest.config.mts", "src/main/**/*", "src/shared/**/*"]
+}
