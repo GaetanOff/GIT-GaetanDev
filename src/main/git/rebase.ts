@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import type { RebasePlan, RebaseStep, RebaseTodoItem } from '@shared/types'
 import { git, gitOut, GitError } from './exec'
 import { upstreamOf, currentBranch } from './refs'
-import { gitDir } from './status'
+import { gitDir, operation } from './status'
 
 const RS = '\x1e'
 const US = '\x1f'
@@ -139,7 +139,12 @@ export async function rebaseRun(repo: string, base: string | null, steps: Rebase
     throw new GitError('The branch changed since this plan was shown. Reopen "Edit history" to see the new commits.')
   }
 
-  const dir = join(await gitDir(repo), 'gdg-rebase')
+  const gd = await gitDir(repo)
+  // A rebase stopped on a conflict still reads its messages from gdg-rebase when it continues:
+  // removing them first, then failing on "already a rebase-merge directory", lost them.
+  const busy = operation(gd).operation
+  if (busy) throw new GitError(`A ${busy} is in progress. Continue or abort it before editing history again.`)
+  const dir = join(gd, 'gdg-rebase')
   await rm(dir, { recursive: true, force: true })
   await mkdir(dir, { recursive: true })
 

@@ -387,6 +387,21 @@ describe('edit history', () => {
     expect(sh(repo, 'log', '-1', '--format=%s')).toBe('made elsewhere')
   })
 
+  it('keeps the messages of a stopped rebase when asked to edit history again', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'f.txt': 'base\n' })
+    commit(repo, 'c1', { 'f.txt': 'one\n' })
+    commit(repo, 'c2', { 'f.txt': 'two\n' })
+    const plan = await rebasePlan(repo, 'HEAD~2')
+    // c2 moved before c1: c2 stops on a conflict, its new message waiting in gdg-rebase.
+    const [c1, c2] = plan.commits
+    await expect(rebaseRun(repo, plan.base, [{ sha: c2.sha, action: 'reword', message: 'two, reworded' }, { sha: c1.sha, action: 'pick' }], plan.head)).rejects.toThrow()
+    const messages = join(repo, '.git', 'gdg-rebase')
+    const before = readFileSync(join(messages, 'msg-1.txt'), 'utf8')
+    await expect(rebaseRun(repo, plan.base, [{ sha: c1.sha, action: 'pick' }, { sha: c2.sha, action: 'pick' }], sh(repo, 'rev-parse', 'HEAD'))).rejects.toThrow(/in progress/)
+    expect(readFileSync(join(messages, 'msg-1.txt'), 'utf8')).toBe(before)
+  })
+
   it('reads the plan of a history with merges without touching staged or unstaged changes', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a.txt': '1\n', 'b.txt': '1\n' })
