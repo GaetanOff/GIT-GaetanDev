@@ -28,6 +28,9 @@
 
   const mode = $derived(app.settings.diffMode)
   const sourceKey = $derived(JSON.stringify(source))
+  // As values: saving any setting replaces app.settings, which must not reload the diff by itself.
+  const context = $derived(app.settings.diffContext)
+  const ignoreWhitespace = $derived(app.settings.ignoreWhitespace)
 
   // Reload on a new file, new options, "Show anyway", or (for working-tree diffs) any status change.
   $effect(() => {
@@ -42,7 +45,7 @@
       error = null
     }
     lastKey = key
-    const opts = { context: app.settings.diffContext, ignoreWhitespace: app.settings.ignoreWhitespace, force }
+    const opts = { context, ignoreWhitespace, force }
     if (source.kind === 'worktree' || source.kind === 'index') void app.status
     load(source, opts)
   })
