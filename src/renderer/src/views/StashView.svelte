@@ -4,7 +4,7 @@
   import { applyStash, dropStash } from '@/lib/actions'
   import { app } from '@/lib/state.svelte'
 
-  const stash = $derived(app.refs.stashes.find(s => s.index === app.selectedStash) ?? null)
+  const stash = $derived(app.refs.stashes.find(s => s.sha === app.selectedStash) ?? null)
 </script>
 
 <div class="stash">

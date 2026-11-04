@@ -246,9 +246,9 @@
     {@render section('stashes', 'Stashes', app.refs.stashes.length)}
     {#if !collapsed.stashes || f}
       {#each stashes as s (s.sha)}
-        <button class="ref" class:sel={app.view === 'stash' && app.selectedStash === s.index} style="padding-left:10px"
+        <button class="ref" class:sel={app.view === 'stash' && app.selectedStash === s.sha} style="padding-left:10px"
           title="{s.message}\non {s.branch}, {relativeTime(s.date)}"
-          onclick={() => { app.selectedStash = s.index; app.view = 'stash' }}
+          onclick={() => { app.selectedStash = s.sha; app.view = 'stash' }}
           oncontextmenu={e => contextMenu(e, stashMenu(s))}>
           <Icon name="stash" size={13} class="ri" />
           <span class="grow truncate">{s.message}</span>

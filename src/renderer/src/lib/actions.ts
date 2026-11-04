@@ -292,7 +292,7 @@ export async function dropStash(s: Stash): Promise<void> {
   const ok = await confirm({ title: 'Drop stash?', message: `“${s.message}” will be deleted.`, confirmLabel: 'Drop', danger: true })
   if (!ok) return
   await app.run('Dropping stash', () => api['git:stashDrop'](path, s.index, s.sha))
-  if (app.selectedStash === s.index) {
+  if (app.selectedStash === s.sha) {
     app.selectedStash = null
     app.view = 'changes'
   }

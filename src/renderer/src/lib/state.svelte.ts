@@ -35,6 +35,7 @@ interface TabMemory {
   fileTarget: FileTarget | null
   rebaseTarget: RebaseTarget | null
   compareTarget: CompareTarget | null
+  selectedStash: string | null
 }
 
 class AppState {
@@ -68,7 +69,8 @@ class AppState {
   historySearch = $state('')
   historySearchMode = $state<SearchMode>('message')
   selectedCommit = $state<string | null>(null)
-  selectedStash = $state<number | null>(null)
+  /** The stash shown, by its commit: indexes shift when a stash is added or dropped. */
+  selectedStash = $state<string | null>(null)
 
   /* File history & blame */
   fileTarget = $state<FileTarget | null>(null)
@@ -291,7 +293,7 @@ class AppState {
       historyDone: this.historyDone && this.commits.length <= PAGE,
       view: this.view, selected: this.selected, selectedCommit: this.selectedCommit, historySearch: this.historySearch,
       historySearchMode: this.historySearchMode, lastFetched: this.lastFetched,
-      fileTarget: this.fileTarget, rebaseTarget: this.rebaseTarget, compareTarget: this.compareTarget,
+      fileTarget: this.fileTarget, rebaseTarget: this.rebaseTarget, compareTarget: this.compareTarget, selectedStash: this.selectedStash,
     }
   }
 
