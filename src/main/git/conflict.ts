@@ -14,28 +14,37 @@ import { gitDir, operation } from './status'
  */
 const MAX_SIDE = 16 * 1024 * 1024
 
+/** The index stages of a path (1 base, 2 ours, 3 theirs): object ids, and whether one is a submodule's commit. */
+async function stageIds(repo: string, path: string): Promise<{ sha: Record<string, string>; gitlink: boolean }> {
+  const out = (await git(repo, ['ls-files', '-s', '--', path])).stdout
+  const sha: Record<string, string> = {}
+  let gitlink = false
+  for (const line of out.split('\n')) {
+    const [meta] = line.split('\t')
+    const [mode, objectId, n] = meta.split(' ')
+    if (n) sha[n] = objectId
+    if (mode === '160000') gitlink = true
+  }
+  return { sha, gitlink }
+}
+
 /**
  * Raw bytes of the index stages (1 base, 2 ours, 3 theirs), null where a side
  * has no file, and their blob ids, which tell one conflict from another.
  * `large`: a side is over MAX_SIDE, and its bytes are only the beginning.
+ * `gitlink`: a submodule's conflict, whose sides are commits, not files.
  */
-async function stages(repo: string, path: string): Promise<{ blobs: [Buffer | null, Buffer | null, Buffer | null]; ids: string; large: boolean }> {
-  const out = (await git(repo, ['ls-files', '-s', '--', path])).stdout
-  const sha: Record<string, string> = {}
-  for (const line of out.split('\n')) {
-    const [meta] = line.split('\t')
-    const [, objectId, n] = meta.split(' ')
-    if (n) sha[n] = objectId
-  }
+async function stages(repo: string, path: string): Promise<{ blobs: [Buffer | null, Buffer | null, Buffer | null]; ids: string; large: boolean; gitlink: boolean }> {
+  const { sha, gitlink } = await stageIds(repo, path)
   let large = false
   const read = async (n: string) => {
-    if (!sha[n]) return null
+    if (!sha[n] || gitlink) return null
     const r = await git(repo, ['cat-file', 'blob', sha[n]], { maxBytes: MAX_SIDE })
     if (r.truncated) large = true
     return r.raw
   }
   const blobs = await Promise.all([read('1'), read('2'), read('3')])
-  return { blobs, ids: ['1', '2', '3'].map(n => sha[n] ?? '-').join(' '), large }
+  return { blobs, ids: ['1', '2', '3'].map(n => sha[n] ?? '-').join(' '), large, gitlink }
 }
 
 /** The file on disk, unless it is missing or too large to read whole. */
@@ -118,18 +127,20 @@ function fileEncoding(ours: Buffer, theirs: Buffer, base: Buffer | null): TextEn
  * the result into common and conflicting chunks.
  */
 export async function conflict(repo: string, path: string): Promise<ConflictFile> {
-  const [{ blobs: [base, ours, theirs], ids, large }, lbl] = await Promise.all([stages(repo, path), labels(repo)])
+  const [{ blobs: [base, ours, theirs], ids, large, gitlink }, lbl] = await Promise.all([stages(repo, path), labels(repo)])
   const disk = await readDisk(join(repo, path))
   const resolvedOnDisk = !!disk && !isBinary(disk) && !/^<<<<<<< /m.test(disk.toString('utf8'))
+  const [hasBase, oursExists, theirsExists] = ids.split(' ').map(id => id !== '-')
 
   const result: ConflictFile = {
-    path, mode: 'text', oursLabel: lbl.ours, theirsLabel: lbl.theirs, hasBase: !!base, oursExists: !!ours, theirsExists: !!theirs,
+    path, mode: 'text', oursLabel: lbl.ours, theirsLabel: lbl.theirs, hasBase, oursExists, theirsExists,
     chunks: [], eol: '\n', finalNewline: true, resolvedOnDisk, encoding: 'utf8', stages: ids, disk: await fingerprint(join(repo, path), disk),
   }
   // Git LFS keeps pointers in the index: mixing their lines makes an invalid pointer, and the
-  // file written back would be the pointer's text instead of the real content.
+  // file written back would be the pointer's text instead of the real content. A submodule's
+  // sides are commits ("git cat-file blob" failed with "bad file"): one is kept, as a whole.
   const lfs = [base, ours, theirs].some(isLfsPointer)
-  if (large || lfs || !ours || !theirs || isBinary(ours) || isBinary(theirs) || isBinary(base)) {
+  if (gitlink || large || lfs || !ours || !theirs || isBinary(ours) || isBinary(theirs) || isBinary(base)) {
     result.mode = 'whole'
     return result
   }
@@ -213,6 +224,15 @@ export async function resolveContent(repo: string, path: string, content: string
 export async function resolveWhole(repo: string, path: string, choice: 'ours' | 'theirs' | 'delete' | 'disk'): Promise<void> {
   if (choice === 'delete') {
     await git(repo, ['rm', '-q', '--', path])
+    return
+  }
+  const { sha, gitlink } = await stageIds(repo, path)
+  if (gitlink && choice !== 'disk') {
+    // "checkout --theirs" does nothing to a submodule, and the "add" after it recorded the commit the
+    // submodule had checked out, ours: the side picked is written into the index directly instead.
+    const pick = sha[choice === 'ours' ? '2' : '3']
+    if (!pick) throw new GitError(`${path} has no ${choice} side.`)
+    await git(repo, ['update-index', '--cacheinfo', `160000,${pick},${path}`])
     return
   }
   if (choice !== 'disk') await git(repo, ['checkout', `--${choice}`, '--', literal(path)])

@@ -59,7 +59,7 @@ export async function status(repo: string): Promise<RepoStatus> {
       const f = t.split(' ')
       result.files.push({
         path: f.slice(10).join(' '), index: 'U', worktree: 'U',
-        conflicted: true, untracked: false, conflictCode: f[1],
+        conflicted: true, untracked: false, conflictCode: f[1], submodule: f[2].startsWith('S') || undefined,
       })
     }
   }
