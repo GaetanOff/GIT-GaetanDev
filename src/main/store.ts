@@ -160,12 +160,30 @@ function real(path: string): string {
   try { return realpathSync.native(path) } catch { return path }
 }
 
-/** Whether a path is one of the repositories the user added. */
+/** "\\server\share" or "//server/share": looking such a path up on disk connects to that server. */
+export const isUnc = (path: string) => /^[\\/]{2}/.test(path)
+
+/**
+ * Whether a path is one of the repositories the user added. A network path
+ * is only compared as written, never resolved: a page asking about
+ * "\\attacker\x" would otherwise make Windows connect there and send the
+ * user's NTLM hash.
+ */
 export function isRegistered(path: string): boolean {
   const repos = getState().repos
   if (repos.some(r => samePath(r.path, path))) return true
+  if (isUnc(path)) return false
   const target = real(path)
   return repos.some(r => samePath(real(r.path), target))
+}
+
+/** Whether a path is inside one of the user's repositories (a submodule's folder), compared as written. */
+export function isInsideRegistered(path: string): boolean {
+  const p = normalize(path).toLowerCase()
+  return getState().repos.some(r => {
+    const root = normalize(r.path).toLowerCase().replace(/[\\/]+$/, '')
+    return p.startsWith(`${root}\\`) || p.startsWith(`${root}/`)
+  })
 }
 
 export function upsertRepo(path: string): RepoEntry {

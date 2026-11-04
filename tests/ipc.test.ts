@@ -4,7 +4,8 @@ const showMessageBox = vi.hoisted(() => vi.fn())
 vi.mock('electron', () => ({
   app: {}, BrowserWindow: { getFocusedWindow: () => null, getAllWindows: () => [] }, clipboard: {}, dialog: { showMessageBox }, ipcMain: {}, shell: {},
 }))
-vi.mock('../src/main/store', () => ({ isRegistered: () => true, getState: () => ({ settings: {} }) }))
+const registered = vi.hoisted(() => vi.fn((_path: string) => true))
+vi.mock('../src/main/store', () => ({ isRegistered: registered, isInsideRegistered: () => false, getState: () => ({ settings: {} }) }))
 vi.mock('../src/main/updater', () => ({ installUpdate: () => undefined }))
 
 const { checkArgs, confirmDestination, queuesBusy, schedule, settleQueues } = await import('../src/main/ipc')
@@ -36,6 +37,19 @@ describe('argument checks', () => {
       expect(() => checkArgs('git:resolveContent', [REPO, path, 'text']), path).toThrow(/inside the repository/)
     }
     expect(() => checkArgs('git:resolveContent', [REPO, 'docs/.github/git~notes.md', 'text'])).not.toThrow()
+  })
+})
+
+describe('folders opened elsewhere', () => {
+  it('opens only repositories and their folders in Explorer, an editor or a terminal', () => {
+    registered.mockImplementation(p => p === REPO)
+    try {
+      for (const folder of ['\\\\attacker\\share', '//attacker/share', process.cwd()]) {
+        expect(() => checkArgs('shell:terminal', [folder]), folder).toThrow(/not one of your repositories/)
+      }
+    } finally {
+      registered.mockImplementation(() => true)
+    }
   })
 })
 

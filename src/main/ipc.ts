@@ -24,7 +24,7 @@ import { logDir } from './log'
 import { detectProvider, providerUrl } from './provider'
 import { installUpdate } from './updater'
 import { githubDesktopRepos } from './importers'
-import { addRepoEntry, getState, isRegistered, removeRepo, repoById, save, stateUnreadable, updateSettings, upsertRepo } from './store'
+import { addRepoEntry, getState, isInsideRegistered, isRegistered, removeRepo, repoById, save, stateUnreadable, updateSettings, upsertRepo } from './store'
 import type { RepoWatcher } from './watcher'
 
 type Handlers = { [K in ApiChannel]: (...args: Parameters<Api[K]>) => ReturnType<Api[K]> }
@@ -68,6 +68,8 @@ async function ask(message: string, detail: string, button: string): Promise<boo
  * nothing more.
  */
 const chosenFolders = new Set<string>()
+/** Worktrees git listed for one of the user's repositories: folders the app may open elsewhere. */
+const knownWorktrees = new Set<string>()
 const folderKey = (p: string) => {
   const r = resolvePath(p)
   return process.platform === 'win32' ? r.toLowerCase() : r
@@ -236,7 +238,12 @@ export function registerIpc(watcher: RepoWatcher): void {
     'git:rebaseRun': async (repo, base, steps, head) => rebaseRun(repo, base, steps, head),
 
     'git:refs': async repo => refs(repo),
-    'git:extras': async repo => extras(repo),
+    'git:extras': async repo => {
+      const x = await extras(repo)
+      // The worktrees git lists may be opened in Explorer, an editor or a terminal (see checkArgs).
+      for (const w of x.worktrees) knownWorktrees.add(folderKey(w.path))
+      return x
+    },
     'git:checkout': async (repo, branch, opts) => ops.checkout(repo, branch, opts),
     'git:createBranch': async (repo, name, from, co) => ops.createBranch(repo, name, from, co),
     'git:renameBranch': async (repo, from, to) => ops.renameBranch(repo, from, to),
@@ -444,6 +451,11 @@ export function checkArgs(channel: string, args: unknown[]): void {
     if (repo === null && NULL_REPO_OK.has(channel)) return
     if (typeof repo !== 'string') throw new GitError('A repository path is required.')
     if (OPENS_FOLDER.has(channel)) {
+      // A repository, a folder inside one (a submodule) or a worktree git listed for one: any other
+      // folder (the Startup folder in Explorer, a network path looked up) is not the app's to open.
+      if (!isRegistered(repo) && !isInsideRegistered(repo) && !knownWorktrees.has(folderKey(repo))) {
+        throw new GitError(`"${repo}" is not one of your repositories, or a folder of one.`)
+      }
       let isDir = false
       try { isDir = statSync(repo).isDirectory() } catch { /* missing */ }
       if (!isDir) throw new GitError(`"${repo}" is not a folder.`)
