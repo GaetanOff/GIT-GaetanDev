@@ -19,7 +19,7 @@ vi.mock('electron', () => ({
 }))
 
 const ops = await import('../src/main/git/ops')
-const { status } = await import('../src/main/git/status')
+const { indexRefreshDue, refreshIndex, status } = await import('../src/main/git/status')
 const { diff, parseDiff } = await import('../src/main/git/diff')
 const { conflict, resolveContent, resolveWhole } = await import('../src/main/git/conflict')
 const { refs, upstreamOf } = await import('../src/main/git/refs')
@@ -976,7 +976,7 @@ describe('file history', () => {
 })
 
 describe('operations in progress', () => {
-  it('lets status save the stat data of touched files once in a while', async () => {
+  it('saves the stat data of touched files once in a while, never from status itself', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a.txt': 'a\n' })
     const index = join(repo, '.git', 'index')
@@ -985,13 +985,14 @@ describe('operations in progress', () => {
     utimesSync(join(repo, 'a.txt'), later, later)
     const before = statSync(index).mtimeMs
     await new Promise(resolve => setTimeout(resolve, 50))
+    // Status takes no lock: holding index.lock while it ran, it made a stage or a commit meanwhile fail.
     await status(repo)
+    expect(statSync(index).mtimeMs).toBe(before)
+    expect(indexRefreshDue(repo)).toBe(true)
+    await refreshIndex(repo)
     expect(statSync(index).mtimeMs).toBeGreaterThan(before)
     // And not at every refresh.
-    const after = statSync(index).mtimeMs
-    utimesSync(join(repo, 'a.txt'), new Date(Date.now() + 9_000), new Date(Date.now() + 9_000))
-    await status(repo)
-    expect(statSync(index).mtimeMs).toBe(after)
+    expect(indexRefreshDue(repo)).toBe(false)
   })
 
   it('lists untracked files unless the repository says not to', async () => {

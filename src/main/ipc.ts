@@ -18,7 +18,7 @@ import { git, GitError, gitVersion } from './git/exec'
 import { commitDetail, log, stashDetail } from './git/log'
 import * as ops from './git/ops'
 import { defaultBranch, defaultRemote, extras, refs } from './git/refs'
-import { isRepo, status, topLevel } from './git/status'
+import { indexRefreshDue, isRepo, refreshIndex, status, topLevel } from './git/status'
 import { openEditor, openTerminal, resolveProgram } from './integrations'
 import { logDir } from './log'
 import { detectProvider, providerUrl } from './provider'
@@ -204,7 +204,12 @@ export function registerIpc(watcher: RepoWatcher): void {
       return picked
     },
 
-    'git:status': async repo => status(repo),
+    'git:status': async repo => {
+      const result = await status(repo)
+      // Once a minute, behind any stage or commit in progress instead of beside it (see refreshIndex).
+      if (indexRefreshDue(repo)) schedule('git:refreshIndex', repo, () => refreshIndex(repo)).catch(() => undefined)
+      return result
+    },
     'git:diff': async (repo, source, opts) => diff(repo, source, opts),
     'git:stage': async (repo, paths) => ops.stage(repo, paths),
     'git:unstage': async (repo, paths) => ops.unstage(repo, paths),
@@ -361,6 +366,8 @@ const WRITES = new Set([
   'git:checkout', 'git:createBranch', 'git:renameBranch', 'git:deleteBranch', 'git:restoreBranch', 'git:merge', 'git:rebase',
   'git:createTag', 'git:deleteTag', 'git:stash', 'git:stashApply', 'git:stashDrop', 'git:addRemote', 'git:removeRemote', 'git:pull',
   'git:submoduleUpdate', 'git:lfsPull', 'git:worktreeAdd', 'git:worktreeRemove', 'repo:setFsmonitor',
+  // Not a channel: the index refresh that follows a status now and then.
+  'git:refreshIndex',
 ])
 /**
  * Channels that talk to a remote and update remote-tracking refs: two at once

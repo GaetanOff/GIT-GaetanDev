@@ -35,21 +35,27 @@ async function untracked(repo: string): Promise<string> {
  * Status runs without optional locks (it never writes the index while the
  * user's own git may), so the stat data of files only touched was never
  * saved, and each of them was hashed again at every refresh of a large
- * repository. Once a minute per repository, status may update the index as
- * a plain `git status` does: only when the lock is free, never waiting.
+ * repository. Once a minute per repository the index is refreshed instead
+ * (refreshIndex), on the repository's write queue. Status itself must not:
+ * with optional locks it held index.lock for its whole run, and a stage, a
+ * commit or the user's own git meanwhile failed on "index.lock: File exists".
  */
 const indexRefreshed = new Map<string, number>()
-function mayRefreshIndex(repo: string): boolean {
+export function indexRefreshDue(repo: string): boolean {
   const last = indexRefreshed.get(repo) ?? 0
   if (Date.now() - last < 60_000) return false
   indexRefreshed.set(repo, Date.now())
   return true
 }
 
+/** Saves the stat data of files that were only touched, as a plain `git status` would. */
+export async function refreshIndex(repo: string): Promise<void> {
+  await git(repo, ['update-index', '-q', '--refresh'], { okCodes: [1, 128] })
+}
+
 export async function status(repo: string): Promise<RepoStatus> {
-  const env = mayRefreshIndex(repo) ? { GIT_OPTIONAL_LOCKS: '1' } : undefined
   const [out, dir] = await Promise.all([
-    untracked(repo).then(mode => gitOut(repo, ['status', '--porcelain=v2', '--branch', '--show-stash', '-z', `--untracked-files=${mode}`, '--ignore-submodules=dirty'], { env })),
+    untracked(repo).then(mode => gitOut(repo, ['status', '--porcelain=v2', '--branch', '--show-stash', '-z', `--untracked-files=${mode}`, '--ignore-submodules=dirty'])),
     gitDir(repo),
   ])
   const result: RepoStatus = {
