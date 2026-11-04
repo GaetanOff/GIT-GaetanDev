@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { untrack } from 'svelte'
   import Icon from '@/components/Icon.svelte'
   import VirtualList from '@/components/VirtualList.svelte'
   import Resizer from '@/components/Resizer.svelte'
@@ -50,27 +51,33 @@
     { id: 'regex', label: 'Code: diff matches a regex', icon: 'code', hint: '-G', placeholder: 'Regex matched by a changed line' },
   ]
 
-  /** Extra commits picked with Ctrl/Shift-click, for cherry-picking or reverting several at once. */
+  /**
+   * Extra commits picked with Ctrl/Shift-click, for cherry-picking or reverting several at once.
+   * A new list keeps those still in it: emptied whenever the list changed, three commits picked
+   * were lost by scrolling to the next page. The Shift+click anchor is a commit, not a row.
+   */
   let picked = $state<Set<string>>(new Set())
-  let anchor = -1
+  let anchor: string | null = null
   $effect(() => {
-    void app.commits
-    picked = new Set()
+    const shown = new Set(app.commits.map(c => c.sha))
+    const kept = [...untrack(() => picked)].filter(s => shown.has(s))
+    if (kept.length !== untrack(() => picked).size) picked = new Set(kept)
   })
 
   function clickCommit(e: MouseEvent, c: Commit, i: number) {
-    if (e.shiftKey && anchor >= 0) {
-      const [a, b] = [Math.min(anchor, i), Math.max(anchor, i)]
+    const from = anchor === null ? -1 : app.commits.findIndex(x => x.sha === anchor)
+    if (e.shiftKey && from >= 0) {
+      const [a, b] = [Math.min(from, i), Math.max(from, i)]
       picked = new Set(app.commits.slice(a, b + 1).map(x => x.sha))
     } else if (e.ctrlKey || e.metaKey) {
       const next = new Set(picked.size ? picked : [app.selectedCommit ?? c.sha])
       if (next.has(c.sha)) next.delete(c.sha)
       else next.add(c.sha)
       picked = next
-      anchor = i
+      anchor = c.sha
     } else {
       picked = new Set()
-      anchor = i
+      anchor = c.sha
     }
     app.selectedCommit = c.sha
   }
