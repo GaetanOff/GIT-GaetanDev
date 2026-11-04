@@ -1,5 +1,5 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
-import { existsSync, mkdirSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, posix, resolve as resolvePath, sep } from 'node:path'
 import type { Api, ApiChannel, ApiEvents, IpcEnvelope } from '@shared/api'
@@ -25,7 +25,7 @@ import { detectProvider, providerUrl } from './provider'
 import { installUpdate } from './updater'
 import { githubDesktopRepos } from './importers'
 import { addRepoEntry, foldPath, getState, isInsideRegistered, isRegistered, removeRepo, repoById, save, stateUnreadable, updateSettings, upsertRepo } from './store'
-import type { RepoWatcher } from './watcher'
+import { gitFolders, type RepoWatcher } from './watcher'
 
 type Handlers = { [K in ApiChannel]: (...args: Parameters<Api[K]>) => ReturnType<Api[K]> }
 
@@ -376,6 +376,18 @@ function serial<T>(queues: Map<string, Promise<unknown>>, repo: string, fn: () =
   return result
 }
 
+/**
+ * The git folder a repository shares with its linked worktrees, which keep
+ * their refs (remote-tracking branches included) there: a fetch in one
+ * worktree and a pull in another updated the same refs at once ("cannot lock
+ * ref"), each on its own queue. Network commands queue by it.
+ */
+function sharedGitDir(repo: string): string {
+  const f = gitFolders(repo)
+  const dir = f ? f.common ?? f.dir : join(repo, '.git')
+  try { return realpathSync.native(dir) } catch { return dir }
+}
+
 /** Whether queued git work (a write or a network command) is still running. */
 export const queuesBusy = (): boolean => writeQueues.size + networkQueues.size > 0
 
@@ -389,7 +401,7 @@ export function settleQueues(ms: number): Promise<void> {
 /** Runs a channel's handler on the queues it belongs to (none for reads). */
 export function schedule<T>(channel: string, repo: string, fn: () => Promise<T>): Promise<T> {
   const write = WRITES.has(channel) ? () => serial(writeQueues, repo, fn) : fn
-  return NETWORK.has(channel) ? serial(networkQueues, repo, write) : write()
+  return NETWORK.has(channel) ? serial(networkQueues, sharedGitDir(repo), write) : write()
 }
 
 /** Arguments, by position, that name a revision, branch, tag or remote. */

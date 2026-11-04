@@ -1,4 +1,6 @@
+import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
+import { cleanup, commit, makeRepo, sh } from './helpers'
 
 const showMessageBox = vi.hoisted(() => vi.fn())
 vi.mock('electron', () => ({
@@ -98,6 +100,26 @@ describe('scheduling', () => {
     release()
     await Promise.all([fetch, pull, stage])
     expect(order).toEqual(['fetch', 'stage', 'fetch done', 'pull'])
+  })
+
+  it('runs network commands of linked worktrees one at a time, as they share refs', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base')
+    const wt = join(repo, '..', 'wt')
+    sh(repo, 'worktree', 'add', '-q', wt)
+    const order: string[] = []
+    let release!: () => void
+    const fetch = schedule('git:fetch', repo, () => new Promise<void>(resolve => {
+      order.push('fetch')
+      release = () => { order.push('fetch done'); resolve() }
+    }))
+    const pull = schedule('git:pull', wt, async () => { order.push('pull in worktree') })
+    await tick()
+    expect(order).toEqual(['fetch'])
+    release()
+    await Promise.all([fetch, pull])
+    expect(order).toEqual(['fetch', 'fetch done', 'pull in worktree'])
+    cleanup()
   })
 
   it('makes removing a remote wait for a fetch in progress', async () => {
