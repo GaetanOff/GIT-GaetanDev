@@ -114,7 +114,11 @@ export async function newerTips(repo: string, branches: { name: string; sha: str
     remoteRefs(repo),
     readJournal(repo),
     // Years of rebases can leave millions of loose objects: only the first 16 MB of the list is read.
-    git(repo, ['fsck', '--unreachable', '--no-reflogs', '--no-progress'], { okCodes: [1, 2, 4, 8], maxBytes: 16 * 1024 * 1024 }).then(r => r.stdout, () => ''),
+    // Links only: a full fsck hashed every object of the repository, minutes for a large one, each
+    // time the Undo view opened. Any exit code below 128 is a problem found (a bitmask), not a failure.
+    git(repo, ['fsck', '--connectivity-only', '--unreachable', '--no-reflogs', '--no-progress'], {
+      okCodes: Array.from({ length: 127 }, (_, i) => i + 1), maxBytes: 16 * 1024 * 1024,
+    }).then(r => r.stdout, () => ''),
     gitOut(repo, ['remote']).then(s => s.split('\n').map(r => r.trim()).filter(Boolean)),
   ])
   const named = await bestDescendants(repo, branches, name => [

@@ -592,6 +592,20 @@ describe('deleted branches', () => {
     expect(found).toMatchObject({ name: 'feat', sha: newer, via: 'remote', ahead: 1 })
   })
 
+  it('finds commits made on a deleted branch that nothing references any more', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base')
+    sh(repo, 'checkout', '-q', '-b', 'feat')
+    commit(repo, 'known tip')
+    const tip = sh(repo, 'rev-parse', 'HEAD')
+    commit(repo, 'made later')
+    const newer = sh(repo, 'rev-parse', 'HEAD')
+    sh(repo, 'checkout', '-q', 'main')
+    sh(repo, 'branch', '-q', '-D', 'feat')
+    const [found] = await newerTips(repo, [{ name: 'feat', sha: tip }])
+    expect(found).toMatchObject({ name: 'feat', sha: newer, via: 'unreferenced', ahead: 1 })
+  })
+
   it('takes another branch whose name ends like the deleted one for what it is', async () => {
     const repo = makeRepo()
     commit(repo, 'base')
