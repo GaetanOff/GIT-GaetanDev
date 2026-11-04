@@ -811,6 +811,13 @@ describe('operations in progress', () => {
 })
 
 describe('history', () => {
+  it('says why a search failed instead of finding nothing', async () => {
+    const repo = makeRepo()
+    expect(await log(repo, { scope: 'current', skip: 0, limit: 5 })).toEqual([])
+    commit(repo, 'base', { 'a.txt': 'a\n' })
+    await expect(log(repo, { scope: 'current', skip: 0, limit: 5, search: 'foo(', searchMode: 'regex' })).rejects.toThrow()
+  })
+
   it('cherry-picks several commits in history order even with equal dates', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'f.txt': 'base\n' })

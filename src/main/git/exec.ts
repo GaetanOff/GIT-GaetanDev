@@ -343,7 +343,7 @@ const PATTERNS: [RegExp, GitErrorCode][] = [
   [/not a git repository/i, 'NOT_A_REPO'],
 ]
 
-function toGitError(stdout: string, stderr: string, exitCode: number): GitError {
+export function toGitError(stdout: string, stderr: string, exitCode: number): GitError {
   const text = `${stderr}\n${stdout}`
   const code = PATTERNS.find(([re]) => re.test(text))?.[1]
   const error = new GitError(summarize(stderr || stdout) || `git exited with code ${exitCode}`, code, stderr, exitCode)
