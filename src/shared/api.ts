@@ -27,6 +27,8 @@ export interface Api {
   'repo:importGithubDesktop'(): Promise<RepoImport>
   'repo:init'(path: string): Promise<RepoEntry>
   'repo:clone'(url: string, parent: string, name: string): Promise<RepoEntry>
+  /** Stops the clone under way; it then fails with code CANCELLED and its folder is removed. */
+  'repo:cancelClone'(): Promise<void>
   'repo:remove'(id: string): Promise<RepoEntry[]>
   'repo:open'(id: string): Promise<RepoEntry>
   'repo:pin'(id: string, pinned: boolean): Promise<RepoEntry[]>
@@ -128,7 +130,7 @@ export interface Api {
 export type ApiChannel = keyof Api
 
 export const API_CHANNELS: ApiChannel[] = [
-  'app:state', 'app:installUpdate', 'app:settings', 'repo:list', 'repo:add', 'repo:importGithubDesktop', 'repo:init', 'repo:clone', 'repo:remove', 'repo:open', 'repo:pin',
+  'app:state', 'app:installUpdate', 'app:settings', 'repo:list', 'repo:add', 'repo:importGithubDesktop', 'repo:init', 'repo:clone', 'repo:cancelClone', 'repo:remove', 'repo:open', 'repo:pin',
   'dialog:pickFolder',
   'git:status', 'git:diff', 'git:stage', 'git:unstage', 'git:stageLines', 'git:unstageLines', 'git:discard',
   'git:discardLines', 'git:ignore', 'git:commit', 'git:lastCommitMessage', 'git:preparedMessage', 'git:undoCommit', 'git:resolve',

@@ -22,6 +22,8 @@ export interface ExecOptions {
   /** Called with each progress line git writes to stderr. */
   onStderrLine?: (line: string) => void
   maxBytes?: number
+  /** Stops git and what it started; the call then fails with code CANCELLED. */
+  signal?: AbortSignal
 }
 
 export interface ExecResult {
@@ -245,6 +247,15 @@ function run(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecR
     let errBytes = 0
     let truncated = false
     let pending = ''
+    let cancelled = false
+
+    const cancel = () => {
+      cancelled = true
+      stop([child])
+    }
+    if (opts.signal?.aborted) cancel()
+    opts.signal?.addEventListener('abort', cancel, { once: true })
+    child.on('exit', () => opts.signal?.removeEventListener('abort', cancel))
 
     child.stdout.on('data', (chunk: Buffer) => {
       if (truncated) return
@@ -280,6 +291,7 @@ function run(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecR
       const stdout = raw.toString('utf8')
       const stderr = Buffer.concat(err).toString('utf8')
       if (truncated) return resolve({ stdout, stderr, code: -1, raw, truncated: true })
+      if (cancelled) return reject(new GitError('Cancelled.', 'CANCELLED', stderr))
       const exit = code ?? 1
       if (exit === 0 || opts.okCodes?.includes(exit)) return resolve({ stdout, stderr, code: exit, raw })
       reject(toGitError(stdout, stderr, exit))

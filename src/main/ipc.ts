@@ -89,6 +89,9 @@ export async function confirmDestination(path: string, message: string, button: 
   chosenFolders.add(folderKey(remember))
 }
 
+/** Stops the clone under way, if any: a large one or a stalled network no longer leaves only waiting. */
+let cloneAbort: AbortController | null = null
+
 /** A folder the app was launched with; the renderer opens it instead of the last repo. */
 let launchPath: string | null = null
 export function setLaunchPath(path: string | null): void {
@@ -161,9 +164,16 @@ export function registerIpc(watcher: RepoWatcher): void {
       if (existsSync(target)) throw new GitError(`"${target}" already exists.`)
       await confirmDestination(target, 'Clone the repository into this folder?', 'Clone', parent)
       mkdirSync(parent, { recursive: true })
-      await ops.clone(url, parent, name, progress)
+      const abort = new AbortController()
+      cloneAbort = abort
+      try {
+        await ops.clone(url, parent, name, progress, abort.signal)
+      } finally {
+        if (cloneAbort === abort) cloneAbort = null
+      }
       return upsertRepo(target)
     },
+    'repo:cancelClone': async () => cloneAbort?.abort(),
     'repo:remove': async id => removeRepo(id),
     'repo:open': async id => {
       const r = repoById(id)

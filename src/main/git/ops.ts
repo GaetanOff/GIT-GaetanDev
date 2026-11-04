@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs'
-import { appendFile, copyFile, lstat, mkdir, readFile, writeFile } from 'node:fs/promises'
+import { appendFile, copyFile, lstat, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { basename, isAbsolute, join } from 'node:path'
 import { shell } from 'electron'
@@ -506,9 +506,19 @@ export async function deleteRemoteBranch(repo: string, remote: string, branch: s
   }
 }
 
-export async function clone(url: string, parent: string, name: string, report: Reporter): Promise<void> {
+/**
+ * Clones into a new folder `parent/name`. Stopped through `signal`, the folder
+ * it was creating is removed: git, ended from outside, leaves it half filled.
+ */
+export async function clone(url: string, parent: string, name: string, report: Reporter, signal?: AbortSignal): Promise<void> {
   try {
-    await git(parent, ['clone', '--progress', '--recurse-submodules', '--', url, name], { onStderrLine: progressHandler('clone', `Cloning ${name}`, report) })
+    await git(parent, ['clone', '--progress', '--recurse-submodules', '--', url, name], { onStderrLine: progressHandler('clone', `Cloning ${name}`, report), signal })
+  } catch (e) {
+    if (e instanceof GitError && e.code === 'CANCELLED') {
+      await rm(join(parent, name), { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => undefined)
+      throw new GitError('Clone cancelled: nothing was kept.', 'CANCELLED')
+    }
+    throw e
   } finally {
     report(null)
   }

@@ -788,6 +788,20 @@ describe('history', () => {
     expect(classify('Enter passphrase for key /c/Users/me/.ssh/id_ed25519: ')).toBe('password')
   })
 
+  it('cancels a clone and leaves no half-filled folder', async () => {
+    const source = makeRepo()
+    commit(source, 'base', { 'a.txt': 'a\n' })
+    const parent = join(source, '..', 'clones')
+    mkdirSync(parent)
+    const abort = new AbortController()
+    abort.abort()
+    await expect(ops.clone(source, parent, 'copy', () => undefined, abort.signal)).rejects.toMatchObject({ code: 'CANCELLED' })
+    expect(existsSync(join(parent, 'copy'))).toBe(false)
+    await ops.clone(source, parent, 'copy', () => undefined)
+    // The checkout follows the machine's core.autocrlf.
+    expect(readFileSync(join(parent, 'copy', 'a.txt'), 'utf8')).toMatch(/^a\r?\n$/)
+  })
+
   it('stops what git started too when the app quits', async () => {
     const repo = makeRepo()
     const running = git(repo, ['-c', 'alias.slow=!sleep 4 && echo done > marker', 'slow']).catch(() => undefined)
