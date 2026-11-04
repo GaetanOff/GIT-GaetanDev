@@ -248,5 +248,6 @@
   .d { color: var(--text-faint); font-size: 11px; margin-top: 1px; }
   .when { font-size: 11.5px; color: var(--text-faint); flex-shrink: 0; }
   .op .btn { opacity: 0; }
-  .op:hover .btn, .op.latest .btn { opacity: 1; }
+  /* Shown on focus too: reached with Tab, an invisible button was pressed blind. */
+  .op:hover .btn, .op.latest .btn, .op:focus-within .btn { opacity: 1; }
 </style>
