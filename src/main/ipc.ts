@@ -250,14 +250,15 @@ export function registerIpc(watcher: RepoWatcher): void {
 
 /**
  * Only the app's own page, in the window's main frame, may call the bridge:
- * the built index.html, or the dev server while developing.
+ * app://bundle/index.html (see serveBundle in index.ts), or the dev server
+ * while developing. Any file:// page, the importer's included, is refused.
  */
 function trustedSender(e: IpcMainInvokeEvent): boolean {
   const frame = e.senderFrame
   if (!frame || frame !== e.sender.mainFrame) return false
   const dev = !app.isPackaged && process.env.ELECTRON_RENDERER_URL
-  if (dev && frame.url.startsWith(new URL(dev).origin)) return true
-  return frame.url.startsWith('file:') && /\/renderer\/index\.html(?:[?#].*)?$/.test(frame.url.replace(/\\/g, '/'))
+  if (dev && frame.url.startsWith(`${new URL(dev).origin}/`)) return true
+  return /^app:\/\/bundle\/index\.html(?:[?#].*)?$/.test(frame.url)
 }
 
 /**

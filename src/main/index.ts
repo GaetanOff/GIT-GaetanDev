@@ -1,5 +1,6 @@
-import { app, BrowserWindow, dialog, Menu, screen, session, shell } from 'electron'
-import { join } from 'node:path'
+import { app, BrowserWindow, dialog, Menu, net, protocol, screen, session, shell } from 'electron'
+import { join, resolve, sep } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { folderArg as launchFolder } from './args'
 import { startAskPass, stopAskPass } from './askpass'
 import { killRunning, setGitEnv } from './git/exec'
@@ -20,6 +21,24 @@ logToFile()
 process.on('unhandledRejection', reason => console.error('Unhandled rejection in main:', reason))
 // One failed callback must not take every open repository down with it.
 process.on('uncaughtException', error => console.error('Uncaught exception in main:', error))
+
+/**
+ * The UI is served as app://bundle/…, not from file://. Electron lets a
+ * file:// page fetch any local file; a page on a scheme of its own reaches
+ * its bundle only. Registered before the app is ready, as Electron requires.
+ */
+const APP_ORIGIN = 'app://bundle'
+protocol.registerSchemesAsPrivileged([{ scheme: 'app', privileges: { standard: true, secure: true, supportFetchAPI: true } }])
+
+function serveBundle(): void {
+  const root = join(__dirname, '../renderer')
+  protocol.handle('app', request => {
+    const { host, pathname } = new URL(request.url)
+    const file = resolve(root, `.${decodeURIComponent(pathname)}`)
+    if (host !== 'bundle' || !file.startsWith(root + sep)) return new Response('Not found', { status: 404 })
+    return net.fetch(pathToFileURL(file).toString()).catch(() => new Response('Not found', { status: 404 }))
+  })
+}
 
 /** The folder the app was launched on. Development runs pass the app's own folder first, which is skipped. */
 const folderArg = (argv: string[], cwd = process.cwd()) => launchFolder(argv, cwd, dev ? 2 : 1)
@@ -47,6 +66,7 @@ function start(): void {
     session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
     session.defaultSession.setPermissionCheckHandler(() => false)
     askpass()
+    serveBundle()
     registerIpc(watcher)
     createWindow()
     startUpdates(version => send('update:ready', version))
@@ -169,6 +189,6 @@ function createWindow(): BrowserWindow {
 
   if (dev) devShot(win)
   if (dev && process.env.ELECTRON_RENDERER_URL) win.loadURL(process.env.ELECTRON_RENDERER_URL)
-  else win.loadFile(join(__dirname, '../renderer/index.html'))
+  else win.loadURL(`${APP_ORIGIN}/index.html`)
   return win
 }
