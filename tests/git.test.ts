@@ -962,6 +962,18 @@ describe('history', () => {
     expect(existsSync(join(repo, 'marker'))).toBe(false)
   })
 
+  it('shows why the server refused a push', async () => {
+    const bare = join(makeRepo(), '..', 'remote.git')
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare])
+    // A server hook standing for a protected branch rule (GitHub's GH006).
+    writeFileSync(join(bare, 'hooks', 'pre-receive'), '#!/bin/sh\necho "error: GH006: Protected branch update failed for refs/heads/main." >&2\nexit 1\n', { mode: 0o755 })
+    const repo = makeRepo()
+    sh(repo, 'remote', 'add', 'origin', bare)
+    commit(repo, 'base', { 'a.txt': 'a\n' })
+    const err = await ops.push(repo, {}, () => undefined).then(() => null, (e: Error) => e)
+    expect(err?.message).toMatch(/GH006: Protected branch update failed/)
+  })
+
   it('survives git exiting before it reads its input', async () => {
     const repo = makeRepo()
     commit(repo, 'base')

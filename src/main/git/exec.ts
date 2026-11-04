@@ -351,15 +351,21 @@ export function toGitError(stdout: string, stderr: string, exitCode: number): Gi
   return error
 }
 
-/** Keeps the lines a human needs: errors, fatal messages and hints, minus noise. */
+/**
+ * Keeps the lines a human needs: errors, fatal messages and hints, minus
+ * noise. The server's own errors come first: a push refused by a protected
+ * branch (GH006) or a server hook says why only on "remote:" lines and on
+ * "! [remote rejected] … (reason)", and showed just "failed to push some refs".
+ */
 function summarize(text: string): string {
   const lines = text
     .split(/\r?\n/)
     .map(l => l.trimEnd())
     .filter(l => l && !/^(remote: )?(Enumerating|Counting|Compressing|Writing|Total|Delta|Receiving|Resolving)/.test(l))
+  const server = lines.filter(l => /^remote: *(error|fatal|GH\d+)\b/i.test(l) || /^ ?! \[remote rejected\]/.test(l))
   const important = lines.filter(l => /^(error|fatal|CONFLICT|hint: Updates)/.test(l))
-  const picked = (important.length ? important : lines).slice(0, 6)
-  return picked.map(l => l.replace(/^(error|fatal): /, '')).join('\n')
+  const picked = [...server, ...important].slice(0, 6)
+  return (picked.length ? picked : lines.slice(0, 6)).map(l => l.replace(/^(error|fatal): /, '').replace(/^remote: */, '')).join('\n')
 }
 
 export function stripAnsi(text: string): string {
