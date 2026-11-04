@@ -455,6 +455,26 @@ describe('history', () => {
     expect(err?.code).not.toBe('NON_FAST_FORWARD')
   })
 
+  it('orders commits picked from two branches by ancestry, then date', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'f.txt': 'base\n' })
+    // A commit adding its own file, at a given date.
+    const dated = async (name: string, date: string) => {
+      write(repo, `${name}.txt`, `${name}\n`)
+      sh(repo, 'add', `${name}.txt`)
+      await git(repo, ['commit', '-q', '-m', name], { env: { ...process.env, GIT_COMMITTER_DATE: date, GIT_AUTHOR_DATE: date } })
+      return sh(repo, 'rev-parse', 'HEAD')
+    }
+    sh(repo, 'checkout', '-q', '-b', 'one')
+    const oneA = await dated('one-a', '2026-01-01T10:00:00')
+    const oneB = await dated('one-b', '2026-01-03T10:00:00')
+    sh(repo, 'checkout', '-q', '-b', 'two', 'main')
+    const twoA = await dated('two-a', '2026-01-02T10:00:00')
+    sh(repo, 'checkout', '-q', 'main')
+    await ops.cherryPick(repo, [oneB, twoA, oneA])
+    expect(sh(repo, 'log', '--format=%s', '-3').split('\n')).toEqual(['one-b', 'two-a', 'one-a'])
+  })
+
   it('lists remotes whose URL has spaces', async () => {
     const repo = makeRepo()
     commit(repo, 'base')

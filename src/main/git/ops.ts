@@ -231,29 +231,20 @@ export async function skipOp(repo: string): Promise<void> {
   if (op && op !== 'merge') await git(repo, [op, '--skip'], NO_EDITOR)
 }
 
-/** Oldest first, so several picked commits land in their original order. */
+/**
+ * Oldest first, so several picked commits land in their original order. Rebased commits
+ * often share the same second, so ancestry decides and the date only orders commits on
+ * separate lines: that is `rev-list --date-order`, walked once from the picked commits back
+ * to where they meet (pairwise ancestry checks took up to ~1,600 git processes for 40).
+ */
 async function chronological(repo: string, shas: string[]): Promise<string[]> {
   if (shas.length < 2) return shas
-  // "rev-list --no-walk" orders by commit date, and rebased commits often share the same
-  // second: ancestry decides instead, the date only orders commits on separate lines.
-  const dates = new Map((await gitOut(repo, ['log', '--no-walk=unsorted', '--format=%H %ct', ...shas])).trim().split('\n')
-    .map(l => l.split(' ')).map(([sha, t]) => [sha, +t] as const))
-  const ancestor = async (a: string, b: string) =>
-    (await git(repo, ['merge-base', '--is-ancestor', a, b], { okCodes: [1] })).code === 0
-  const older = (a: string, b: string) => (dates.get(a) ?? 0) < (dates.get(b) ?? 0)
-  // Past a few dozen commits, pairwise ancestry checks cost too much: dates only.
-  const before = async (a: string, b: string) =>
-    shas.length > 40 ? older(a, b) : (await ancestor(a, b)) || (!(await ancestor(b, a)) && older(a, b))
-  const out: string[] = []
-  for (const sha of shas) {
-    // Insertion before the first picked commit it must come before.
-    let at = out.length
-    for (let i = 0; i < out.length; i++) {
-      if (await before(sha, out[i])) { at = i; break }
-    }
-    out.splice(at, 0, sha)
-  }
-  return out
+  const base = (await git(repo, ['merge-base', '--octopus', ...shas], { okCodes: [1] })).stdout.trim()
+  // Down to the meeting point itself, which can be one of the picked commits; unrelated histories: to the roots.
+  const walk = (await gitOut(repo, ['rev-list', '--date-order', '--reverse', ...shas, ...(base ? [`^${base}^@`] : [])])).split('\n')
+  const wanted = new Set(shas)
+  const ordered = walk.filter(s => wanted.has(s))
+  return [...ordered, ...shas.filter(s => !ordered.includes(s))]
 }
 
 export async function cherryPick(repo: string, shas: string[]): Promise<void> {
