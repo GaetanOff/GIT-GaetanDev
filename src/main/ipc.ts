@@ -1,7 +1,7 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
 import { existsSync, mkdirSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, isAbsolute, join, posix } from 'node:path'
+import { basename, dirname, isAbsolute, join, posix, resolve as resolvePath, sep } from 'node:path'
 import type { Api, ApiChannel, ApiEvents, IpcEnvelope } from '@shared/api'
 import { isSettingKey, validSetting, type Progress, type RepoImport } from '@shared/types'
 import { registerPending, respond } from './askpass'
@@ -35,11 +35,58 @@ export function send<K extends keyof ApiEvents>(channel: K, payload: ApiEvents[K
 
 const progress = (p: Progress | null) => send('progress', p)
 
-/** Opening the same folder twice resolves to the repository root once. */
+/**
+ * Opening the same folder twice resolves to the repository root once. A
+ * folder that is not a repository yet (dropped, or opened from Explorer)
+ * becomes one only once the user says so in a dialog of the main process.
+ */
 async function addRepo(path: string) {
   if (!existsSync(path)) throw new GitError('This folder does not exist.')
-  if (!(await isRepo(path))) throw new GitError('This folder is not a Git repository. Use "Create repository" to initialise it.', 'NOT_A_REPO')
-  return upsertRepo(await topLevel(path))
+  if (await isRepo(path)) return upsertRepo(await topLevel(path))
+  if (!(await ask('This folder is not a Git repository yet. Create one in it?', path, 'Create repository'))) {
+    throw new GitError('Cancelled: nothing was created.', 'CANCELLED')
+  }
+  await git(path, ['init', '-b', 'main'])
+  return upsertRepo(path)
+}
+
+/**
+ * A yes/no question in a dialog of the main process, which a compromised
+ * page can neither show nor answer. Cancel is the default: Enter never
+ * agrees by accident.
+ */
+async function ask(message: string, detail: string, button: string): Promise<boolean> {
+  const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+  const opts = { type: 'question' as const, buttons: [button, 'Cancel'], defaultId: 1, cancelId: 1, message, detail }
+  const { response } = win ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts)
+  return response === 0
+}
+
+/**
+ * Folders the user picked in a folder dialog of this session, or confirmed
+ * as a destination: creating, cloning or adding a worktree inside one asks
+ * nothing more.
+ */
+const chosenFolders = new Set<string>()
+const folderKey = (p: string) => {
+  const r = resolvePath(p)
+  return process.platform === 'win32' ? r.toLowerCase() : r
+}
+const inChosen = (path: string) => {
+  const p = folderKey(path)
+  return [...chosenFolders].some(f => p === f || p.startsWith(f.endsWith(sep) ? f : f + sep))
+}
+
+/**
+ * Where a repository or a worktree is created: a folder the user chose, or
+ * one confirmed in a dialog of the main process, which a compromised page
+ * can neither show nor answer. Without it, a page could create a repository
+ * in ~/.config/git or the Startup folder and fill it with files of its own.
+ */
+export async function confirmDestination(path: string, message: string, button: string, remember: string): Promise<void> {
+  if (inChosen(path)) return
+  if (!(await ask(message, path, button))) throw new GitError('Cancelled: nothing was created.', 'CANCELLED')
+  chosenFolders.add(folderKey(remember))
 }
 
 /** A folder the app was launched with; the renderer opens it instead of the last repo. */
@@ -104,6 +151,7 @@ export function registerIpc(watcher: RepoWatcher): void {
       return result
     },
     'repo:init': async path => {
+      await confirmDestination(path, 'This folder is not a Git repository yet. Create one in it?', 'Create repository', path)
       mkdirSync(path, { recursive: true })
       await git(path, ['init', '-b', 'main'])
       return upsertRepo(path)
@@ -111,6 +159,7 @@ export function registerIpc(watcher: RepoWatcher): void {
     'repo:clone': async (url, parent, name) => {
       const target = join(parent, name)
       if (existsSync(target)) throw new GitError(`"${target}" already exists.`)
+      await confirmDestination(target, 'Clone the repository into this folder?', 'Clone', parent)
       mkdirSync(parent, { recursive: true })
       await ops.clone(url, parent, name, progress)
       return upsertRepo(target)
@@ -130,7 +179,9 @@ export function registerIpc(watcher: RepoWatcher): void {
       const win = BrowserWindow.getFocusedWindow()
       const opts = { title, properties: ['openDirectory', 'createDirectory'] as ('openDirectory' | 'createDirectory')[] }
       const r = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
-      return r.canceled ? null : r.filePaths[0] ?? null
+      const picked = r.canceled ? null : r.filePaths[0] ?? null
+      if (picked) chosenFolders.add(folderKey(picked))
+      return picked
     },
 
     'git:status': async repo => status(repo),
@@ -194,7 +245,16 @@ export function registerIpc(watcher: RepoWatcher): void {
     'git:removeRemote': async (repo, name) => ops.removeRemote(repo, name),
     'git:submoduleUpdate': async (repo, path) => submoduleUpdate(repo, path, progress),
     'git:lfsPull': async repo => lfsPull(repo, progress),
-    'git:worktreeAdd': async (repo, path, branch, create, from) => worktreeAdd(repo, path, branch, create, from),
+    'git:worktreeAdd': async (repo, path, branch, create, from) => {
+      // Where the dialog puts it needs no confirmation: "<repo>-<branch>" next to the repository.
+      // Not any folder there: next to a repository in the home folder, ".config" holds git's global config.
+      const name = (p: string) => (process.platform === 'win32' ? basename(p).toLowerCase() : basename(p))
+      const suggested = folderKey(dirname(path)) === folderKey(dirname(repo)) && name(path).startsWith(`${name(repo)}-`)
+      if (!suggested) {
+        await confirmDestination(path, 'Create the worktree in this folder?', 'Create worktree', dirname(path))
+      }
+      return worktreeAdd(repo, path, branch, create, from)
+    },
     'git:worktreeRemove': async (repo, path, force) => worktreeRemove(repo, path, force),
     'repo:fsmonitor': async repo => fsmonitorInfo(repo),
     'repo:setFsmonitor': async (repo, on) => setFsmonitor(repo, on),

@@ -69,7 +69,8 @@
       app.lastFetched = Date.now()
       toast('success', `Cloned ${entry.name}.`)
     } catch (e) {
-      error = asError(e).message
+      const err = asError(e)
+      if (err.code !== 'CANCELLED') error = err.message
     } finally {
       cloning = false
       end()

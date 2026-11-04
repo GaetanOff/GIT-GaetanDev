@@ -2,7 +2,7 @@ import type { Commit, FileChange, LogQuery, Progress, Refs, RepoEntry, RepoStatu
 import { DEFAULT_SETTINGS } from '@shared/types'
 import { api, asError, on, type AppError } from './api'
 import { GraphBuilder, type GraphRow } from './graph'
-import { choose, closeDialog, confirm, dialogs, openDialog, toast } from './ui.svelte'
+import { choose, closeDialog, dialogs, openDialog, toast } from './ui.svelte'
 
 export type View = 'changes' | 'history' | 'stash' | 'file' | 'rebase' | 'undo' | 'compare'
 type MainView = 'changes' | 'history' | 'stash' | 'undo'
@@ -341,20 +341,14 @@ class AppState {
     }, 15_000)
   }
 
+  /** A folder that is not a repository yet: the main process asks whether to create one. */
   async addRepo(path: string): Promise<void> {
     try {
       const entry = await api['repo:add'](path)
       await this.openRepo(entry.id)
     } catch (e) {
       const err = asError(e)
-      if (err.code === 'NOT_A_REPO') {
-        const ok = await confirm({
-          title: 'Not a Git repository',
-          message: `“${path}” is not a Git repository yet. Initialise one here?`,
-          confirmLabel: 'Create repository',
-        })
-        if (ok) await this.initRepo(path)
-      } else toast('error', err.message)
+      if (err.code !== 'CANCELLED') toast('error', err.message)
     }
   }
 
@@ -581,6 +575,9 @@ class AppState {
         toast('error', 'The remote has commits you do not have yet. Pull first, then push again.', {
           label: 'Pull now', run: () => this.stillOn(id) && this.pull(),
         })
+        break
+      case 'CANCELLED':
+        // The user said no in a dialog: nothing to report.
         break
       default:
         toast('error', err.message)

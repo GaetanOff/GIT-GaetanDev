@@ -1,10 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 
-vi.mock('electron', () => ({ app: {}, BrowserWindow: {}, clipboard: {}, dialog: {}, ipcMain: {}, shell: {} }))
+const showMessageBox = vi.hoisted(() => vi.fn())
+vi.mock('electron', () => ({
+  app: {}, BrowserWindow: { getFocusedWindow: () => null, getAllWindows: () => [] }, clipboard: {}, dialog: { showMessageBox }, ipcMain: {}, shell: {},
+}))
 vi.mock('../src/main/store', () => ({ isRegistered: () => true, getState: () => ({ settings: {} }) }))
 vi.mock('../src/main/updater', () => ({ installUpdate: () => undefined }))
 
-const { checkArgs, queuesBusy, schedule, settleQueues } = await import('../src/main/ipc')
+const { checkArgs, confirmDestination, queuesBusy, schedule, settleQueues } = await import('../src/main/ipc')
 
 const REPO = 'C:/repos/app'
 
@@ -33,6 +36,23 @@ describe('argument checks', () => {
       expect(() => checkArgs('git:resolveContent', [REPO, path, 'text']), path).toThrow(/inside the repository/)
     }
     expect(() => checkArgs('git:resolveContent', [REPO, 'docs/.github/git~notes.md', 'text'])).not.toThrow()
+  })
+})
+
+describe('destinations', () => {
+  it('creates a repository only where the user chose or agreed to', async () => {
+    const home = process.platform === 'win32' ? 'C:\\Users\\me' : '/home/me'
+    const sep = process.platform === 'win32' ? '\\' : '/'
+    showMessageBox.mockResolvedValueOnce({ response: 1 })
+    await expect(confirmDestination(`${home}${sep}.config${sep}git`, 'Create?', 'Create', `${home}${sep}.config${sep}git`)).rejects.toMatchObject({ code: 'CANCELLED' })
+    expect(showMessageBox).toHaveBeenCalledTimes(1)
+    // Agreed once for a folder: what goes inside it later asks nothing more.
+    showMessageBox.mockResolvedValueOnce({ response: 0 })
+    await confirmDestination(`${home}${sep}repos${sep}a`, 'Clone?', 'Clone', `${home}${sep}repos`)
+    await confirmDestination(`${home}${sep}repos${sep}b`, 'Clone?', 'Clone', `${home}${sep}repos`)
+    expect(showMessageBox).toHaveBeenCalledTimes(2)
+    showMessageBox.mockResolvedValueOnce({ response: 1 })
+    await expect(confirmDestination(`${home}${sep}repos-evil${sep}c`, 'Clone?', 'Clone', `${home}${sep}repos-evil`)).rejects.toThrow(/Cancelled/)
   })
 })
 
