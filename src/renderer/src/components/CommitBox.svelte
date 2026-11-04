@@ -82,11 +82,16 @@
     })))
   }
 
-  // Re-read after any dialog closes: the identity may have been edited in Settings.
+  // Re-read after any dialog closes: the identity may have been edited in Settings. Only the
+  // newest answer counts: after a quick tab switch, the previous repository's could land last.
+  let identityToken = 0
   $effect(() => {
     const repo = app.repo?.path
     if (!repo || dialogs.length) return
-    api['git:identity'](repo).then(id => (identity = id)).catch(() => (identity = null))
+    const t = ++identityToken
+    api['git:identity'](repo)
+      .then(id => { if (t === identityToken) identity = id })
+      .catch(() => { if (t === identityToken) identity = null })
   })
 
   const draft = $derived(app.draft)
