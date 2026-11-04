@@ -73,7 +73,11 @@ export function openTerminal(command: string, repo: string): void {
   } else if (win) {
     const wt = join(process.env.LOCALAPPDATA ?? '', 'Microsoft', 'WindowsApps', 'wt.exe')
     if (existsSync(wt)) {
-      launch(`"${wt}" -d`, repo, repo)
+      // Started in the repository with "-d .": the path never reaches its command line, where
+      // Windows Terminal splits on ";" even inside quotes ("lib;calc" would run calc).
+      const child = spawn(wt, ['-d', '.'], { cwd: repo, detached: true, stdio: 'ignore' })
+      child.on('error', () => undefined)
+      child.unref()
       return
     }
     // Full paths: started in the repository, neither name may resolve to a file inside it.
