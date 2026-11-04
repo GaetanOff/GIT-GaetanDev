@@ -128,7 +128,9 @@
   const unstagedCount = $derived(app.unstaged.length)
   const conflicts = $derived(app.conflicted.length)
   const op = $derived(app.status?.operation)
-  const willStageAll = $derived(!stagedCount && unstagedCount > 0 && !draft.amend)
+  // Never during a merge, a cherry-pick or a revert: "Commit merge" with nothing staged (every
+  // conflict resolved to ours) staged scratch and untracked files into the merge commit.
+  const willStageAll = $derived(!stagedCount && unstagedCount > 0 && !draft.amend && !op)
   const branch = $derived(app.status?.branch ?? 'detached HEAD')
   const summaryLen = $derived(draft.summary.length)
 
