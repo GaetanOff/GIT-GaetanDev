@@ -240,6 +240,25 @@ describe('commit', () => {
     expect(readFileSync(join(repo, 'a1.txt'), 'utf8')).toMatch(/^<<<<<<< /m)
   })
 
+  it('shows the identity a commit really gets, includeIf included', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base')
+    sh(repo, 'config', '--unset', 'user.name')
+    sh(repo, 'config', '--unset', 'user.email')
+    const dir = join(repo, '..')
+    writeFileSync(join(dir, 'work.cfg'), '[user]\n\tname = Work Name\n\temail = me@work\n')
+    writeFileSync(join(dir, 'global.cfg'), '[user]\n\tname = Personal\n\temail = me@home\n[includeIf "onbranch:main"]\n\tpath = work.cfg\n')
+    const saved = process.env.GIT_CONFIG_GLOBAL
+    process.env.GIT_CONFIG_GLOBAL = join(dir, 'global.cfg')
+    try {
+      expect(await ops.identity(repo)).toEqual({ name: 'Work Name', email: 'me@work', scope: 'global' })
+    } finally {
+      if (saved === undefined) delete process.env.GIT_CONFIG_GLOBAL
+      else process.env.GIT_CONFIG_GLOBAL = saved
+    }
+    expect((await ops.identity(makeRepo())).scope).toBe('local')
+  })
+
   it('undoes only the commit it was asked for', async () => {
     const repo = makeRepo()
     commit(repo, 'base')

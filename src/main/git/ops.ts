@@ -524,20 +524,34 @@ export async function removeRemote(repo: string, name: string): Promise<void> {
 
 /* ─── Identity ──────────────────────────────────────────────────────────────── */
 
+/**
+ * The identity commits get. In a repository, the one git itself resolves:
+ * every config file with its include and includeIf (a work identity for
+ * repositories under ~/work, say), then GIT_AUTHOR_NAME/EMAIL. Reading only
+ * the local and global values showed "Personal <me@home>" for commits made as
+ * "Work <me@work>", and blocked committing when the identity came only from
+ * an include. `scope` is "local" when the repository sets one of its own.
+ */
 export async function identity(repo: string | null): Promise<{ name: string; email: string; scope: 'local' | 'global' | 'none' }> {
-  const read = async (scope: string, key: string) => {
-    const r = await git(repo ?? process.cwd(), ['config', scope, '--get', key], { okCodes: [1] })
-    return r.stdout.trim()
+  const cwd = repo ?? process.cwd()
+  const read = async (key: string) => {
+    const r = await git(cwd, ['config', ...(repo ? ['--show-scope'] : ['--global', '--includes']), '--get', key], { okCodes: [1] })
+    const out = r.stdout.trim()
+    if (!repo) return { value: out, local: false }
+    const [scope, ...value] = out.split('\t')
+    return { value: value.join('\t'), local: scope === 'local' || scope === 'worktree' }
   }
+  const [n, e] = await Promise.all([read('user.name'), read('user.email')])
+  let name = n.value
+  let email = e.value
   if (repo) {
-    const [name, email] = await Promise.all([read('--local', 'user.name'), read('--local', 'user.email')])
-    if (name || email) {
-      const [gName, gEmail] = await Promise.all([read('--global', 'user.name'), read('--global', 'user.email')])
-      return { name: name || gName, email: email || gEmail, scope: 'local' }
-    }
+    // What a commit would really use, environment included; fails when git knows no identity.
+    const ident = await git(repo, ['var', 'GIT_AUTHOR_IDENT'], { okCodes: [128] })
+    const m = /^(.*) <(.*)> \d+ [+-]\d{4}$/.exec(ident.stdout.trim())
+    if (ident.code === 0 && m) [name, email] = [m[1], m[2]]
   }
-  const [name, email] = await Promise.all([read('--global', 'user.name'), read('--global', 'user.email')])
-  return { name, email, scope: name || email ? 'global' : 'none' }
+  const scope = n.local || e.local ? 'local' : name || email ? 'global' : 'none'
+  return { name, email, scope }
 }
 
 export async function setIdentity(repo: string | null, id: { name: string; email: string }): Promise<void> {
