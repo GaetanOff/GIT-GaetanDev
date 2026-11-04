@@ -11,8 +11,8 @@ interface Entry {
 
 const US = '\x1f'
 
-async function entries(repo: string, limit: number): Promise<Entry[]> {
-  const r = await git(repo, ['reflog', 'show', '--date=unix', `--format=%H${US}%gd${US}%gs`, `-n${limit}`, 'HEAD'], { okCodes: [128] })
+async function entries(repo: string, limit: number, ref = 'HEAD'): Promise<Entry[]> {
+  const r = await git(repo, ['reflog', 'show', '--date=unix', `--format=%H${US}%gd${US}%gs`, `-n${limit}`, ref, '--'], { okCodes: [128] })
   if (r.code !== 0) return []
   return r.stdout.split('\n').filter(Boolean).map(line => {
     const [sha, selector, subject] = line.split(US)
@@ -21,7 +21,22 @@ async function entries(repo: string, limit: number): Promise<Entry[]> {
 }
 
 const GROUP_END = /^(rebase|pull --rebase|pull)( -i| -m)?( \([^)]*\))? ?\((finish|abort)\): (?:returning to )?(?:refs\/heads\/)?(.*)$/
-const GROUP_START = /\(start\)/
+// Anchored like GROUP_END: a replayed commit whose subject held "(start)" ("rebase (pick): fix the
+// (start) button") was taken for the start, and undo went back to a half-rebased commit.
+const GROUP_START = /^(rebase|pull --rebase|pull)( -i| -m)?( \([^)]*\))? ?\(start\):/
+
+/**
+ * Where a rebased branch was before the rebase: the previous value of its own
+ * reflog entry for that rebase's finish. HEAD's reflog may not say: a
+ * `git rebase main feature` run on main starts at main's commit, not at
+ * feature's. Null when the branch's reflog does not have it.
+ */
+async function tipBeforeRebase(repo: string, branch: string, rebased: string, cache: Map<string, Entry[]>): Promise<string | null> {
+  if (!cache.has(branch)) cache.set(branch, await entries(repo, 300, `refs/heads/${branch}`).catch(() => []))
+  const list = cache.get(branch)!
+  const k = list.findIndex(e => e.sha === rebased && GROUP_END.test(e.subject))
+  return k >= 0 ? list[k + 1]?.sha ?? null : null
+}
 
 /**
  * Turns HEAD's reflog into user-level operations, newest first. A rebase is
@@ -39,6 +54,7 @@ export async function operations(repo: string, limit = 150): Promise<RepoOperati
   const wasBranch = (n: string) =>
     locals.has(n) || (!/^[0-9a-f]{7,64}$/.test(n) && n !== 'HEAD' && !remotes.some(r => n.startsWith(`${r}/`)))
   const ops: RepoOperationEntry[] = []
+  const branchLogs = new Map<string, Entry[]>()
   let after = branch
 
   for (let i = 0; i < list.length && ops.length < limit; i++) {
@@ -48,8 +64,9 @@ export async function operations(repo: string, limit = 150): Promise<RepoOperati
       let j = i + 1
       while (j < list.length && !GROUP_START.test(list[j].subject)) j++
       const start = list[j]
-      const before = list[j + 1]
       const target = end[5] || after
+      const tip = end[4] === 'finish' && target ? await tipBeforeRebase(repo, target, e.sha, branchLogs) : null
+      const before = tip ? { sha: tip } : list[j + 1]
       const ontoRaw = start ? /checkout (.*)$/.exec(start.subject)?.[1] : undefined
       const onto = ontoRaw && /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/.test(ontoRaw) ? ontoRaw.slice(0, 7) : ontoRaw
       const picks = list.slice(i + 1, j).length
