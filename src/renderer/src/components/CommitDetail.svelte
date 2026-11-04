@@ -23,16 +23,28 @@
     try { return +(localStorage.getItem('detail-files-height') ?? 180) } catch { return 180 }
   }
 
+  /**
+   * The commit or stash asked for, and the one shown. Until a slow commit arrives the one
+   * before stays on screen, dimmed and out of reach: its "…" menu (Reset, Revert, Checkout)
+   * acted on the previous commit while the new one was selected.
+   */
+  let wanted = $state('')
+  let shown = $state('')
+  const stale = $derived(!!detail && wanted !== shown)
+
   $effect(() => {
     const repo = app.repo?.path
     const s = sha
     const st = stash
     if (!repo) return
     const t = ++token
+    const key = st !== undefined ? `stash:${st}` : `commit:${s}`
+    wanted = key
     const req = st !== undefined ? api['git:stashFiles'](repo, st) : api['git:commit:detail'](repo, s!)
     req.then(d => {
       if (t !== token) return
       detail = d
+      shown = key
       error = null
       if (!file || !d.files.some(f => f.path === file)) file = d.files[0]?.path ?? null
     }).catch(e => {
@@ -89,7 +101,7 @@
   }
 </script>
 
-<div class="detail">
+<div class="detail" class:stale inert={stale}>
   {#if error}
     <div class="empty"><h3>Could not load this commit</h3><p>{error}</p></div>
   {:else if detail}
@@ -166,6 +178,8 @@
 
 <style>
   .detail { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  /* Only after a moment: stepping through quick commits never flickers. */
+  .detail.stale { opacity: 0.55; transition: opacity 120ms 200ms; }
   .meta { padding: 12px 14px 10px; border-bottom: 1px solid var(--border); display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; max-height: 40%; overflow-y: auto; user-select: text; }
   .top { display: flex; align-items: flex-start; gap: 8px; }
   .subject { flex: 1; margin: 0; font-size: 15px; font-weight: 700; color: #fff; line-height: 1.35; }
