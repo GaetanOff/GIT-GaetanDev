@@ -21,6 +21,7 @@ const { status } = await import('../src/main/git/status')
 const { diff } = await import('../src/main/git/diff')
 const { conflict, resolveContent } = await import('../src/main/git/conflict')
 const { refs } = await import('../src/main/git/refs')
+const { log } = await import('../src/main/git/log')
 const { rebasePlan, rebaseRun } = await import('../src/main/git/rebase')
 const { git, assertRefName, stallGuards } = await import('../src/main/git/exec')
 
@@ -284,6 +285,18 @@ describe('line operations', () => {
     const sel = { 0: d.hunks[0].lines.flatMap((l, i) => (l.type === 'ctx' ? [] : [i])) }
     await ops.unstageLines(repo, 'new.txt', sel, undefined, selectionFingerprint(d, sel), 'old.txt')
     expect(sh(repo, 'status', '--porcelain')).toBe('RM old.txt -> new.txt')
+  })
+
+  it('stages lines whatever diff prefixes and log options the user configured', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'a\n\nb\n' })
+    for (const [k, v] of [['diff.noprefix', 'true'], ['diff.mnemonicPrefix', 'true'], ['diff.suppressBlankEmpty', 'true'], ['log.showSignature', 'true']]) sh(repo, 'config', k, v)
+    write(repo, 'a.txt', 'A\n\nb\nc\n')
+    const d = await diff(repo, { kind: 'worktree', path: 'a.txt' }, OPTS)
+    const sel = { 0: d.hunks[0].lines.flatMap((l, i) => (l.type === 'add' && l.text === 'c' ? [i] : [])) }
+    await ops.stageLines(repo, 'a.txt', sel, false, undefined, selectionFingerprint(d, sel))
+    expect(execFileSync('git', ['-C', repo, 'show', ':a.txt'], { encoding: 'utf8' })).toBe('a\n\nb\nc\n')
+    expect((await log(repo, { scope: 'current', skip: 0, limit: 5 })).map(c => c.subject)).toEqual(['base'])
   })
 
   // "\ No newline at end of file" may only follow the last line: a line kept before a selected one needs its newline.

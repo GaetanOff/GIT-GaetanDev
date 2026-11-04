@@ -75,7 +75,16 @@ export function findOnPath(name: string, exts = process.platform === 'win32' ? [
 let gitPath: string | null = null
 const NOT_FOUND = 'Git was not found. Install Git for Windows and restart the app.'
 
-const GLOBAL_ARGS = ['-c', 'core.quotepath=false', '-c', 'color.ui=false', '-c', 'i18n.logOutputEncoding=UTF-8']
+/**
+ * Output the parsers rely on, whatever the user's config says: "a/" and "b/"
+ * diff prefixes (diff.noprefix made every line stage fail), a context line
+ * kept as " " when blank, no signature check printed into log output.
+ */
+const GLOBAL_ARGS = [
+  '-c', 'core.quotepath=false', '-c', 'color.ui=false', '-c', 'i18n.logOutputEncoding=UTF-8',
+  '-c', 'diff.noprefix=false', '-c', 'diff.mnemonicPrefix=false', '-c', 'diff.srcPrefix=a/', '-c', 'diff.dstPrefix=b/',
+  '-c', 'diff.relative=false', '-c', 'diff.suppressBlankEmpty=false', '-c', 'log.showSignature=false',
+]
 
 /** The git command an argument list runs: "stash" for ['-c', 'k=v', 'stash', 'push']. */
 function subcommand(args: string[]): string | undefined {
