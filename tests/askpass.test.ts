@@ -6,7 +6,7 @@ import { afterAll, describe, expect, it, vi } from 'vitest'
 
 const dir = mkdtempSync(join(tmpdir(), 'gdg-askpass-'))
 vi.mock('electron', () => ({ app: { getPath: () => dir } }))
-const { startAskPass, stopAskPass } = await import('../src/main/askpass')
+const { onAbandon, registerPending, startAskPass, stopAskPass } = await import('../src/main/askpass')
 
 afterAll(() => {
   stopAskPass()
@@ -38,5 +38,21 @@ describe('credential prompts', () => {
     expect(asked).toEqual([])
     expect(await request(pipe, { prompt: 'Password for x:', token: env.GDG_ASKPASS_TOKEN })).toEqual({ value: 'hunter2' })
     expect(asked).toEqual(['Password for x:'])
+  })
+
+  it('withdraws a prompt whose helper went away before it was answered', async () => {
+    stopAskPass()
+    const withdrawn: string[] = []
+    onAbandon(id => withdrawn.push(id))
+    let asked = ''
+    const env = startAskPass(req => {
+      asked = req.id
+      // Waits for an answer that never comes, as a dialog would.
+      return new Promise(resolve => registerPending(req.id, resolve))
+    })
+    const sock = connect(env.GDG_ASKPASS_PIPE!, () => sock.write(`${JSON.stringify({ prompt: 'Passphrase:', token: env.GDG_ASKPASS_TOKEN })}\n`))
+    await vi.waitFor(() => expect(asked).not.toBe(''))
+    sock.destroy()
+    await vi.waitFor(() => expect(withdrawn).toEqual([asked]))
   })
 })

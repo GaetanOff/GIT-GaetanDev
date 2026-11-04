@@ -104,7 +104,13 @@ export function startAskPass(ask: Ask): NodeJS.ProcessEnv {
       try { req = JSON.parse(buf.split('\n')[0]) } catch { /* malformed */ }
       if (!valid(req.token)) return void sock.end(JSON.stringify({ value: null }))
       const prompt = typeof req.prompt === 'string' ? req.prompt : ''
-      const value = await ask({ id: randomUUID(), prompt, kind: classify(prompt) }).catch(() => null)
+      const id = randomUUID()
+      let answered = false
+      // The helper gone before an answer (git killed, the operation cancelled): its dialog goes too,
+      // instead of staying up for an answer nobody waits for.
+      sock.on('close', () => { if (!answered) abandon(id) })
+      const value = await ask({ id, prompt, kind: classify(prompt) }).catch(() => null)
+      answered = true
       sock.end(JSON.stringify({ value }))
     })
     sock.on('error', () => undefined)
@@ -141,6 +147,18 @@ export function registerPending(id: string, resolve: (value: string | null) => v
 export function respond(id: string, value: string | null): void {
   pending.get(id)?.(value)
   pending.delete(id)
+}
+
+let abandoned: ((id: string) => void) | null = null
+/** Called with a prompt whose helper went away before it was answered. */
+export function onAbandon(fn: (id: string) => void): void {
+  abandoned = fn
+}
+
+function abandon(id: string): void {
+  if (!pending.has(id)) return
+  respond(id, null)
+  abandoned?.(id)
 }
 
 export function stopAskPass(): void {

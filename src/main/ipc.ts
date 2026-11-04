@@ -4,7 +4,7 @@ import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, posix, resolve as resolvePath, sep } from 'node:path'
 import type { Api, ApiChannel, ApiEvents, IpcEnvelope } from '@shared/api'
 import { isSettingKey, validSetting, type Progress, type RepoImport } from '@shared/types'
-import { registerPending, respond } from './askpass'
+import { onAbandon, registerPending, respond } from './askpass'
 import { blame, fileLog } from './git/blame'
 import { compare } from './git/compare'
 import { rebasePlan, rebaseRun } from './git/rebase'
@@ -110,6 +110,7 @@ export function openFolder(path: string): void {
 }
 
 export function registerIpc(watcher: RepoWatcher): void {
+  onAbandon(id => send('askpass:cancel', { id, reason: 'gone' }))
   const h: Handlers = {
     'app:state': async () => {
       const s = getState()
@@ -525,10 +526,15 @@ export function askRenderer(req: { id: string; prompt: string; kind: 'password' 
     // Unanswered, the prompt is declined, and its dialog closes: an answer typed later would go nowhere.
     const timer = setTimeout(() => {
       respond(req.id, null)
-      send('askpass:cancel', req.id)
+      send('askpass:cancel', { id: req.id, reason: 'timeout' })
     }, 5 * 60_000)
+    // A page reloaded meanwhile (a crash recovered) lost the dialog: it is asked again, rather than
+    // git waiting five minutes for an answer, holding the repository's network queue.
+    const again = () => win.webContents.send('askpass', req)
+    win.webContents.on('did-finish-load', again)
     registerPending(req.id, value => {
       clearTimeout(timer)
+      if (!win.isDestroyed()) win.webContents.removeListener('did-finish-load', again)
       resolve(value)
     })
     if (win.isMinimized()) win.restore()

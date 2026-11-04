@@ -175,15 +175,20 @@ class AppState {
     })
     on('progress', p => (this.progress = p))
     on('askpass', req => {
+      // Asked again after the page reloaded: once is enough.
+      if (dialogs.some(x => x.kind === 'askpass' && x.id === req.id)) return
       openDialog({
         kind: 'askpass', id: req.id, prompt: req.prompt, mode: req.kind,
         resolve: v => api['askpass:respond'](req.id, v),
       })
     })
-    on('askpass:cancel', id => {
+    on('askpass:cancel', ({ id, reason }) => {
       const d = dialogs.find(x => x.kind === 'askpass' && x.id === id)
-      if (d) closeDialog(d)
-      toast('info', 'A credential prompt went unanswered for five minutes and was declined.')
+      if (!d) return
+      closeDialog(d)
+      toast('info', reason === 'timeout'
+        ? 'A credential prompt went unanswered for five minutes and was declined.'
+        : 'Git stopped waiting for the credential prompt: the operation ended or was cancelled.')
     })
     on('menu', m => {
       if (m === 'focus' && this.repo) this.refreshAll()

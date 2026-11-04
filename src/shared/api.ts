@@ -152,7 +152,8 @@ export interface ApiEvents {
   'progress': Progress | null
   'askpass': AskPassRequest
   /** A credential prompt git stopped waiting for (it timed out): its dialog closes. */
-  'askpass:cancel': string
+  /** A credential prompt withdrawn: unanswered for five minutes, or git stopped waiting (`gone`). */
+  'askpass:cancel': { id: string; reason: 'timeout' | 'gone' }
   'menu': string
   /** A folder passed to a second launch of the app ("Open with"). */
   'open:path': string
