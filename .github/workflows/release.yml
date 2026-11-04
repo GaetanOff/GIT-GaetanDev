@@ -35,13 +35,25 @@ jobs:
             echo "::error::Tag $GITHUB_REF_NAME does not match package.json version $version. Bump the version, then tag."
             exit 1
           fi
+      # A release already published is never touched again: a rerun would replace its installer
+      # (another sha512 than the one installed copies saw), or skip publishing and still pass.
+      - name: Release not yet published
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          draft=$(gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --json isDraft -q .isDraft 2>/dev/null || echo none)
+          if [ "$draft" = "false" ]; then
+            echo "::error::Release $GITHUB_REF_NAME is already published. Bump the version and tag again."
+            exit 1
+          fi
       - run: npm ci
       # CI does not run on tags: the commit being released is checked here.
       - run: npm run lint
       - run: npm run check
       - run: npm test
       - run: npm run build
-      # releaseType "release" (package.json): published at once, not left as a draft auto-update cannot see.
+      # Uploaded to a draft (releaseType in package.json), which installed copies do not see yet.
       - run: npx electron-builder --win --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -49,3 +61,10 @@ jobs:
           # and Windows SmartScreen warns on first launch.
           CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
+      # Published only now, every file in place: published first, a failed upload left a "latest"
+      # release without its installer or latest.yml, and every installed copy failed to update.
+      - name: Publish the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
