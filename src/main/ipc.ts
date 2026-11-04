@@ -309,7 +309,9 @@ export function registerIpc(watcher: RepoWatcher): void {
     'shell:editor': async (repo, path) => openEditor(getState().settings.editorCommand, repo, path ? join(repo, path) : repo),
     'shell:terminal': async repo => openTerminal(getState().settings.terminalCommand, repo),
     'clipboard:write': async text => clipboard.writeText(text),
-    'clipboard:read': async () => clipboard.readText(),
+    // Only while the user is in the app (the Clone dialog pastes a URL as it opens): a compromised
+    // page could otherwise read the clipboard at any time and send it off through a remote.
+    'clipboard:read': async () => (BrowserWindow.getFocusedWindow() ? clipboard.readText() : ''),
     'app:openLogs': async () => {
       mkdirSync(logDir(), { recursive: true })
       await shell.openPath(logDir())
