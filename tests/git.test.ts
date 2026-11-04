@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { selectionFingerprint } from '@shared/types'
@@ -932,6 +932,24 @@ describe('file history', () => {
 })
 
 describe('operations in progress', () => {
+  it('lets status save the stat data of touched files once in a while', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'a\n' })
+    const index = join(repo, '.git', 'index')
+    // The file touched (same content, new time): the index has stale stat data until something refreshes it.
+    const later = new Date(Date.now() + 5_000)
+    utimesSync(join(repo, 'a.txt'), later, later)
+    const before = statSync(index).mtimeMs
+    await new Promise(resolve => setTimeout(resolve, 50))
+    await status(repo)
+    expect(statSync(index).mtimeMs).toBeGreaterThan(before)
+    // And not at every refresh.
+    const after = statSync(index).mtimeMs
+    utimesSync(join(repo, 'a.txt'), new Date(Date.now() + 9_000), new Date(Date.now() + 9_000))
+    await status(repo)
+    expect(statSync(index).mtimeMs).toBe(after)
+  })
+
   it('lists untracked files unless the repository says not to', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a.txt': 'a\n' })
