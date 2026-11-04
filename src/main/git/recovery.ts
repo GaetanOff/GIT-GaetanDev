@@ -98,22 +98,28 @@ async function bestDescendants(repo: string, branches: { name: string; sha: stri
   return out
 }
 
-const sameName = (ref: string, name: string) => ref.endsWith(`/${name}`)
+/**
+ * Whether a remote-tracking name ("origin/feature") is the branch `name` of one
+ * of the remotes. Not by suffix: "origin/alice/feature", another branch, was
+ * taken for "feature" and restored in its place.
+ */
+const sameName = (ref: string, name: string, remotes: string[]) => remotes.some(r => ref === `${r}/${name}`)
 
 const isNamed = (t: NewerTip) => t.via === 'remote' || t.via === 'pruned'
 
 /** Local search: remote-tracking branches and the prune journal first, then unreferenced commits. */
 export async function newerTips(repo: string, branches: { name: string; sha: string }[]): Promise<NewerTip[]> {
   if (!branches.length) return []
-  const [remotes, journal, fsck] = await Promise.all([
+  const [remotes, journal, fsck, remoteNames] = await Promise.all([
     remoteRefs(repo),
     readJournal(repo),
     // Years of rebases can leave millions of loose objects: only the first 16 MB of the list is read.
     git(repo, ['fsck', '--unreachable', '--no-reflogs', '--no-progress'], { okCodes: [1, 2, 4, 8], maxBytes: 16 * 1024 * 1024 }).then(r => r.stdout, () => ''),
+    gitOut(repo, ['remote']).then(s => s.split('\n').map(r => r.trim()).filter(Boolean)),
   ])
   const named = await bestDescendants(repo, branches, name => [
-    ...[...remotes].filter(([ref]) => sameName(ref, name)).map(([ref, sha]): Candidate => ({ sha, via: 'remote', ref })),
-    ...journal.filter(p => sameName(p.ref, name)).map((p): Candidate => ({ sha: p.sha, via: 'pruned', ref: p.ref })),
+    ...[...remotes].filter(([ref]) => sameName(ref, name, remoteNames)).map(([ref, sha]): Candidate => ({ sha, via: 'remote', ref })),
+    ...journal.filter(p => sameName(p.ref, name, remoteNames)).map((p): Candidate => ({ sha: p.sha, via: 'pruned', ref: p.ref })),
   ])
   const rest = branches.filter(b => !named.some(n => n.name === b.name))
   const dangling = fsck.split('\n').map(l => /^unreachable commit ([0-9a-f]{40}(?:[0-9a-f]{24})?)$/.exec(l)?.[1]).filter((s): s is string => !!s).slice(0, 3000)

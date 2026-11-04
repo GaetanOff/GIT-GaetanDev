@@ -581,6 +581,8 @@ describe('deleted branches', () => {
     const tip = sh(repo, 'rev-parse', 'HEAD')
     commit(repo, 'pushed from elsewhere')
     const newer = sh(repo, 'rev-parse', 'HEAD')
+    sh(repo, 'remote', 'add', 'origin', '../origin.git')
+    sh(repo, 'remote', 'add', 'origin2', '../origin2.git')
     sh(repo, 'update-ref', 'refs/remotes/origin/feat', newer)
     sh(repo, 'checkout', '-q', 'main')
     sh(repo, 'branch', '-q', '-D', 'feat')
@@ -588,6 +590,22 @@ describe('deleted branches', () => {
     writeFileSync(join(repo, '.git', 'gdg-pruned-refs.json'), JSON.stringify([{ ref: 'origin2/feat', sha: 'f'.repeat(40), date: 1 }]))
     const [found] = await newerTips(repo, [{ name: 'feat', sha: tip }])
     expect(found).toMatchObject({ name: 'feat', sha: newer, via: 'remote', ahead: 1 })
+  })
+
+  it('takes another branch whose name ends like the deleted one for what it is', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base')
+    sh(repo, 'checkout', '-q', '-b', 'feature')
+    commit(repo, 'known tip')
+    const tip = sh(repo, 'rev-parse', 'HEAD')
+    // Alice started her own branch from it: origin/alice/feature, not origin/feature.
+    commit(repo, 'alice work')
+    sh(repo, 'remote', 'add', 'origin', '../origin.git')
+    sh(repo, 'update-ref', 'refs/remotes/origin/alice/feature', 'HEAD')
+    sh(repo, 'checkout', '-q', 'main')
+    sh(repo, 'branch', '-q', '-D', 'feature')
+    const found = await newerTips(repo, [{ name: 'feature', sha: tip }])
+    expect(found.filter(t => t.via === 'remote')).toEqual([])
   })
 })
 
