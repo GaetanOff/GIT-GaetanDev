@@ -24,6 +24,7 @@ const { diff } = await import('../src/main/git/diff')
 const { conflict, resolveContent } = await import('../src/main/git/conflict')
 const { refs } = await import('../src/main/git/refs')
 const { log } = await import('../src/main/git/log')
+const { fileLog, parseFileLog } = await import('../src/main/git/blame')
 const { rebasePlan, rebaseRun } = await import('../src/main/git/rebase')
 const { git, assertRefName, gitVersion, readGitVersion, stallGuards } = await import('../src/main/git/exec')
 
@@ -442,6 +443,26 @@ describe('conflicts', () => {
     const f = await conflict(repo, 'a.txt')
     expect(f.encoding).toBe('windows-1252')
     expect(f.chunks[0]).toEqual({ kind: 'conflict', ours: ['name = cafe'], base: ['name = x'], theirs: ['name = café'] })
+  })
+})
+
+describe('file history', () => {
+  it('follows a file across a rename, paths kept as they are', async () => {
+    const repo = makeRepo()
+    commit(repo, 'one', { 'a.txt': 'x\ny\nz\n' })
+    sh(repo, 'mv', 'a.txt', 'b c.txt')
+    commit(repo, 'two')
+    commit(repo, 'three', { 'b c.txt': 'x\ny\nz\nw\n' })
+    const commits = await fileLog(repo, 'b c.txt', 0, 10)
+    expect(commits.map(c => [c.subject, c.status, c.path, c.oldPath])).toEqual([
+      ['three', 'M', 'b c.txt', undefined], ['two', 'R', 'b c.txt', 'a.txt'], ['one', 'A', 'a.txt', undefined],
+    ])
+  })
+
+  // Git C-quotes such a name ("a\tb") unless -z; Windows file names cannot hold a tab, so the output is crafted.
+  it('reads -z output whose names hold tabs and quotes', () => {
+    const out = '\x1eabc\x1f\x1fA\x1fa@x\x1f1\x1fmove\x1f\0\nR100\0old\tname.txt\0new "name".txt\0'
+    expect(parseFileLog(out, 'x')[0]).toMatchObject({ status: 'R', oldPath: 'old\tname.txt', path: 'new "name".txt' })
   })
 })
 

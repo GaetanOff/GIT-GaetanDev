@@ -10,25 +10,32 @@ const ZERO = '0'.repeat(40)
 /** Commits that touched a file, newest first, following renames. */
 export async function fileLog(repo: string, path: string, skip: number, limit: number): Promise<FileCommit[]> {
   const format = `${RS}${['%H', '%P', '%an', '%ae', '%at', '%s', '%D'].join('%x1f')}`
+  // -z: paths come out as they are. Without it, a name holding a tab, a quote or a backslash is
+  // C-quoted ("a\tb"), and the tab-separated status line split it apart.
   const r = await git(repo, [
-    'log', `--format=${format}`, '--decorate=full', '--follow', '--name-status', '-M', `--skip=${skip}`, `-n${limit}`, '--', path,
+    'log', `--format=${format}`, '--decorate=full', '--follow', '--name-status', '-M', '-z', `--skip=${skip}`, `-n${limit}`, '--', path,
   ], { okCodes: [128] })
   if (r.code !== 0) return []
+  return parseFileLog(r.stdout, path)
+}
 
+/** `RS header NUL \n status NUL path NUL [new path NUL]`, per commit. */
+export function parseFileLog(stdout: string, path: string): FileCommit[] {
   const out: FileCommit[] = []
-  for (const rec of r.stdout.split(RS)) {
+  for (const rec of stdout.split(RS)) {
     if (!rec.trim()) continue
-    const [head, ...rest] = rec.split('\n')
+    const end = rec.indexOf('\0')
+    const head = end < 0 ? rec : rec.slice(0, end)
+    const change = end < 0 ? [] : rec.slice(end + 1).replace(/^\n/, '').split('\0')
     const [sha, parents, author, email, date, subject, refs] = head.split(US)
-    const change = rest.find(l => l.trim())?.split('\t')
-    const status = change?.[0]?.[0] ?? ''
+    const status = change[0]?.[0] ?? ''
     const renamed = status === 'R' || status === 'C'
     out.push({
       sha, parents: parents ? parents.split(' ') : [], author, email, date: +date, subject,
       refs: refs ? refs.split(', ').map(cleanRef).filter(Boolean) : [],
       status,
-      path: (renamed ? change?.[2] : change?.[1]) ?? path,
-      oldPath: renamed ? change?.[1] : undefined,
+      path: (renamed ? change[2] : change[1]) || path,
+      oldPath: renamed ? change[1] : undefined,
     })
   }
   return out
