@@ -2,7 +2,15 @@ import type { CompareResult } from '@shared/types'
 import { git, gitOut, GitError } from './exec'
 import { changedFiles, LOG_FORMAT, parseLog } from './log'
 
+/**
+ * A name the compare view shows is a branch first: by name alone git takes a
+ * tag of the same name before it, and the comparison would show the tag.
+ */
 async function resolve(repo: string, rev: string): Promise<string> {
+  const branch = /^[^~^:@{}\s]+$/.test(rev) && !rev.startsWith('refs/')
+    ? await git(repo, ['rev-parse', '--verify', '-q', `refs/heads/${rev}^{commit}`], { okCodes: [1, 128] })
+    : null
+  if (branch?.code === 0) return branch.stdout.trim()
   const r = await git(repo, ['rev-parse', '--verify', '-q', `${rev}^{commit}`], { okCodes: [1, 128] })
   if (r.code !== 0) throw new GitError(`“${rev}” is not a branch, tag or commit.`)
   return r.stdout.trim()

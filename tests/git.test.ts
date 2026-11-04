@@ -23,6 +23,7 @@ const { status } = await import('../src/main/git/status')
 const { diff } = await import('../src/main/git/diff')
 const { conflict, resolveContent } = await import('../src/main/git/conflict')
 const { refs } = await import('../src/main/git/refs')
+const { compare } = await import('../src/main/git/compare')
 const { log } = await import('../src/main/git/log')
 const { fileLog, parseFileLog, unquote } = await import('../src/main/git/blame')
 const { rebasePlan, rebaseRun } = await import('../src/main/git/rebase')
@@ -223,6 +224,19 @@ describe('refs', () => {
     await ops.push(repo, {}, () => undefined)
     expect(execFileSync('git', ['-C', bare, 'for-each-ref', '--format=%(refname)', 'refs/heads'], { encoding: 'utf8' }).trim()).toBe('refs/heads/release')
     expect((await refs(repo)).branches.find(b => b.name === 'release')?.upstream).toBe('origin/release')
+  })
+
+  it('merges and compares the branch, not an older tag of the same name', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base')
+    sh(repo, 'tag', 'feature')
+    sh(repo, 'checkout', '-q', '-b', 'feature')
+    commit(repo, 'work', { 'f.txt': 'f\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    expect((await compare(repo, 'main', 'feature', true)).files.map(f => f.path)).toEqual(['f.txt'])
+    const feature = (await refs(repo)).branches.find(b => b.name === 'feature')!
+    await ops.merge(repo, feature.fullRef)
+    expect(existsSync(join(repo, 'f.txt'))).toBe(true)
   })
 })
 

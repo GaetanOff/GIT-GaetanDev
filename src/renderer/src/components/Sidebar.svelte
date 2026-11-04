@@ -67,7 +67,7 @@
   }
 
   /* Drag a branch onto another to merge or rebase. */
-  let dragBranch = $state<string | null>(null)
+  let dragBranch = $state<Branch | null>(null)
   let dropTarget = $state<string | null>(null)
 
   const sep = $derived(app.platform === 'win32' ? '\\' : '/')
@@ -144,9 +144,9 @@
         onclick={() => showBranch(b)} ondblclick={() => !b.current && app.checkout(b.name)}
         oncontextmenu={e => contextMenu(e, branchMenu(b))}
         draggable="true"
-        ondragstart={e => { dragBranch = b.name; e.dataTransfer!.effectAllowed = 'move'; e.dataTransfer!.setData('text/plain', b.name) }}
+        ondragstart={e => { dragBranch = b; e.dataTransfer!.effectAllowed = 'move'; e.dataTransfer!.setData('text/plain', b.name) }}
         ondragend={() => { dragBranch = null; dropTarget = null }}
-        ondragover={e => { if (dragBranch && !b.remote && dragBranch !== b.name) { e.preventDefault(); dropTarget = b.name } }}
+        ondragover={e => { if (dragBranch && !b.remote && dragBranch.fullRef !== b.fullRef) { e.preventDefault(); dropTarget = b.name } }}
         ondragleave={() => { if (dropTarget === b.name) dropTarget = null }}
         ondrop={e => { e.preventDefault(); const d = dragBranch; dragBranch = null; dropTarget = null; if (d && !b.remote) dropBranch(d, b.name) }}
       >
