@@ -3,7 +3,7 @@ import { selectionFingerprint, type DiffLine, type FileDiff } from '@shared/type
 import { splitRows, unifiedRows } from '../src/renderer/src/lib/diffrows'
 import { fuzzy, rank } from '../src/renderer/src/lib/fuzzy'
 import { pairLines, wordDiff } from '../src/renderer/src/lib/intraline'
-import { lineStates } from '../src/renderer/src/lib/syntax'
+import { lineStates, pieces } from '../src/renderer/src/lib/syntax'
 import { messageAfterSquash } from '../src/renderer/src/lib/squash'
 
 const line = (type: DiffLine['type'], text: string): DiffLine => ({ type, text }) as DiffLine
@@ -68,6 +68,25 @@ describe('squash messages', () => {
 
   it('keeps what the user wrote and adds the new message below', () => {
     expect(messageAfterSquash({ message: 'Login rework', edited: true }, 'A', ['B', 'C'], 'C')).toBe('Login rework\n\nC')
+  })
+})
+
+describe('syntax rules', () => {
+  const kinds = (text: string, lang: string) => pieces(text, lang).filter(p => p.c).map(p => [p.c, p.t])
+
+  it('highlight YAML keys and CSS numbers as before', () => {
+    expect(kinds('  - name: web', 'yaml')[0]).toEqual(['prop', '  - name'])
+    expect(kinds('margin: -1.5rem .5em 10px', 'css').filter(([t]) => t === 'num').map(([, x]) => x)).toEqual(['-1.5rem', '.5em', '10px'])
+  })
+
+  // Lines up to 2000 characters are highlighted: 400 spaces took seconds before.
+  it('stay fast on lines made to backtrack', () => {
+    const started = performance.now()
+    pieces(' '.repeat(400), 'yaml')
+    pieces(`${' '.repeat(1990)}x`, 'yaml')
+    pieces(`a${' a'.repeat(990)}`, 'yaml')
+    pieces(`${'1'.repeat(1990)}x`, 'css')
+    expect(performance.now() - started).toBeLessThan(500)
   })
 })
 

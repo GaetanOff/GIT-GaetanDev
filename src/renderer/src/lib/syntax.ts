@@ -77,7 +77,8 @@ const css: Rule[] = [
   [/\/\/.*/y, 'com'],
   STR_DQ, STR_SQ,
   [/#[\da-f]{3,8}\b/iy, 'num'],
-  [/-?\d*\.?\d+(?:px|em|rem|%|vh|vw|s|ms|deg|fr|ch)?\b/y, 'num'],
+  // Digits matched one way only: "\d*\.?\d+" retried every split of a long run of them.
+  [/-?(?:\d+(?:\.\d*)?|\.\d+)(?:px|em|rem|%|vh|vw|s|ms|deg|fr|ch)?\b/y, 'num'],
   [/[a-z-]+(?=\s*:)/y, 'prop'],
   [/@[a-z-]+/y, 'kw'],
   [/[.#][A-Za-z_][\w-]*/y, 'type'],
@@ -95,7 +96,9 @@ const json: Rule[] = [
 
 const yaml: Rule[] = [
   [/#.*/y, 'com'],
-  [/^\s*-?\s*[\w.\-/ ]+(?=\s*:(?:\s|$))/y, 'prop'],
+  // A key starts and ends with a non-space: three runs of spaces in a row ("\s*-?\s*[ …]+") tried
+  // every way to share a blank line between them, seconds for a line of 300 spaces.
+  [/^[ \t]*(?:-[ \t]+)?[\w.\-/](?:[\w.\-/ ]*[\w.\-/])?(?=[ \t]*:(?:\s|$))/y, 'prop'],
   STR_DQ, STR_SQ, NUM,
   [words('true false null yes no on off'), 'lit'],
   [/[&*][\w-]+/y, 'meta'],
