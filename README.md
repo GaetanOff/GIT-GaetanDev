@@ -35,7 +35,7 @@ Built with Electron, Svelte 5 and TypeScript. All Git work goes through your ins
 
 ## Development
 
-Requires Node 22+ and Git 2.36 or later (2.50.1 or later recommended: the app says so at startup).
+Requires Node 22.13+ (Vitest, ESLint and Electron need it) and Git 2.36 or later (2.50.1 or later recommended: the app says so at startup).
 
 ```bash
 npm install

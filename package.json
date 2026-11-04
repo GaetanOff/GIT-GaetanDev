@@ -7,6 +7,9 @@
   "license": "UNLICENSED",
   "private": true,
   "main": "./out/main/index.js",
+  "engines": {
+    "node": ">=22.13"
+  },
   "scripts": {
     "dev": "electron-vite dev",
     "app": "node scripts/launch.cjs",
