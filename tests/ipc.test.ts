@@ -27,6 +27,13 @@ describe('argument checks', () => {
     expect(() => checkArgs('git:conflict', [REPO, 'src/a b/[1].txt'])).not.toThrow()
     expect(() => checkArgs('shell:reveal', [process.cwd()])).not.toThrow()
   })
+
+  it.runIf(process.platform === 'win32')('refuses the other names Windows gives the .git folder', () => {
+    for (const path of ['.git::$INDEX_ALLOCATION/config', '.git:$I30:$INDEX_ALLOCATION/config', 'GIT~1/config', 'sub/git~2/hooks/x', '.git./config', '.git . /config', 'a.txt:stream']) {
+      expect(() => checkArgs('git:resolveContent', [REPO, path, 'text']), path).toThrow(/inside the repository/)
+    }
+    expect(() => checkArgs('git:resolveContent', [REPO, 'docs/.github/git~notes.md', 'text'])).not.toThrow()
+  })
 })
 
 describe('settings checks', () => {

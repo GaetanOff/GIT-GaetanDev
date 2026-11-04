@@ -331,6 +331,19 @@ const PATH_ARGS: Record<string, number[]> = {
   'shell:reveal': [1], 'shell:editor': [1],
 }
 
+/**
+ * Names Windows resolves to the .git folder besides ".git" itself: its 8.3
+ * short name ("GIT~1"), the directory stream (".git::$INDEX_ALLOCATION",
+ * ".git:$I30:$INDEX_ALLOCATION"), and trailing dots or spaces, which Win32
+ * drops. Git refuses to check out any of them (core.protectNTFS), so no file
+ * shown can be one; any ":" goes too, as it names a stream or a drive.
+ */
+const isGitDir = (part: string) => {
+  const p = part.toLowerCase()
+  if (p === '.git') return true
+  return process.platform === 'win32' && (p.includes(':') || /^git~\d+$/.test(p) || p.replace(/[. ]+$/, '') === '.git')
+}
+
 /** A path relative to the repository that stays inside it: files are read and written at `join(repo, path)`. */
 function insideRepo(path: string): boolean {
   // "c:notes.md" names a drive on Windows only; elsewhere it is a file a commit can hold.
@@ -338,7 +351,7 @@ function insideRepo(path: string): boolean {
   const parts = posix.normalize(path.replace(/\\/g, '/'))
   if (parts === '..' || parts.startsWith('../')) return false
   // Nor inside a .git folder (hooks, config): git never tracks a path through one, so no file shown is.
-  return !parts.split('/').some(p => p.toLowerCase() === '.git')
+  return !parts.split('/').some(isGitDir)
 }
 
 /** Channels whose first argument may be null (the global identity, no repo to watch). */
