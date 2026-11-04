@@ -59,8 +59,11 @@
       const d = await api['git:diff'](repo, $state.snapshot(src) as DiffSource, opts)
       if (t !== token) return
       const before = diff
-      diff = d
       error = null
+      // Every status refresh reloads a working-tree diff (any file may have changed). When this one
+      // did not, the rows already built (word diff, highlighting) stay as they are.
+      if (before && JSON.stringify(before) === JSON.stringify(d)) return
+      diff = d
       // After a refresh, a key keeps its selection only if it still names the same line: a hunk
       // added above (an editor autosave) shifts positions, and the old key would select another line.
       if (selected.size) {
