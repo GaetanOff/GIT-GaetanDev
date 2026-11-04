@@ -136,7 +136,8 @@ export async function discard(repo: string, paths: string[]): Promise<void> {
       copies.push(join(dir, basename(p)))
       // A staged version that is neither HEAD's nor the file's would be lost too.
       const f = byPath.get(p)
-      if (f && f.index !== '.' && f.worktree !== '.') {
+      // A conflicted file has no staged version (only its sides, which the merge keeps): its copy is enough.
+      if (f && !f.conflicted && f.index !== '.' && f.worktree !== '.') {
         const stagedCopy = join(dir, `${basename(p)} (staged)`)
         await writeFile(stagedCopy, (await git(repo, ['show', `:${p}`])).raw)
         copies.push(stagedCopy)

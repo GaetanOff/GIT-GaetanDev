@@ -122,6 +122,20 @@ describe('discard', () => {
     expect(existsSync(join(repo, 'a.txt'))).toBe(false)
   })
 
+  it('discards a conflicted file back to our version, keeping the file with its markers', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'base\n' })
+    sh(repo, 'checkout', '-q', '-b', 'other')
+    commit(repo, 'theirs', { 'a.txt': 'theirs\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'ours', { 'a.txt': 'ours\n' })
+    await git(repo, ['merge', 'other'], { okCodes: [1] })
+    await ops.discard(repo, ['a.txt'])
+    expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('ours\n')
+    expect((await status(repo)).files.filter(f => f.conflicted)).toEqual([])
+    expect(binned('a.txt')).toMatch(/^<<<<<<< /m)
+  })
+
   it('brings back a file whose deletion was staged while it stays on disk', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a.txt': 'a\n' })
