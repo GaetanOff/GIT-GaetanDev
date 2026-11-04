@@ -93,6 +93,12 @@ export function operation(dir: string): { operation: RepoOperation; operationSte
   if (has('MERGE_HEAD')) return { operation: 'merge' }
   if (has('CHERRY_PICK_HEAD')) return { operation: 'cherry-pick' }
   if (has('REVERT_HEAD')) return { operation: 'revert' }
+  // Several commits picked or reverted, one stopped on a conflict and was then committed by hand:
+  // CHERRY_PICK_HEAD is gone, but the rest still waits in the sequencer for "--continue".
+  const todo = (() => { try { return readFileSync(join(dir, 'sequencer', 'todo'), 'utf8') } catch { return '' } })()
+  const next = todo.split('\n').map(l => l.trim()).find(l => l && !l.startsWith('#')) ?? ''
+  if (/^(?:p|pick)\s/.test(next)) return { operation: 'cherry-pick' }
+  if (/^revert\s/.test(next)) return { operation: 'revert' }
   return { operation: null }
 }
 

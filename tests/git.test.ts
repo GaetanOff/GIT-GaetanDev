@@ -538,6 +538,25 @@ describe('operations in progress', () => {
     expect((await status(repo)).operation).toBeNull()
     expect(sh(repo, 'log', '-1', '--format=%s')).toBe('conflicting')
   })
+
+  it('keeps a multi-commit cherry-pick going after its conflict is committed by hand', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'base\n' })
+    sh(repo, 'checkout', '-q', '-b', 'topic')
+    commit(repo, 'c1', { 'a.txt': 'topic\n' })
+    commit(repo, 'c2', { 'b.txt': 'b\n' })
+    const [c2, c1] = sh(repo, 'rev-list', '-2', 'HEAD').split('\n')
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'ours', { 'a.txt': 'ours\n' })
+    await expect(ops.cherryPick(repo, [c1, c2])).rejects.toThrow()
+    write(repo, 'a.txt', 'resolved\n')
+    await ops.stage(repo, ['a.txt'])
+    await ops.commit(repo, 'c1 resolved', false)
+    expect((await status(repo)).operation).toBe('cherry-pick')
+    await ops.continueOp(repo)
+    expect((await status(repo)).operation).toBeNull()
+    expect(readFileSync(join(repo, 'b.txt'), 'utf8')).toBe('b\n')
+  })
 })
 
 describe('history', () => {
