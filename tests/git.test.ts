@@ -366,6 +366,20 @@ describe('conflicts', () => {
     expect((await conflict(repo, 'f.txt')).stages).toBe(second.stages)
   })
 
+  it('resolves a conflict on a very large text file by picking a side', async () => {
+    const repo = makeRepo()
+    const big = (last: string) => 'line\n'.repeat(3_500_000) + last
+    commit(repo, 'base', { 'big.txt': big('base\n') })
+    sh(repo, 'checkout', '-q', '-b', 'other')
+    commit(repo, 'theirs', { 'big.txt': big('theirs\n') })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'ours', { 'big.txt': big('ours\n') })
+    await git(repo, ['merge', 'other'], { okCodes: [1] })
+    const f = await conflict(repo, 'big.txt')
+    expect(f.mode).toBe('whole')
+    expect(f.chunks).toEqual([])
+  })
+
   it('finds a conflict on the first line of a UTF-8 file with a BOM', async () => {
     const repo = makeRepo()
     const bom = '﻿'
