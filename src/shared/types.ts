@@ -157,6 +157,10 @@ export interface FileDiff {
   submodule?: { before?: string; after?: string }
   /** A file replaced by a link or a submodule, or the reverse: git gives two diffs, shown together; no line operations. */
   typeChange?: boolean
+  /** Identifies git's output with the options used, for DiffOptions.since. */
+  etag?: string
+  /** Same as the diff given as `since`: nothing else is filled in. */
+  unchanged?: boolean
 }
 
 export type DiffSource =
@@ -170,6 +174,8 @@ export interface DiffOptions {
   context: number
   ignoreWhitespace: boolean
   force?: boolean
+  /** The `etag` of the diff shown: if git's output is the same, only `{ unchanged: true }` comes back. */
+  since?: string
 }
 
 /** Line selection for partial staging: hunk index → selected line indexes. */

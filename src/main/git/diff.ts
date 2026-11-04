@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { extname, join } from 'node:path'
@@ -23,8 +24,22 @@ function baseArgs(opts: DiffOptions): string[] {
   return args
 }
 
+/**
+ * A file's diff. Every status refresh (each save in an editor) asks again for
+ * the diff shown; with `since`, an output identical to it comes back as
+ * `{ unchanged: true }`, not parsed, sent and compared again (up to 40 MB for
+ * a diff shown with "Show anyway").
+ */
 export async function diff(repo: string, source: DiffSource, opts: DiffOptions): Promise<FileDiff> {
   const out = await rawDiff(repo, source, opts)
+  const etag = createHash('sha1').update(out.raw).update(`\0${opts.context}\0${!!opts.ignoreWhitespace}\0${!!opts.force}`).digest('hex')
+  if (opts.since && opts.since === etag) {
+    return { path: source.path, header: [], hunks: [], binary: false, isNew: false, isDeleted: false, additions: 0, deletions: 0, encoding: 'utf8', etag, unchanged: true }
+  }
+  return { ...(await parsed(repo, source, opts, out)), etag }
+}
+
+async function parsed(repo: string, source: DiffSource, opts: DiffOptions, out: { raw: Buffer; truncated: boolean }): Promise<FileDiff> {
   const { text, encoding } = decodeOutput(out.raw)
   // Cut at MAX_DIFF_BYTES: the end is missing, so it is shown as too large, without hunks to act on.
   const parsed = parseDiff(text, source.path, opts.force && !out.truncated)

@@ -615,6 +615,19 @@ describe('line operations', () => {
     expect((await log(repo, { scope: 'current', skip: 0, limit: 5 })).map(c => c.subject)).toEqual(['base'])
   })
 
+  it('says a diff is unchanged instead of sending it again', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'a\n' })
+    write(repo, 'a.txt', 'b\n')
+    const first = await diff(repo, { kind: 'worktree', path: 'a.txt' }, OPTS)
+    expect(await diff(repo, { kind: 'worktree', path: 'a.txt' }, { ...OPTS, since: first.etag })).toMatchObject({ unchanged: true, hunks: [] })
+    write(repo, 'a.txt', 'c\n')
+    const changed = await diff(repo, { kind: 'worktree', path: 'a.txt' }, { ...OPTS, since: first.etag })
+    expect(changed.unchanged).toBeUndefined()
+    expect(changed.hunks[0].lines.map(l => l.text)).toEqual(['a', 'c'])
+    expect((await diff(repo, { kind: 'worktree', path: 'a.txt' }, { context: 0, ignoreWhitespace: false, since: changed.etag })).unchanged).toBeUndefined()
+  })
+
   // A symbolic link needs privileges on Windows: git's output for a file turned into one is given as is.
   it('reads a file turned into a link as two parts, not one hunk with headers inside', () => {
     const raw = [
