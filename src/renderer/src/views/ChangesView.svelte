@@ -92,8 +92,11 @@
     app.selected = { path: file.path, area }
   }
 
-  function toggleStage(area: Area, paths: string[]) {
+  async function toggleStage(area: Area, paths: string[]) {
     if (area === 'staged') unstagePaths(paths)
+    // Space or Enter on a conflicted file is "Mark resolved", with its check: staged as it was, a
+    // file still holding <<<<<<< lines went into the commit Continue made.
+    else if (area === 'conflicted') for (const path of paths) await markResolved(path)
     else stagePaths(paths)
   }
 
@@ -115,7 +118,7 @@
       const area = app.selected.area
       // Keep the cursor on the next file of the same area after staging.
       const next = files[pos + 1]?.r
-      toggleStage(area, selectedPathsIn(area))
+      void toggleStage(area, selectedPathsIn(area))
       // The selected files move away: the next key acts on the file under the cursor alone.
       app.multi = new Set()
       if (next && next.kind === 'file' && next.area === area) app.selected = { path: next.file.path, area }
