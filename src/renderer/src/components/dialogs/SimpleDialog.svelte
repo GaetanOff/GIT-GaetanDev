@@ -42,8 +42,10 @@
   async function submitRemote() {
     if (!value.trim() || !extra.trim() || !repo) return
     closeDialog(d)
-    await app.run('Adding remote', () => api['git:addRemote'](repo, value.trim(), extra.trim()), { success: `Remote ${value.trim()} added.` })
-    app.fetch(true)
+    const added = await app.run('Adding remote', () => api['git:addRemote'](repo, value.trim(), extra.trim()).then(() => true), { success: `Remote ${value.trim()} added.` })
+    // Fetched at once, not as a background fetch: one under a minute old would skip it, leaving
+    // the new remote without branches (a compare with upstream/main failed).
+    if (added && app.repo?.path === repo) await app.fetch()
   }
 </script>
 
