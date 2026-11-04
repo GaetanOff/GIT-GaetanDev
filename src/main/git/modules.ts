@@ -144,6 +144,7 @@ export async function worktreeAdd(repo: string, path: string, branch: string, cr
 }
 
 export async function worktreeRemove(repo: string, path: string, force: boolean): Promise<void> {
-  await git(repo, ['worktree', 'remove', ...(force ? ['--force'] : []), path])
+  // After "--": a path that starts with "-" is still a path.
+  await git(repo, ['worktree', 'remove', ...(force ? ['--force'] : []), '--', path])
   await gitOut(repo, ['worktree', 'prune'])
 }

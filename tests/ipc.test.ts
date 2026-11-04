@@ -42,6 +42,19 @@ describe('argument checks', () => {
   })
 })
 
+describe('option words', () => {
+  it('takes only the sides, modes and answers each channel offers', () => {
+    expect(() => checkArgs('git:reset', [REPO, 'HEAD~1', 'merge'])).toThrow(/is not one of/)
+    expect(() => checkArgs('git:resolve', [REPO, 'a.txt', 'base'])).toThrow(/is not one of/)
+    expect(() => checkArgs('git:resolveWhole', [REPO, 'a.txt', 'disk'])).not.toThrow()
+    expect(() => checkArgs('git:newerTips', [REPO, [{ name: '--output=x', sha: 'abcd' }]])).toThrow(/not a valid/)
+    expect(() => checkArgs('git:remoteSearch', [REPO, [{ name: 'feat', sha: '--all' }]])).toThrow(/Invalid branches/)
+    expect(() => checkArgs('repo:pin', ['id', 'yes'])).toThrow(/Invalid pin/)
+    expect(() => checkArgs('askpass:respond', ['id', 42])).toThrow(/Invalid answer/)
+    expect(() => checkArgs('askpass:respond', ['id', null])).not.toThrow()
+  })
+})
+
 describe('folders opened elsewhere', () => {
   it('opens only repositories and their folders in Explorer, an editor or a terminal', () => {
     registered.mockImplementation(p => p === REPO)

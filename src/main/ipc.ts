@@ -510,6 +510,22 @@ export function checkArgs(channel: string, args: unknown[]): void {
     if (source?.index !== undefined && !(Number.isInteger(source.index) && (source.index as number) >= 0)) throw new GitError('Invalid stash entry.')
   }
   if (channel === 'git:restore') refs.push((args[1] as { sha?: unknown; branch?: unknown } | undefined)?.sha, (args[1] as { branch?: unknown } | undefined)?.branch)
+  // Branches searched for in the recovery channels: each one's name and known tip reach git too.
+  if (channel === 'git:newerTips' || channel === 'git:remoteSearch') {
+    if (!Array.isArray(args[1])) throw new GitError('Invalid branches.')
+    for (const b of args[1] as { name?: unknown; sha?: unknown }[]) {
+      if (typeof b?.name !== 'string' || typeof b?.sha !== 'string' || !/^[0-9a-f]{4,64}$/i.test(b.sha)) throw new GitError('Invalid branches.')
+      refs.push(b.name)
+    }
+  }
+  // Words that become git options ("--ours", "--hard"): only the ones the channel offers.
+  const CHOICES: Record<string, [number, string[]]> = {
+    'git:resolve': [2, ['ours', 'theirs']], 'git:resolveWhole': [2, ['ours', 'theirs', 'delete', 'disk']], 'git:reset': [2, ['soft', 'mixed', 'hard']],
+  }
+  const choice = CHOICES[channel]
+  if (choice && !choice[1].includes(args[choice[0]] as string)) throw new GitError(`"${String(args[choice[0]])}" is not one of ${choice[1].join(', ')}.`)
+  if (channel === 'repo:pin' && typeof args[1] !== 'boolean') throw new GitError('Invalid pin.')
+  if (channel === 'askpass:respond' && (typeof args[0] !== 'string' || (args[1] !== null && typeof args[1] !== 'string'))) throw new GitError('Invalid answer.')
   for (const r of refs) {
     if (typeof r === 'string' && (r.startsWith('-') || r.includes('\0'))) throw new GitError(`"${r}" is not a valid name or revision.`)
   }
