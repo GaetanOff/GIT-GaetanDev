@@ -5,7 +5,7 @@ vi.mock('electron', () => ({
   app: {}, BrowserWindow: { getFocusedWindow: () => null, getAllWindows: () => [] }, clipboard: {}, dialog: { showMessageBox }, ipcMain: {}, shell: {},
 }))
 const registered = vi.hoisted(() => vi.fn((_path: string) => true))
-vi.mock('../src/main/store', () => ({ isRegistered: registered, isInsideRegistered: () => false, getState: () => ({ settings: {} }) }))
+vi.mock('../src/main/store', () => ({ isRegistered: registered, isInsideRegistered: () => false, foldPath: (p: string) => (process.platform === 'linux' ? p : p.toLowerCase()), getState: () => ({ settings: {} }) }))
 vi.mock('../src/main/updater', () => ({ installUpdate: () => undefined }))
 
 const { checkArgs, confirmDestination, queuesBusy, schedule, settleQueues } = await import('../src/main/ipc')
@@ -90,7 +90,8 @@ describe('scheduling', () => {
       order.push('fetch')
       release = () => { order.push('fetch done'); resolve() }
     }))
-    const pull = schedule('git:pull', 'c:\\repos\\APP', async () => { order.push('pull') })
+    // The same repository written another way, where the file system ignores case.
+    const pull = schedule('git:pull', process.platform === 'linux' ? REPO : 'c:\\repos\\APP', async () => { order.push('pull') })
     const stage = schedule('git:stage', REPO, async () => { order.push('stage') })
     await tick()
     expect(order).toEqual(['fetch', 'stage'])

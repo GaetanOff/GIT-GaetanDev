@@ -153,7 +153,12 @@ export function flush(): void {
   }
 }
 
-const samePath = (a: string, b: string) => normalize(a).toLowerCase() === normalize(b).toLowerCase()
+/**
+ * Paths as the file system compares them: without case on Windows and macOS, with it elsewhere.
+ * Folded everywhere, /x/Repo and /x/repo on Linux were one repository, and the wrong one opened.
+ */
+export const foldPath = (p: string) => (process.platform === 'win32' || process.platform === 'darwin' ? normalize(p).toLowerCase() : normalize(p))
+const samePath = (a: string, b: string) => foldPath(a) === foldPath(b)
 
 /** The real path, so "C:\Users\GAE~1.FAU\x" and "C:/Users/gae.faucher/x" compare equal. */
 function real(path: string): string {
@@ -179,9 +184,9 @@ export function isRegistered(path: string): boolean {
 
 /** Whether a path is inside one of the user's repositories (a submodule's folder), compared as written. */
 export function isInsideRegistered(path: string): boolean {
-  const p = normalize(path).toLowerCase()
+  const p = foldPath(path)
   return getState().repos.some(r => {
-    const root = normalize(r.path).toLowerCase().replace(/[\\/]+$/, '')
+    const root = foldPath(r.path).replace(/[\\/]+$/, '')
     return p.startsWith(`${root}\\`) || p.startsWith(`${root}/`)
   })
 }

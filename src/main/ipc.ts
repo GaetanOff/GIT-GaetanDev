@@ -24,7 +24,7 @@ import { logDir } from './log'
 import { detectProvider, providerUrl } from './provider'
 import { installUpdate } from './updater'
 import { githubDesktopRepos } from './importers'
-import { addRepoEntry, getState, isInsideRegistered, isRegistered, removeRepo, repoById, save, stateUnreadable, updateSettings, upsertRepo } from './store'
+import { addRepoEntry, foldPath, getState, isInsideRegistered, isRegistered, removeRepo, repoById, save, stateUnreadable, updateSettings, upsertRepo } from './store'
 import type { RepoWatcher } from './watcher'
 
 type Handlers = { [K in ApiChannel]: (...args: Parameters<Api[K]>) => ReturnType<Api[K]> }
@@ -72,7 +72,7 @@ const chosenFolders = new Set<string>()
 const knownWorktrees = new Set<string>()
 const folderKey = (p: string) => {
   const r = resolvePath(p)
-  return process.platform === 'win32' ? r.toLowerCase() : r
+  return process.platform === 'win32' || process.platform === 'darwin' ? r.toLowerCase() : r
 }
 const inChosen = (path: string) => {
   const p = folderKey(path)
@@ -265,7 +265,7 @@ export function registerIpc(watcher: RepoWatcher): void {
     'git:worktreeAdd': async (repo, path, branch, create, from) => {
       // Where the dialog puts it needs no confirmation: "<repo>-<branch>" next to the repository.
       // Not any folder there: next to a repository in the home folder, ".config" holds git's global config.
-      const name = (p: string) => (process.platform === 'win32' ? basename(p).toLowerCase() : basename(p))
+      const name = (p: string) => (process.platform === 'win32' || process.platform === 'darwin' ? basename(p).toLowerCase() : basename(p))
       const suggested = folderKey(dirname(path)) === folderKey(dirname(repo)) && name(path).startsWith(`${name(repo)}-`)
       if (!suggested) {
         await confirmDestination(path, 'Create the worktree in this folder?', 'Create worktree', dirname(path))
@@ -367,7 +367,8 @@ const networkQueues = new Map<string, Promise<unknown>>()
 
 /** Runs `fn` after every earlier call on the same queue and repository has settled. */
 function serial<T>(queues: Map<string, Promise<unknown>>, repo: string, fn: () => Promise<T>): Promise<T> {
-  const key = repo.replace(/\\/g, '/').toLowerCase()
+  // Case folded only where the file system ignores it: two Linux repositories differing by case are two queues.
+  const key = foldPath(repo).replace(/\\/g, '/')
   const result = (queues.get(key) ?? Promise.resolve()).catch(() => undefined).then(fn)
   const tail = result.catch(() => undefined)
   queues.set(key, tail)
