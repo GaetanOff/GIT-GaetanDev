@@ -97,6 +97,8 @@ class AppState {
   private fsmonitorAsked = new Set<string>()
   /** Repositories with a background fetch running. */
   private backgroundFetches = new Set<string>()
+  /** Background fetches that failed, by repository: when, and how long before the next try. */
+  private fetchFailures = new Map<string, { at: number; wait: number }>()
 
   /* ─── Derived ─────────────────────────────────────────────────────────────── */
 
@@ -625,9 +627,24 @@ class AppState {
     if (background) {
       // Each tab switch asks for one, and fetches of a repository run one at a time: unchecked,
       // they would queue up in front of the user's own push or pull. One at a time, none right after another.
+      const failed = this.fetchFailures.get(repo)
       if (this.backgroundFetches.has(repo) || (this.lastFetched && Date.now() - this.lastFetched < 60_000)) return
+      // A fetch that failed (a credential prompt declined, no network) is not tried again at every tab
+      // switch: the prompt came back each time, and offline each try held the push queued behind it.
+      if (failed && Date.now() - failed.at < failed.wait) return
       this.backgroundFetches.add(repo)
-      try { await api['git:fetch'](repo) } catch { return } finally { this.backgroundFetches.delete(repo) }
+      try {
+        await api['git:fetch'](repo)
+        this.fetchFailures.delete(repo)
+      } catch (e) {
+        const code = asError(e).code
+        // Asked and refused: not before a good while. Otherwise twice as long each time, up to 15 minutes.
+        const wait = code === 'AUTH_FAILED' || code === 'CANCELLED' ? 30 * 60_000 : Math.min((failed?.wait ?? 30_000) * 2, 15 * 60_000)
+        this.fetchFailures.set(repo, { at: Date.now(), wait })
+        return
+      } finally {
+        this.backgroundFetches.delete(repo)
+      }
       fetched()
       await this.refreshAll()
       return
@@ -635,6 +652,8 @@ class AppState {
     await this.run('Fetching', async () => {
       await api['git:fetch'](repo)
       fetched()
+      // Answered by hand: background fetches go on as usual.
+      this.fetchFailures.delete(repo)
     })
   }
 
