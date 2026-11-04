@@ -242,6 +242,9 @@ class AppState {
     if (this.repo && this.repo.id !== entry.id && this.tabs.includes(this.repo.id)) this.memory.set(this.repo.id, this.snapshot())
     this.drafts[entry.id] ??= { summary: '', body: '', amend: false }
     this.repo = entry
+    // A history page or search still loading belongs to the repository left behind.
+    this.historyToken++
+    this.historyLoading = false
     if (!this.tabs.includes(entry.id)) this.tabs = [...this.tabs, entry.id]
     this.saveTabs()
     api['repo:list']().then(list => (this.repos = list)).catch(() => undefined)
@@ -500,7 +503,8 @@ class AppState {
     const query = { scope: this.settings.historyScope, search: this.historySearch || undefined, searchMode: this.historySearchMode }
     try {
       const commits = await api['git:log'](repo.path, { ...query, skip: 0, limit })
-      if (token !== this.historyToken) return
+      // Another tab may be in front by now, before its own reload started: this list is not its history.
+      if (token !== this.historyToken || this.repo?.id !== repo.id) return
       this.historyQuery = { repoId: repo.id, path: repo.path, query }
       this.commits = commits
       this.graph = this.graphBuilder.add(commits)
