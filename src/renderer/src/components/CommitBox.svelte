@@ -287,7 +287,8 @@
           <input bind:this={coInput} bind:value={coQuery} class="input" placeholder="Search, or Name <email>" spellcheck="false"
             onkeydown={e => { if (e.key === 'Enter') { e.preventDefault(); addTyped() } else if (e.key === 'Escape') { e.stopPropagation(); coOpen = false } }} />
           <div class="co-list">
-            {#each coResults as { item } (item.email)}
+            <!-- Keyed by name and email: one person committing under two names shares an email. -->
+            {#each coResults as { item } (`${item.name} <${item.email}>`)}
               {@const on = coAuthors.includes(`${item.name} <${item.email}>`)}
               <button class="co-item" class:on onclick={() => toggleCoAuthor(item)}>
                 <Icon name={on ? 'check' : 'user'} size={12} />
