@@ -1,6 +1,6 @@
-import { existsSync, statSync } from 'node:fs'
 import { app, BrowserWindow, dialog, Menu, screen, session, shell } from 'electron'
-import { join, resolve } from 'node:path'
+import { join } from 'node:path'
+import { folderArg as launchFolder } from './args'
 import { startAskPass, stopAskPass } from './askpass'
 import { killRunning, setGitEnv } from './git/exec'
 import { devShot } from './devshot'
@@ -19,19 +19,8 @@ process.on('unhandledRejection', reason => console.error('Unhandled rejection in
 // One failed callback must not take every open repository down with it.
 process.on('uncaughtException', error => console.error('Uncaught exception in main:', error))
 
-/**
- * A folder given on the command line ("Open with", a shortcut, `gaetandev-git .`):
- * the first argument that names an existing directory. Development runs pass
- * the app's own folder first, which is skipped.
- */
-function folderArg(argv: string[], cwd = process.cwd()): string | null {
-  for (const arg of argv.slice(dev ? 2 : 1)) {
-    if (arg.startsWith('-')) continue
-    const full = resolve(cwd, arg)
-    try { if (existsSync(full) && statSync(full).isDirectory()) return full } catch { /* unreadable */ }
-  }
-  return null
-}
+/** The folder the app was launched on. Development runs pass the app's own folder first, which is skipped. */
+const folderArg = (argv: string[], cwd = process.cwd()) => launchFolder(argv, cwd, dev ? 2 : 1)
 
 // A second launch hands its folder to the running instance and exits before doing anything else.
 if (!app.requestSingleInstanceLock()) app.exit(0)
