@@ -18,7 +18,11 @@ export async function rebasePlan(repo: string, symbolicBase: string | null): Pro
   const head = await resolveCommit(repo, 'HEAD')
   const base = symbolicBase && await resolveCommit(repo, symbolicBase)
   const range = base ? `${base}..${head}` : head
-  const out = await gitOut(repo, ['log', '--reverse', `--format=%H${US}%P${US}%an${US}%ae${US}%at${US}%s${US}%b${RS}`, range])
+  // Full messages are needed (squashing combines them), so a range from the root of a long history is
+  // large: past 32 MB of it, the user is asked for a later start instead of the app filling memory.
+  const log = await git(repo, ['log', '--reverse', `--format=%H${US}%P${US}%an${US}%ae${US}%at${US}%s${US}%b${RS}`, range], { maxBytes: 32 * 1024 * 1024 })
+  if (log.truncated) throw new GitError('There are too many commits to edit at once. Start from a later commit ("Edit history from here").')
+  const out = log.stdout
   const commits = out.split(RS).map(r => r.replace(/^\n/, '')).filter(Boolean).map(r => {
     const [sha, parents, author, email, date, subject, body] = r.split(US)
     return { sha, parents: parents ? parents.split(' ') : [], author, email, date: +date, subject, body: (body ?? '').trim(), refs: [] }
