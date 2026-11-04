@@ -245,13 +245,21 @@ export async function resolveContent(repo: string, path: string, content: string
   await git(repo, ['add', '--', path])
 }
 
-/** Resolves a whole-file conflict: keep one side, or delete the file. */
-export async function resolveWhole(repo: string, path: string, choice: 'ours' | 'theirs' | 'delete' | 'disk'): Promise<void> {
+/**
+ * Resolves a whole-file conflict: keep one side, or delete the file. With
+ * `expect` (the conflict's `disk` fingerprint), a file changed on disk since
+ * the conflict was shown (adapted in an editor meanwhile) is not replaced.
+ */
+export async function resolveWhole(repo: string, path: string, choice: 'ours' | 'theirs' | 'delete' | 'disk', expect?: string): Promise<void> {
+  const { sha, gitlink } = await stageIds(repo, path)
+  // A submodule's pick writes the index only: its folder is not replaced.
+  if (expect !== undefined && choice !== 'disk' && !gitlink && (await fingerprint(join(repo, path))) !== expect) {
+    throw new GitError(`${path} changed on disk since it was opened here (in an editor?), so nothing was replaced. It is shown again as it is now.`, 'CHANGED_ON_DISK')
+  }
   if (choice === 'delete') {
     await git(repo, ['rm', '-q', '--', path])
     return
   }
-  const { sha, gitlink } = await stageIds(repo, path)
   if (gitlink && choice !== 'disk') {
     // "checkout --theirs" does nothing to a submodule, and the "add" after it recorded the commit the
     // submodule had checked out, ours: the side picked is written into the index directly instead.

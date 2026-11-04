@@ -63,7 +63,7 @@ export interface Api {
   'git:conflict'(repo: string, path: string): Promise<ConflictFile>
   /** `expect`: the conflict's `disk` fingerprint; a file changed since is not overwritten. */
   'git:resolveContent'(repo: string, path: string, content: string, encoding?: TextEncoding, expect?: string): Promise<void>
-  'git:resolveWhole'(repo: string, path: string, choice: 'ours' | 'theirs' | 'delete' | 'disk'): Promise<void>
+  'git:resolveWhole'(repo: string, path: string, choice: 'ours' | 'theirs' | 'delete' | 'disk', expect?: string): Promise<void>
 
   /* History */
   'git:log'(repo: string, query: LogQuery): Promise<Commit[]>

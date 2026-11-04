@@ -309,8 +309,18 @@
       const ok = await confirm({ title: `Delete ${basename(path)}?`, message: 'The file is removed and the deletion staged.', confirmLabel: 'Delete', danger: true })
       if (!ok) return
     }
-    const done = await app.run('Resolving', () => api['git:resolveWhole'](repo, path, choice).then(() => true), { success: `${basename(path)} resolved.` })
-    if (done) forget()
+    // The file as it was when shown: edits made since in another tool are not replaced unasked.
+    const end = app.beginBusy('Resolving')
+    try {
+      await api['git:resolveWhole'](repo, path, choice, file?.disk)
+      forget()
+      toast('success', `${basename(path)} resolved.`)
+    } catch (e) {
+      failed(e)
+    } finally {
+      end()
+      await app.refreshAll()
+    }
   }
 
   /** A file edited elsewhere since it was read is shown again as it is now; the choices made stay. */

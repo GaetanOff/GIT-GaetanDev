@@ -252,7 +252,7 @@ export function registerIpc(watcher: RepoWatcher): void {
     'git:skip': async repo => ops.skipOp(repo),
     'git:conflict': async (repo, path) => conflict(repo, path),
     'git:resolveContent': async (repo, path, content, encoding, expect) => resolveContent(repo, path, content, encoding, expect),
-    'git:resolveWhole': async (repo, path, choice) => resolveWhole(repo, path, choice),
+    'git:resolveWhole': async (repo, path, choice, expect) => resolveWhole(repo, path, choice, expect),
 
     'git:log': async (repo, q) => log(repo, q),
     'git:commit:detail': async (repo, sha) => commitDetail(repo, sha),
@@ -574,6 +574,9 @@ export function checkArgs(channel: string, args: unknown[]): void {
     if (typeof name !== 'string' || !name.trim() || /[\\/:\0]/.test(name) || name === '.' || name === '..') {
       throw new GitError(`"${String(name)}" is not a valid folder name.`)
     }
+  }
+  if ((channel === 'git:resolveContent' || channel === 'git:resolveWhole') && args[channel === 'git:resolveWhole' ? 3 : 4] !== undefined && typeof args[channel === 'git:resolveWhole' ? 3 : 4] !== 'string') {
+    throw new GitError('Invalid file state.')
   }
   if (channel === 'repo:pin' && typeof args[1] !== 'boolean') throw new GitError('Invalid pin.')
   if (channel === 'askpass:respond' && (typeof args[0] !== 'string' || (args[1] !== null && typeof args[1] !== 'string'))) throw new GitError('Invalid answer.')

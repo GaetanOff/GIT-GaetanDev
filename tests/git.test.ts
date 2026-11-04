@@ -967,6 +967,25 @@ describe('conflicts', () => {
     expect(sh(repo, 'status', '--porcelain')).toBe('M  a.txt')
   })
 
+  it('keeps a side of a binary conflict from replacing edits made since it was shown', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.bin': 'base\0\n' })
+    sh(repo, 'checkout', '-q', '-b', 'other')
+    commit(repo, 'theirs', { 'a.bin': 'theirs\0\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'ours', { 'a.bin': 'ours\0\n' })
+    await git(repo, ['merge', 'other'], { okCodes: [1] })
+    const f = await conflict(repo, 'a.bin')
+    expect(f.mode).toBe('whole')
+    // Adapted in another tool meanwhile.
+    write(repo, 'a.bin', 'adapted\0\n')
+    await expect(resolveWhole(repo, 'a.bin', 'theirs', f.disk)).rejects.toMatchObject({ code: 'CHANGED_ON_DISK' })
+    expect(readFileSync(join(repo, 'a.bin'), 'utf8')).toBe('adapted\0\n')
+    const again = await conflict(repo, 'a.bin')
+    await resolveWhole(repo, 'a.bin', 'theirs', again.disk)
+    expect(readFileSync(join(repo, 'a.bin'), 'utf8')).toBe('theirs\0\n')
+  })
+
   it('does not bring back a BOM that our side removed', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a.txt': '﻿line\n' })
