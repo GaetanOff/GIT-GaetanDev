@@ -1,5 +1,6 @@
 import { app } from 'electron'
 import { autoUpdater } from 'electron-updater'
+import { smoke } from './smoke'
 
 const SIX_HOURS = 6 * 60 * 60_000
 
@@ -13,7 +14,8 @@ let ready: string | null = null
 export const updateReady = (): string | null => ready
 
 export function startUpdates(onReady: (version: string) => void): void {
-  if (!app.isPackaged) return
+  // A start-up check (--smoke) downloads nothing.
+  if (!app.isPackaged || smoke) return
   autoUpdater.autoDownload = true
   autoUpdater.autoInstallOnAppQuit = true
   // Offline, or no release yet: try again at the next check, quietly.

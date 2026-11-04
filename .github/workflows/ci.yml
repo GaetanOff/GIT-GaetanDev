@@ -40,3 +40,11 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: npm run build
+      # The app as installed (asar, fuses, the app:// protocol) starts and shows its interface: a break
+      # there showed only once released, in an app that could then not update itself out of it.
+      - name: Package and start the app
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          npx electron-builder --win --dir --publish never
+          timeout 120 "release/win-unpacked/GaetanDev Git.exe" --smoke

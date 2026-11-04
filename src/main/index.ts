@@ -6,6 +6,7 @@ import { folderArg as launchFolder } from './args'
 import { startAskPass, stopAskPass } from './askpass'
 import { killRunning, setGitEnv } from './git/exec'
 import { devShot } from './devshot'
+import { smokeProfile, smokeTest } from './smoke'
 import { logToFile } from './log'
 import { askRenderer, closeQueues, openFolder, queuesBusy, registerIpc, send, setLaunchPath, settleQueues } from './ipc'
 import { flush, getState, save } from './store'
@@ -17,6 +18,7 @@ app.setAppUserModelId('fr.gaetandev.git')
 // Development aids (a separate profile, a dev server URL, scripted screenshots) never apply to an installed build.
 const dev = !app.isPackaged
 if (dev && process.env.GDG_USER_DATA) app.setPath('userData', process.env.GDG_USER_DATA)
+smokeProfile()
 logToFile()
 
 process.on('unhandledRejection', reason => console.error('Unhandled rejection in main:', reason))
@@ -196,6 +198,7 @@ function createWindow(): BrowserWindow {
   })
 
   if (dev) devShot(win)
+  smokeTest(win)
   if (dev && process.env.ELECTRON_RENDERER_URL) win.loadURL(process.env.ELECTRON_RENDERER_URL)
   else win.loadURL(`${APP_ORIGIN}/index.html`)
   return win
