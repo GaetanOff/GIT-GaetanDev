@@ -34,8 +34,11 @@
       const i = name.indexOf('/')
       if (i < 0) loose.push(b)
       else {
+        // Pushed in place: copying the group for each branch was quadratic in a big folder.
         const prefix = name.slice(0, i)
-        map.set(prefix, [...(map.get(prefix) ?? []), b])
+        const group = map.get(prefix)
+        if (group) group.push(b)
+        else map.set(prefix, [b])
       }
     }
     const groups = [...map.entries()].map(([prefix, branches]) => ({ prefix, branches })).sort((a, b) => a.prefix.localeCompare(b.prefix))
