@@ -1,0 +1,19 @@
+# Pinned actions and dependencies do not move by themselves: Dependabot proposes
+# the updates as pull requests, which CI checks before anything is merged.
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+    groups:
+      # Electron and its builder move together: one pull request for both.
+      electron:
+        patterns: ['electron', 'electron-builder', 'electron-updater', 'electron-vite']
+      dev-tools:
+        dependency-type: development
+        exclude-patterns: ['electron', 'electron-builder', 'electron-vite']
