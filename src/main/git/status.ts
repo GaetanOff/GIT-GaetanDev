@@ -15,9 +15,25 @@ export async function gitDir(repo: string): Promise<string> {
   return abs
 }
 
+/**
+ * Untracked files, listed one by one, unless the repository says not to list
+ * them: status.showUntrackedFiles=no is what large monorepos set to keep
+ * status fast, and forcing "all" over it scanned the whole tree at every
+ * refresh. Read again at most every 30 seconds.
+ */
+const untrackedMode = new Map<string, { mode: string; at: number }>()
+async function untracked(repo: string): Promise<string> {
+  const known = untrackedMode.get(repo)
+  if (known && Date.now() - known.at < 30_000) return known.mode
+  const value = (await git(repo, ['config', '--get', 'status.showUntrackedFiles'], { okCodes: [1] })).stdout.trim().toLowerCase()
+  const mode = value === 'no' || value === 'false' ? 'no' : 'all'
+  untrackedMode.set(repo, { mode, at: Date.now() })
+  return mode
+}
+
 export async function status(repo: string): Promise<RepoStatus> {
   const [out, dir] = await Promise.all([
-    gitOut(repo, ['status', '--porcelain=v2', '--branch', '--show-stash', '-z', '--untracked-files=all', '--ignore-submodules=dirty']),
+    untracked(repo).then(mode => gitOut(repo, ['status', '--porcelain=v2', '--branch', '--show-stash', '-z', `--untracked-files=${mode}`, '--ignore-submodules=dirty'])),
     gitDir(repo),
   ])
   const result: RepoStatus = {

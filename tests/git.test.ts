@@ -932,6 +932,18 @@ describe('file history', () => {
 })
 
 describe('operations in progress', () => {
+  it('lists untracked files unless the repository says not to', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'a\n' })
+    write(repo, 'new.txt', 'n\n')
+    expect((await status(repo)).files.map(f => f.path)).toEqual(['new.txt'])
+    const quiet = makeRepo()
+    sh(quiet, 'config', 'status.showUntrackedFiles', 'no')
+    commit(quiet, 'base', { 'a.txt': 'a\n' })
+    write(quiet, 'new.txt', 'n\n')
+    expect((await status(quiet)).files).toEqual([])
+  })
+
   it('tells a git am session from a rebase, and aborts it with am', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a.txt': 'base\n' })
