@@ -49,15 +49,19 @@ async function rawDiff(repo: string, source: DiffSource, opts: DiffOptions): Pro
   const run = (a: string[], okCodes?: number[]) =>
     git(repo, a, { maxBytes: MAX_DIFF_BYTES, okCodes }).then(r => ({ raw: r.raw, truncated: !!r.truncated }))
 
+  // Changes are staged, unstaged and discarded line by line from these diffs: they show the
+  // file's real content, never a textconv filter's text (git-crypt, docx…), which a partial
+  // patch would otherwise write into the index ("NEW LINE" staged for "new line").
+  const real = ['--no-textconv', ...args]
   switch (source.kind) {
     case 'worktree':
-      if (source.untracked) return run(['diff', ...args, '--no-index', '--', '/dev/null', source.path], [1])
+      if (source.untracked) return run(['diff', ...real, '--no-index', '--', '/dev/null', source.path], [1])
       // A combined diff is hard to read; against HEAD the conflict markers show as additions.
-      if (source.conflicted) return run(['diff', ...args, 'HEAD', ...paths(source.path)])
-      return run(['diff', ...args, ...paths(source.path)])
+      if (source.conflicted) return run(['diff', ...real, 'HEAD', ...paths(source.path)])
+      return run(['diff', ...real, ...paths(source.path)])
     case 'index': {
       const hasHead = await git(repo, ['rev-parse', '--verify', '-q', 'HEAD'], { okCodes: [1] }).then(r => r.code === 0)
-      return run(['diff', ...args, '--cached', ...(hasHead ? [] : [EMPTY_TREE]), ...paths(source.path, source.oldPath)])
+      return run(['diff', ...real, '--cached', ...(hasHead ? [] : [EMPTY_TREE]), ...paths(source.path, source.oldPath)])
     }
     case 'commit': {
       const parents = (await gitOut(repo, ['rev-list', '--parents', '-n', '1', source.sha])).trim().split(' ').slice(1)

@@ -377,6 +377,18 @@ describe('line operations', () => {
     expect((await log(repo, { scope: 'current', skip: 0, limit: 5 })).map(c => c.subject)).toEqual(['base'])
   })
 
+  it('stages the real lines of a file a textconv filter shows differently', async () => {
+    const repo = makeRepo()
+    sh(repo, 'config', 'diff.upper.textconv', 'tr a-z A-Z <')
+    commit(repo, 'base', { '.gitattributes': '*.txt diff=upper\n', 'a.txt': 'one\ntwo\n' })
+    write(repo, 'a.txt', 'one\ntwo\nnew line\n')
+    const opts = { context: 0, ignoreWhitespace: false }
+    const d = await diff(repo, { kind: 'worktree', path: 'a.txt' }, opts)
+    const sel = { 0: [d.hunks[0].lines.findIndex(l => l.type === 'add')] }
+    await ops.stageLines(repo, 'a.txt', sel, false, opts, selectionFingerprint(d, sel))
+    expect(execFileSync('git', ['-C', repo, 'show', ':a.txt'], { encoding: 'utf8' })).toBe('one\ntwo\nnew line\n')
+  })
+
   // "\ No newline at end of file" may only follow the last line: a line kept before a selected one needs its newline.
   it('stages a line added below a last line that had no newline without joining them', async () => {
     const repo = makeRepo()
