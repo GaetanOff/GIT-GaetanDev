@@ -29,20 +29,21 @@
   const mode = $derived(app.settings.diffMode)
   const sourceKey = $derived(JSON.stringify(source))
 
-  // Reload on a new file, new options, or (for working-tree diffs) any status change.
+  // Reload on a new file, new options, "Show anyway", or (for working-tree diffs) any status change.
   $effect(() => {
     const key = sourceKey
-    const opts = { context: app.settings.diffContext, ignoreWhitespace: app.settings.ignoreWhitespace, force }
-    if (source.kind === 'worktree' || source.kind === 'index') void app.status
     if (key !== lastKey) {
       selected = new Set()
+      // A new file starts without "Show anyway". Reset before `force` is read below: written after
+      // the read, it ran this effect a second time and the diff loaded twice.
       force = false
-      opts.force = false
       // Never show the previous file under the new one's name, with the new one's actions.
       diff = null
       error = null
     }
     lastKey = key
+    const opts = { context: app.settings.diffContext, ignoreWhitespace: app.settings.ignoreWhitespace, force }
+    if (source.kind === 'worktree' || source.kind === 'index') void app.status
     load(source, opts)
   })
 
