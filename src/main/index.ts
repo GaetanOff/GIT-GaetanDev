@@ -61,7 +61,9 @@ function start(): void {
   }
 
   app.whenReady().then(() => {
-    Menu.setApplicationMenu(null)
+    // No menu bar on Windows and Linux. macOS takes Cmd+C, Cmd+V, Cmd+Q from the menu itself:
+    // without one, copy, paste and quit did nothing in text fields.
+    Menu.setApplicationMenu(process.platform === 'darwin' ? Menu.buildFromTemplate([{ role: 'appMenu' }, { role: 'editMenu' }, { role: 'windowMenu' }]) : null)
     // The app needs no camera, microphone, location or notifications: refuse every request.
     session.defaultSession.setPermissionRequestHandler((_wc, _permission, callback) => callback(false))
     session.defaultSession.setPermissionCheckHandler(() => false)

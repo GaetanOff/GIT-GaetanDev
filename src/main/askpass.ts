@@ -84,9 +84,12 @@ export function startAskPass(ask: Ask): NodeJS.ProcessEnv {
     cmd = asciiPath(dir, 'askpass.cmd')
   }
 
+  // A Unix socket path holds at most 104 bytes on macOS, and its temp folder (/var/folders/…)
+  // with a UUID went past it: listen failed and every prompt with it. A short name in /tmp, only
+  // the user may connect to; the secret below still has to come with each request.
   const pipe = process.platform === 'win32'
     ? `\\\\.\\pipe\\gaetandev-git-askpass-${randomUUID()}`
-    : join(app.getPath('temp'), `gaetandev-git-askpass-${randomUUID()}.sock`)
+    : join('/tmp', `gdg-askpass-${randomBytes(6).toString('hex')}.sock`)
   const secret = randomBytes(32).toString('hex')
   const valid = (token: unknown) =>
     typeof token === 'string' && token.length === secret.length && timingSafeEqual(Buffer.from(token), Buffer.from(secret))
@@ -117,7 +120,9 @@ export function startAskPass(ask: Ask): NodeJS.ProcessEnv {
   })
   // Prompts then fail like a declined one; nothing else depends on the server.
   server.on('error', e => console.error('askpass server:', e.message))
-  server.listen(pipe)
+  server.listen(pipe, () => {
+    if (process.platform !== 'win32') try { chmodSync(pipe, 0o600) } catch { /* the secret still guards it */ }
+  })
 
   env = {
     GIT_ASKPASS: script,
