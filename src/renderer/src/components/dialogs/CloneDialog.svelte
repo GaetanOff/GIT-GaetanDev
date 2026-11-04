@@ -3,7 +3,7 @@
   import Icon from '../Icon.svelte'
   import { api, asError } from '@/lib/api'
   import { app } from '@/lib/state.svelte'
-  import { toast } from '@/lib/ui.svelte'
+  import { dismissToast, toast } from '@/lib/ui.svelte'
 
   let { onclose }: { onclose: () => void } = $props()
 
@@ -56,18 +56,27 @@
     if (p) parent = p
   }
 
-  /** Closed while cloning: the clone goes on behind the "Cloning" label, and its outcome comes as a toast. */
+  /**
+   * Closed while cloning: the clone goes on, with a toast that says so and can still cancel it, and
+   * its outcome comes as a toast. It is not "busy" work: that disabled Sync, the Undo view and
+   * auto-fetch in every tab until the clone ended.
+   */
   let hidden = false
+  let running: number | null = null
 
   async function clone() {
     if (!valid || cloning) return
     cloning = true
     error = null
-    const end = app.beginBusy('Cloning')
     try {
       try { localStorage.setItem('clone-parent', parent) } catch { /* ignore */ }
       const entry = await api['repo:clone'](url.trim(), parent.trim(), name.trim())
-      if (!hidden) onclose()
+      if (hidden) {
+        // The user is at work elsewhere by now: the new repository does not take the front unasked.
+        toast('success', `Cloned ${entry.name}.`, { label: 'Open', run: () => void app.openRepo(entry.id) })
+        return
+      }
+      onclose()
       await app.openRepo(entry.id)
       app.lastFetched = Date.now()
       toast('success', `Cloned ${entry.name}.`)
@@ -78,13 +87,16 @@
       else error = err.message
     } finally {
       cloning = false
-      end()
+      if (running !== null) dismissToast(running)
     }
   }
 
-  /** Closing never waits for a long clone: it carries on, and "Cancel clone" is in the dialog until then. */
+  /** Closing never waits for a long clone: it carries on, and can still be cancelled from its toast. */
   function close() {
-    if (cloning) hidden = true
+    if (cloning && !hidden) {
+      hidden = true
+      running = toast('info', `Cloning ${name.trim()}…`, { label: 'Cancel clone', run: () => void api['repo:cancelClone']() }, Infinity)
+    }
     onclose()
   }
 
