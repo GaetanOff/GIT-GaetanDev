@@ -23,7 +23,7 @@ const { conflict, resolveContent } = await import('../src/main/git/conflict')
 const { refs } = await import('../src/main/git/refs')
 const { log } = await import('../src/main/git/log')
 const { rebasePlan, rebaseRun } = await import('../src/main/git/rebase')
-const { git, assertRefName, stallGuards } = await import('../src/main/git/exec')
+const { git, assertRefName, gitVersion, readGitVersion, stallGuards } = await import('../src/main/git/exec')
 
 afterAll(cleanup)
 
@@ -447,6 +447,15 @@ describe('history', () => {
     } finally {
       if (saved !== undefined) process.env.NoDefaultCurrentDirectoryInExePath = saved
     }
+  })
+
+  it('reads the git version, and tells a supported or recommended one', async () => {
+    expect(readGitVersion('git version 2.56.0.windows.4')).toEqual({ version: '2.56.0', supported: true, recommended: true })
+    expect(readGitVersion('git version 2.45.2.windows.1')).toEqual({ version: '2.45.2', supported: true, recommended: false })
+    expect(readGitVersion('git version 2.34.1')).toEqual({ version: '2.34.1', supported: false, recommended: false })
+    expect(readGitVersion('git version 3.0')).toMatchObject({ supported: true, recommended: true })
+    expect(readGitVersion('not git')).toBeNull()
+    expect((await gitVersion())?.supported).toBe(true)
   })
 
   it('guards network commands against dead connections only, and not over the user\'s own limits', async () => {

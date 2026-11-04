@@ -12,8 +12,14 @@ export interface Api {
   /* App & repositories */
   /** Quits and installs a downloaded update. */
   'app:installUpdate'(): Promise<void>
-  /** `stateUnreadable`: the saved repositories and settings could not be read, and nothing is saved this session. */
-  'app:state'(): Promise<{ repos: RepoEntry[]; lastRepo: string | null; settings: Settings; platform: string; version: string; home: string; launchPath: string | null; stateUnreadable: boolean }>
+  /**
+   * `stateUnreadable`: the saved repositories and settings could not be read, and nothing is saved this session.
+   * `git`: the installed version (null: git not found), whether the app supports it and recommends it.
+   */
+  'app:state'(): Promise<{
+    repos: RepoEntry[]; lastRepo: string | null; settings: Settings; platform: string; version: string; home: string; launchPath: string | null
+    stateUnreadable: boolean; git: { version: string; supported: boolean; recommended: boolean } | null
+  }>
   'app:settings'(patch: Partial<Settings>): Promise<Settings>
   'repo:list'(): Promise<RepoEntry[]>
   'repo:add'(path: string): Promise<RepoEntry>

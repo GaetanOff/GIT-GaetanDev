@@ -14,7 +14,7 @@ import { deletedBranches, operations, restore, restoreBranch } from './git/reflo
 import { newerTips, remoteSearch } from './git/recovery'
 import { conflict, resolveContent, resolveWhole } from './git/conflict'
 import { diff } from './git/diff'
-import { git, GitError } from './git/exec'
+import { git, GitError, gitVersion } from './git/exec'
 import { commitDetail, log, stashDetail } from './git/log'
 import * as ops from './git/ops'
 import { defaultBranch, defaultRemote, extras, refs } from './git/refs'
@@ -63,7 +63,7 @@ export function registerIpc(watcher: RepoWatcher): void {
       const open = launchPath
       launchPath = null
       stateRead = true
-      return { repos: s.repos, lastRepo: s.lastRepo, settings: s.settings, platform: process.platform, version: app.getVersion(), home: homedir(), launchPath: open, stateUnreadable: stateUnreadable() }
+      return { repos: s.repos, lastRepo: s.lastRepo, settings: s.settings, platform: process.platform, version: app.getVersion(), home: homedir(), launchPath: open, stateUnreadable: stateUnreadable(), git: await gitVersion() }
     },
     'app:settings': async patch => {
       // Commands the app runs change only once confirmed in a dialog of the main process, which a

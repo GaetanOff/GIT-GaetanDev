@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { accessSync, constants, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { delimiter, isAbsolute, join } from 'node:path'
 import type { GitErrorCode } from '@shared/api'
 
@@ -93,6 +94,33 @@ function subcommand(args: string[]): string | undefined {
     else if (!args[i].startsWith('-')) return args[i]
   }
   return undefined
+}
+
+/** `git status --show-stash` (porcelain v2) appeared in 2.35: older versions fail every refresh. */
+const MINIMUM = [2, 35, 0]
+/** 2.50.1 fixed the last known ways a cloned repository (with submodules) could run code. */
+const RECOMMENDED = [2, 50, 1]
+
+const atLeast = (v: number[], min: number[]) => {
+  for (let i = 0; i < min.length; i++) if ((v[i] ?? 0) !== min[i]) return (v[i] ?? 0) > min[i]
+  return true
+}
+
+/** "git version 2.45.0.windows.1" → its version, and whether the app supports it and recommends it. */
+export function readGitVersion(text: string): { version: string; supported: boolean; recommended: boolean } | null {
+  const m = /git version (\d+)\.(\d+)(?:\.(\d+))?/.exec(text)
+  if (!m) return null
+  const v = [+m[1], +m[2], +(m[3] ?? 0)]
+  return { version: v.join('.'), supported: atLeast(v, MINIMUM), recommended: atLeast(v, RECOMMENDED) }
+}
+
+/** The installed git's version, or null when git cannot be run. */
+export async function gitVersion(): Promise<ReturnType<typeof readGitVersion>> {
+  try {
+    return readGitVersion((await run(tmpdir(), ['version'])).stdout)
+  } catch {
+    return null
+  }
 }
 
 /** Commands that talk to a remote. */
