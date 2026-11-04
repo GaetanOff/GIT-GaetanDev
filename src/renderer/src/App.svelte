@@ -2,7 +2,7 @@
   import { onMount } from 'svelte'
   import { COMMANDS, eventKeys } from '@/lib/commands'
   import { app } from '@/lib/state.svelte'
-  import { dialogs, menu, overlays } from '@/lib/ui.svelte'
+  import { menu, overlayOpen } from '@/lib/ui.svelte'
   import TitleBar from '@/components/TitleBar.svelte'
   import TabBar from '@/components/TabBar.svelte'
   import Sidebar from '@/components/Sidebar.svelte'
@@ -32,7 +32,7 @@
       if (menu.open) return (menu.open = false)
       return
     }
-    if (dialogs.length || overlays.palette) return
+    if (overlayOpen()) return
     const keys = eventKeys(e)
     const cmd = COMMANDS.find(c => c.keys === keys && (!c.when || c.when()))
     if (!cmd) return

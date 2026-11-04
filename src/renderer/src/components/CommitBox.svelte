@@ -5,7 +5,7 @@
   import { undoLastCommit } from '@/lib/commands'
   import { initials, MOD, tone } from '@/lib/format'
   import { app } from '@/lib/state.svelte'
-  import { dialogs, menuAt, openDialog, showOutput, toast } from '@/lib/ui.svelte'
+  import { dialogs, menuAt, openDialog, overlayOpen, showOutput, toast } from '@/lib/ui.svelte'
   import { rank } from '@/lib/fuzzy'
   import type { Author } from '@shared/types'
 
@@ -212,6 +212,7 @@
 
   // Ctrl+Enter from anywhere in the Changes view commits; Ctrl+L focuses the summary.
   function onWindowKey(e: KeyboardEvent) {
+    if (overlayOpen()) return
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'l' && app.view === 'changes') {
       e.preventDefault()
       summaryEl?.focus()

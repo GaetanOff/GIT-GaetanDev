@@ -156,6 +156,15 @@ export function menuAt(el: HTMLElement, items: MenuItem[]): void {
 
 export const overlays = $state({ palette: false, paletteMode: 'all' as 'all' | 'branches' | 'repos' | 'files', repoMenu: false, branchMenu: false })
 
+/**
+ * Whether a dialog, the palette, a repository or branch menu, or a context
+ * menu is open. Window-wide shortcuts then stay out of the way: they would
+ * act behind it (focus an input outside a dialog's focus trap, close the tab
+ * a menu's items belong to).
+ */
+export const overlayOpen = (): boolean =>
+  dialogs.length > 0 || overlays.palette || overlays.repoMenu || overlays.branchMenu || menu.open
+
 export function openPalette(mode: typeof overlays.paletteMode = 'all'): void {
   overlays.paletteMode = mode
   overlays.palette = true

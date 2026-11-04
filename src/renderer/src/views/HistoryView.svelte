@@ -8,7 +8,7 @@
   import { commitMenu, commitsMenu } from '@/lib/actions'
   import { initials, relativeTime, shortSha, tone } from '@/lib/format'
   import { app } from '@/lib/state.svelte'
-  import { contextMenu, isMenuKey, menuAt } from '@/lib/ui.svelte'
+  import { contextMenu, isMenuKey, menuAt, overlayOpen } from '@/lib/ui.svelte'
   import type { SearchMode } from '@shared/types'
   import type { IconName } from '@/lib/icons'
 
@@ -110,6 +110,7 @@
   }
 
   function onWindowKey(e: KeyboardEvent) {
+    if (overlayOpen()) return
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f' && !e.shiftKey) {
       e.preventDefault()
       searchInput?.focus()
