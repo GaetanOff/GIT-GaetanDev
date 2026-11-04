@@ -213,6 +213,19 @@ export async function git(cwd: string, args: string[], opts: ExecOptions = {}): 
   return run(cwd, args, { ...opts, env: { ...(await stallGuards(cwd)), ...opts.env } })
 }
 
+/**
+ * Variables that point git at another repository, index or object store. The
+ * app started from a hook or an alias (`code .` in a post-checkout, a script
+ * run by git) inherits them, and every command would then act on that
+ * repository whatever folder it runs in: staging went into another index.
+ */
+const LOCATION_VARS = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY', 'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_COMMON_DIR', 'GIT_NAMESPACE', 'GIT_PREFIX']
+function inheritedEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env }
+  for (const k of Object.keys(env)) if (LOCATION_VARS.includes(k.toUpperCase())) delete env[k]
+  return env
+}
+
 function run(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecResult> {
   return new Promise((resolve, reject) => {
     gitPath ??= findOnPath('git')
@@ -221,7 +234,7 @@ function run(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecR
       cwd,
       windowsHide: true,
       env: {
-        ...process.env,
+        ...inheritedEnv(),
         ...baseEnv,
         LANG: 'C',
         LC_ALL: 'C',

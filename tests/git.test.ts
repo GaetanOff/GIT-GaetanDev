@@ -788,6 +788,26 @@ describe('history', () => {
     expect(classify('Enter passphrase for key /c/Users/me/.ssh/id_ed25519: ')).toBe('password')
   })
 
+  it('works on the repository it runs in, whatever GIT_DIR or GIT_INDEX_FILE the app inherited', async () => {
+    const repo = makeRepo()
+    const elsewhere = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'a\n' })
+    write(repo, 'a.txt', 'changed\n')
+    const saved = { dir: process.env.GIT_DIR, index: process.env.GIT_INDEX_FILE }
+    process.env.GIT_DIR = join(elsewhere, '.git')
+    process.env.GIT_INDEX_FILE = join(elsewhere, '.git', 'other-index')
+    try {
+      await ops.stage(repo, ['a.txt'])
+    } finally {
+      for (const [k, v] of [['GIT_DIR', saved.dir], ['GIT_INDEX_FILE', saved.index]] as const) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+    }
+    expect(sh(repo, 'diff', '--cached', '--name-only')).toBe('a.txt')
+    expect(existsSync(join(elsewhere, '.git', 'other-index'))).toBe(false)
+  })
+
   it('cancels a clone and leaves no half-filled folder', async () => {
     const source = makeRepo()
     commit(source, 'base', { 'a.txt': 'a\n' })
