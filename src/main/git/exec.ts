@@ -72,6 +72,8 @@ export function findOnPath(name: string, exts = process.platform === 'win32' ? [
   return null
 }
 
+const MAX_STDERR = 1024 * 1024
+
 /** Looked up on the first call, and again after it went missing (installed or moved while the app runs). */
 let gitPath: string | null = null
 const NOT_FOUND = 'Git was not found. Install Git for Windows and restart the app.'
@@ -183,6 +185,7 @@ function run(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecR
     const out: Buffer[] = []
     const err: Buffer[] = []
     let outBytes = 0
+    let errBytes = 0
     let truncated = false
     let pending = ''
 
@@ -197,7 +200,10 @@ function run(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecR
       out.push(chunk)
     })
     child.stderr.on('data', (chunk: Buffer) => {
+      // Only the end of stderr is kept past 1 MB (a chatty hook, endless progress): errors come last.
       err.push(chunk)
+      errBytes += chunk.length
+      while (errBytes > MAX_STDERR && err.length > 1) errBytes -= err.shift()!.length
       if (!opts.onStderrLine) return
       pending += chunk.toString('utf8')
       const parts = pending.split(/[\r\n]/)

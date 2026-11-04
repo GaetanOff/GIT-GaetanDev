@@ -522,6 +522,18 @@ describe('history', () => {
     await new Promise(resolve => setTimeout(resolve, 200))
   })
 
+  it('keeps only the end of a huge stderr, where the error is', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'a\n' })
+    // A hook printing 3 MB, then failing with its reason last.
+    writeFileSync(join(repo, '.git', 'hooks', 'pre-commit'), '#!/bin/sh\nhead -c 3000000 /dev/zero | tr "\\0" x >&2\necho "error: the real reason" >&2\nexit 1\n', { mode: 0o755 })
+    write(repo, 'a.txt', 'b\n')
+    sh(repo, 'add', 'a.txt')
+    const err = await ops.commit(repo, 'x', false).then(() => null, (e: { stderr: string; details: string }) => e)
+    expect(err?.stderr.length).toBeLessThanOrEqual(1024 * 1024 + 65_536)
+    expect(err?.details).toMatch(/the real reason/)
+  })
+
   it('reports output cut at maxBytes', async () => {
     const repo = makeRepo()
     for (let i = 0; i < 30; i++) commit(repo, `commit number ${i}`)
