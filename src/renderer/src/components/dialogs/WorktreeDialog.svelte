@@ -17,12 +17,16 @@
   let pathTouched = $state(false)
   let open = $state(true)
 
+  // The repository the dialog was opened on. Another may be in front by the time it is submitted (a
+  // clone finishing, "Open in" from Explorer): the worktree was created in that one instead.
+  const opened = app.repo ? { id: app.repo.id, path: app.repo.path, name: app.repo.name } : null
+
   /** Worktrees go next to the repository: "<repo>-<branch>". */
   $effect(() => {
-    if (pathTouched || !app.repo) return
-    const parent = app.repo.path.replace(/[\\/][^\\/]+$/, '')
+    if (pathTouched || !opened) return
+    const parent = opened.path.replace(/[\\/][^\\/]+$/, '')
     const slug = branch.replace(/[\\/]/g, '-') || 'worktree'
-    path = `${parent}${sep}${app.repo.name}-${slug}`
+    path = `${parent}${sep}${opened.name}-${slug}`
   })
 
   const taken = $derived(new Set(app.refs.worktrees.map(w => w.branch).filter(Boolean)))
@@ -33,9 +37,10 @@
   )
 
   async function create() {
-    if (error || !path.trim() || !app.repo) return
-    const repo = app.repo.path
+    if (error || !path.trim() || !opened) return
     onclose()
+    if (!app.stillOn(opened.id)) return
+    const repo = opened.path
     const ok = await app.run('Adding worktree', () => api['git:worktreeAdd'](repo, path.trim(), branch.trim(), mode === 'new', mode === 'new' ? from : null).then(() => true), {
       success: `Worktree ready at ${path.trim()}`,
     })
