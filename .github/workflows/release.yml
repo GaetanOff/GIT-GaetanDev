@@ -57,14 +57,23 @@ jobs:
       - run: npx electron-builder --win --publish always
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Read before releaseType: a pre-release tag's draft is marked as one from the start.
+          EP_PRE_RELEASE: ${{ contains(github.ref_name, '-') }}
           # Optional code signing: without these secrets the installer is unsigned
           # and Windows SmartScreen warns on first launch.
           CSC_LINK: ${{ secrets.WIN_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.WIN_CSC_KEY_PASSWORD }}
       # Published only now, every file in place: published first, a failed upload left a "latest"
       # release without its installer or latest.yml, and every installed copy failed to update.
+      # A tag with a suffix (v0.3.0-beta.1) is a pre-release: never "latest", which every installed
+      # copy updates to, stable ones included.
       - name: Publish the release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+        run: |
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --prerelease --latest=false
+          else
+            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --draft=false --latest
+          fi
