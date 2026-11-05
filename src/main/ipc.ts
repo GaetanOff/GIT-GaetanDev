@@ -103,6 +103,14 @@ export async function confirmDestination(path: string, message: string, button: 
 export const opensAsProgram = (folder: string, platform = process.platform): boolean =>
   platform === 'darwin' && /\.(app|appex|bundle|framework|kext|mpkg|pkg|plugin|prefpane|qlgenerator|saver|xpc)[\\/]*$/i.test(folder)
 
+/**
+ * A repository git reaches through Windows file sharing: "\\host\share",
+ * "//host/share" or "file://host/share". Reaching it sends the user's NTLM
+ * hash to that host, so the main process asks before cloning from or adding
+ * such a remote: the page could name an attacker's host.
+ */
+export const networkUrl = (url: string): boolean => isUnc(url) || /^file:\/\/(?!\/|localhost\/)[^/]/i.test(url)
+
 /** Stops the clone under way, if any: a large one or a stalled network no longer leaves only waiting. */
 let cloneAbort: AbortController | null = null
 
@@ -191,6 +199,7 @@ export function registerIpc(watcher: RepoWatcher): void {
       return upsertRepo(path)
     },
     'repo:clone': async (url, parent, name) => {
+      if (networkUrl(url) && !(await ask('Clone from this network location?', url, 'Clone'))) throw new GitError('Cancelled: nothing was cloned.', 'CANCELLED')
       const target = join(parent, name)
       // Asked before the disk is touched: looking up "\\host\share" sends the user's NTLM hash there.
       await confirmDestination(target, 'Clone the repository into this folder?', 'Clone')
@@ -293,7 +302,11 @@ export function registerIpc(watcher: RepoWatcher): void {
     'git:stashApply': async (repo, index, pop, sha) => ops.stashApply(repo, index, pop, sha),
     'git:stashDrop': async (repo, index, sha) => ops.stashDrop(repo, index, sha),
     'git:stashFiles': async (repo, index) => stashDetail(repo, index),
-    'git:addRemote': async (repo, name, url) => ops.addRemote(repo, name, url),
+    'git:addRemote': async (repo, name, url) => {
+      // Fetched at once and by every background fetch: asked here, where a compromised page can neither show nor answer it.
+      if (networkUrl(url) && !(await ask('Add a remote on this network location?', url, 'Add remote'))) throw new GitError('Cancelled: no remote was added.', 'CANCELLED')
+      return ops.addRemote(repo, name, url)
+    },
     'git:removeRemote': async (repo, name) => ops.removeRemote(repo, name),
     'git:submoduleUpdate': async (repo, path) => submoduleUpdate(repo, path, progress),
     'git:lfsPull': async repo => lfsPull(repo, progress),

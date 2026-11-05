@@ -627,7 +627,18 @@ export async function push(repo: string, opts: { force?: boolean; setUpstream?: 
   }
 }
 
+/**
+ * A remote this repository has. Given anything else, git pushed to it as a
+ * URL: a compromised page could publish a tag's whole history anywhere, or
+ * name "\\host\share" and send the user's NTLM hash there.
+ */
+async function assertRemote(repo: string, remote: string): Promise<void> {
+  const remotes = (await gitOut(repo, ['remote'])).split('\n').filter(Boolean)
+  if (!remotes.includes(remote)) throw new GitError(`"${remote}" is not a remote of this repository.`)
+}
+
 export async function pushTag(repo: string, remote: string, name: string, report: Reporter): Promise<void> {
+  await assertRemote(repo, remote)
   try {
     await git(repo, ['push', '--progress', remote, `refs/tags/${name}`], { onStderrLine: progressHandler('push', `Pushing tag ${name}`, report) })
   } finally {
@@ -636,6 +647,7 @@ export async function pushTag(repo: string, remote: string, name: string, report
 }
 
 export async function deleteRemoteBranch(repo: string, remote: string, branch: string, report: Reporter): Promise<void> {
+  await assertRemote(repo, remote)
   try {
     // By its full name: a bare one is resolved on the server, where a tag of that name (the branch
     // itself already gone) was deleted instead.

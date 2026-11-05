@@ -642,6 +642,15 @@ describe('undo and force push', () => {
     expect(second).toMatchObject({ kind: 'rebase', before: { sha: otherTip, branch: 'other' } })
   })
 
+  // Any other name reached git as a URL: a tag's history published anywhere, or "\\host" looked up.
+  it('pushes tags and deletes remote branches on the repository\'s own remotes only', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base')
+    sh(repo, 'tag', 'v1')
+    await expect(ops.pushTag(repo, '\\\\attacker\\share\\r', 'v1', () => undefined)).rejects.toThrow(/not a remote/)
+    await expect(ops.deleteRemoteBranch(repo, 'https://example.com/x.git', 'main', () => undefined)).rejects.toThrow(/not a remote/)
+  })
+
   // git names those entries after the whole command, "pull --rebase --no-autostash --progress (pick)":
   // undoing the top one did nothing, and each pick undid to a half-rebased branch.
   it('undoes the app\'s own pull with rebase as one operation', async () => {

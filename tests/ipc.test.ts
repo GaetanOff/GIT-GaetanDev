@@ -7,10 +7,10 @@ vi.mock('electron', () => ({
   app: {}, BrowserWindow: { getFocusedWindow: () => null, getAllWindows: () => [] }, clipboard: {}, dialog: { showMessageBox }, ipcMain: {}, shell: {},
 }))
 const registered = vi.hoisted(() => vi.fn((_path: string) => true))
-vi.mock('../src/main/store', () => ({ isRegistered: registered, isInsideRegistered: () => false, foldPath: (p: string) => (process.platform === 'linux' ? p : p.toLowerCase()), getState: () => ({ settings: {} }) }))
+vi.mock('../src/main/store', () => ({ isRegistered: registered, isInsideRegistered: () => false, isUnc: (p: string) => /^[\\/]{2}/.test(p), foldPath: (p: string) => (process.platform === 'linux' ? p : p.toLowerCase()), getState: () => ({ settings: {} }) }))
 vi.mock('../src/main/updater', () => ({ installUpdate: () => undefined }))
 
-const { checkArgs, closeQueues, confirmDestination, opensAsProgram, queuesBusy, reopenQueues, schedule, settleQueues } = await import('../src/main/ipc')
+const { checkArgs, closeQueues, confirmDestination, networkUrl, opensAsProgram, queuesBusy, reopenQueues, schedule, settleQueues } = await import('../src/main/ipc')
 
 const REPO = 'C:/repos/app'
 
@@ -93,6 +93,13 @@ describe('destinations', () => {
     }
     expect(() => checkArgs('repo:clone', ['https://h/r.git', 'relative', 'r'])).toThrow(/Invalid clone/)
     expect(() => checkArgs('repo:clone', ['https://h/r.git', parent, 'my-repo'])).not.toThrow()
+  })
+
+  it('tells a network location, which git reaches with the user\'s NTLM hash', () => {
+    for (const url of ['\\\\host\\share\\repo', '//host/share/repo', 'file://host/share/repo', 'FILE://10.0.0.1/r']) expect(networkUrl(url), url).toBe(true)
+    for (const url of ['https://github.com/a/b.git', 'git@github.com:a/b.git', 'C:\\repos\\b', 'file:///C:/repos/b', 'file://localhost/C:/repos/b', '/srv/git/b']) {
+      expect(networkUrl(url), url).toBe(false)
+    }
   })
 })
 
