@@ -68,8 +68,10 @@
         planKey = `${repo}|${base}|${p.head}`
         // Back to a plan left half edited: as it was, if it still lists the same commits.
         const before = kept.get(planKey)
-        rows = before?.original === original ? before.rows : fresh
-        selected = before?.original === original ? before.selected : Math.max(0, fresh.map(r => !r.line).lastIndexOf(true))
+        freshRows = fresh
+        restored = before?.original === original
+        rows = restored ? before!.rows : fresh.map(r => ({ ...r }))
+        selected = restored ? before!.selected : lastCommit(fresh)
       })
       .catch(e => { if (t === planToken) error = asError(e).message })
   })
@@ -78,6 +80,26 @@
   const mergeMode = $derived(!!plan?.structure)
   let original = ''
   let planKey = ''
+  /** The plan as git gives it, and whether the one shown is an earlier edit of it brought back. */
+  let freshRows: Row[] = []
+  let restored = $state(false)
+  const lastCommit = (list: Row[]) => Math.max(0, list.map(r => !r.line).lastIndexOf(true))
+
+  /**
+   * Back abandons the plan. Kept, it came back the next time at the same
+   * commits, and a commit marked Drop then changed in mind went with the next
+   * rewrite, only a counter hinting at it.
+   */
+  function leave() {
+    kept.delete(planKey)
+    app.closeTool()
+  }
+
+  function startOver() {
+    rows = freshRows.map(r => ({ ...r }))
+    selected = lastCommit(freshRows)
+    restored = false
+  }
 
   // Every change is kept for when the view comes back (see `kept`).
   $effect(() => {
@@ -245,11 +267,12 @@
 
 <div class="rb">
   <div class="bar">
-    <button class="icon-btn" title="Back" onclick={() => app.closeTool()} disabled={running}><Icon name="arrowLeft" size={15} /></button>
+    <button class="icon-btn" title="Back (abandons this plan)" onclick={leave} disabled={running}><Icon name="arrowLeft" size={15} /></button>
     <Icon name="edit" size={15} class="bi" />
     <span class="title">Edit history</span>
     <span class="sub truncate">{target.label}</span>
     <span class="grow"></span>
+    {#if restored}<button class="btn btn-ghost sm" title="The changes made to this plan earlier are back. Start again from the branch as it is." onclick={startOver} disabled={running}>Start over</button>{/if}
     <span class="keys"><kbd>P</kbd><kbd>R</kbd><kbd>S</kbd><kbd>F</kbd><kbd>D</kbd> actions · <kbd>Alt</kbd><kbd>↑↓</kbd> move · or drag</span>
   </div>
 
