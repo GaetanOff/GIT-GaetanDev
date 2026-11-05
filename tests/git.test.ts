@@ -1563,6 +1563,18 @@ describe('history', () => {
     }
   })
 
+  // A folder that is a repository's data and its own working tree (core.worktree=.), as a clone or a
+  // checkout can plant one: it was opened as a repository, and its first status ran core.fsmonitor.
+  it('neither opens nor runs the config of a repository planted as plain files', async () => {
+    const root = join(makeRepo(), '..')
+    const planted = join(root, 'inner')
+    execFileSync('git', ['init', '-q', '--bare', planted])
+    for (const [k, v] of [['core.bare', 'false'], ['core.worktree', '.'], ['core.fsmonitor', 'echo ran > ../marker.txt; false']]) sh(planted, 'config', k, v)
+    await expect(isRepo(planted)).rejects.toThrow()
+    await status(planted).catch(() => undefined)
+    expect(existsSync(join(root, 'marker.txt'))).toBe(false)
+  })
+
   it('says a repository\'s folder is gone, not that git is missing', async () => {
     const repo = makeRepo()
     rmSync(repo, { recursive: true, force: true })

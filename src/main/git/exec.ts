@@ -109,6 +109,10 @@ const GLOBAL_ARGS = [
   // A submodule as "Subproject commit" lines: "log" left no hunks ("The file is empty"), and "diff"
   // read the submodule's own files as hunks of the submodule.
   '-c', 'diff.submodule=short',
+  // A folder holding a repository's data itself (HEAD, objects, refs and a config), not in a ".git",
+  // is never taken for a repository. A cloned or checked-out one could set core.worktree to itself
+  // and core.fsmonitor to a command, which the next status ran (git 2.38+; older ones ignore it).
+  '-c', 'safe.bareRepository=explicit',
 ]
 
 /** The git command an argument list runs: "stash" for ['-c', 'k=v', 'stash', 'push']. */
