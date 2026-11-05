@@ -460,6 +460,27 @@ describe('commit', () => {
     expect(sh(clone, 'rev-parse', 'main')).toBe(sh(origin, 'rev-parse', 'main'))
   })
 
+  // git shows them with no parent: rewritten, they got none, and the branch no longer shared any
+  // history with the remote's.
+  it('rewrites no commit at the edge of a shallow clone', async () => {
+    const origin = makeRepo('origin')
+    commit(origin, 'one', { 'a.txt': '1\n' })
+    commit(origin, 'two', { 'a.txt': '2\n' })
+    commit(origin, 'three', { 'a.txt': '3\n' })
+    const shallow = (depth: number) => {
+      const clone = join(origin, '..', `depth${depth}`)
+      execFileSync('git', ['clone', '-q', '--depth', String(depth), pathToFileURL(origin).href, clone])
+      for (const [k, v] of [['user.name', 'Test'], ['user.email', 'test@example.com']]) sh(clone, 'config', k, v)
+      return clone
+    }
+    const two = shallow(2)
+    await expect(rebasePlan(two, null)).rejects.toThrow(/shallow clone/)
+    expect((await rebasePlan(two, 'HEAD~1')).commits.map(c => c.subject)).toEqual(['three'])
+    const one = shallow(1)
+    await expect(ops.commit(one, 'three, amended', true)).rejects.toThrow(/shallow clone/)
+    expect(sh(one, 'log', '-1', '--format=%s')).toBe('three')
+  })
+
   it('undoes no commit while an operation is under way', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a.txt': 'base\n' })

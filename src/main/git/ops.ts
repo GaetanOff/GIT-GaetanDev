@@ -172,10 +172,28 @@ export async function ignore(repo: string, pattern: string): Promise<void> {
 
 /* ─── Commits ───────────────────────────────────────────────────────────────── */
 
+/**
+ * The commits of a shallow clone whose parents were not downloaded. git shows
+ * them with none, and a commit rewritten from one (amended, reworded, squashed
+ * into) got none: a history unrelated to the remote's, which pull then refused
+ * and a force push put in place of the remote branch's whole history.
+ */
+export async function shallowEdges(repo: string): Promise<Set<string>> {
+  const path = (await gitOut(repo, ['rev-parse', '--git-path', 'shallow'])).trim()
+  const text = await readFile(isAbsolute(path) ? path : join(repo, path), 'utf8').catch(() => '')
+  return new Set(text.split('\n').map(l => l.trim()).filter(Boolean))
+}
+
+export const SHALLOW_EDGE = 'its parent was not downloaded (a shallow clone), and rewritten it would have none. Fetch the full history first ("git fetch --unshallow").'
+
 export async function commit(repo: string, message: string, amend: boolean, opts: { noVerify?: boolean } = {}): Promise<string> {
   // whitespace, not strip: the message comes from the app, and a line like "#123 fix login" is content.
   const args = ['commit', '-F', '-', '--cleanup=whitespace']
-  if (amend) args.push('--amend')
+  if (amend) {
+    const head = (await git(repo, ['rev-parse', '-q', '--verify', 'HEAD'], { okCodes: [1] })).stdout.trim()
+    if ((await shallowEdges(repo)).has(head)) throw new GitError(`The last commit cannot be amended: ${SHALLOW_EDGE}`)
+    args.push('--amend')
+  }
   if (opts.noVerify) args.push('--no-verify')
   try {
     await git(repo, args, { input: message })

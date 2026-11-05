@@ -2,7 +2,7 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { RebasePlan, RebaseStep, RebaseTodoItem } from '@shared/types'
 import { git, gitOut, GitError } from './exec'
-import { keepingIndex } from './ops'
+import { keepingIndex, SHALLOW_EDGE, shallowEdges } from './ops'
 import { upstreamOf, currentBranch } from './refs'
 import { gitDir, operation } from './status'
 
@@ -37,6 +37,8 @@ export async function rebasePlan(repo: string, symbolicBase: string | null): Pro
     return { sha, parents: parents ? parents.split(' ') : [], author, email, date: +date, subject, body: (body ?? '').trim(), refs: [] }
   })
 
+  await assertNoShallowEdge(repo, commits.map(c => c.sha))
+
   let pushed = 0
   if (upstream && commits.length) {
     const local = +(await gitOut(repo, ['rev-list', '--count', range, `^${upstream}`])).trim()
@@ -53,6 +55,12 @@ async function resolveCommit(repo: string, rev: string): Promise<string> {
 
 const isAncestor = (repo: string, a: string, b: string) =>
   git(repo, ['merge-base', '--is-ancestor', a, b], { okCodes: [1] }).then(r => r.code === 0)
+
+/** The oldest commit a shallow clone shows (from the root, "Edit history" ran `--root` on it). */
+async function assertNoShallowEdge(repo: string, shas: string[]): Promise<void> {
+  const edges = await shallowEdges(repo)
+  if (edges.size && shas.some(s => edges.has(s))) throw new GitError(`History cannot be edited from that commit: ${SHALLOW_EDGE} Or start from a later commit.`)
+}
 
 /**
  * A base outside the branch's history ("Edit history from here" on another
@@ -156,6 +164,7 @@ export async function rebaseRun(repo: string, base: string | null, steps: Rebase
     throw new GitError('The branch changed since this plan was shown. Reopen "Edit history" to see the new commits.')
   }
   if (base && !(await isAncestor(repo, base, head))) throw new GitError(NOT_IN_BRANCH)
+  await assertNoShallowEdge(repo, commits.map(s => s.sha!))
 
   const gd = await gitDir(repo)
   // A rebase stopped on a conflict still reads its messages from gdg-rebase when it continues:
