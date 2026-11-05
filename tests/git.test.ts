@@ -3,6 +3,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync
 import { basename, join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { selectionFingerprint } from '@shared/types'
+import { conflictSides } from '../src/renderer/src/lib/sides'
 import { cleanup, commit, makeRepo, sh, write } from './helpers'
 
 /** The recycle bin, in tests: a file "moved to the trash" is renamed next to itself. */
@@ -299,6 +300,27 @@ describe('commit', () => {
     await ops.resolve(repo, 'a[1].txt', 'theirs')
     expect(readFileSync(join(repo, 'a[1].txt'), 'utf8')).toBe('theirs\n')
     expect(readFileSync(join(repo, 'a1.txt'), 'utf8')).toMatch(/^<<<<<<< /m)
+  })
+
+  it.each([
+    ['merge', ['merge', 'other']],
+    // git's "ours" is then the branch rebased onto: "Use my version" kept the upstream file.
+    ['rebase', ['rebase', 'main']],
+  ])('keeps the user’s own version of a file when a %s stops on it', async (_, command) => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'base\n' })
+    sh(repo, 'checkout', '-q', '-b', 'other')
+    commit(repo, 'other', { 'a.txt': 'other\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'main', { 'a.txt': 'main\n' })
+    // Merging, the user is on main; rebasing, on the branch replayed onto main.
+    const mine = command[0] === 'merge' ? 'main\n' : 'other\n'
+    if (command[0] === 'rebase') sh(repo, 'checkout', '-q', 'other')
+    await git(repo, command, { okCodes: [1] })
+    const [own, theirs] = conflictSides((await status(repo)).operation)
+    await ops.resolve(repo, 'a.txt', own.side)
+    expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe(mine)
+    expect(theirs.side).not.toBe(own.side)
   })
 
   it('shows the identity a commit really gets, includeIf included', async () => {
