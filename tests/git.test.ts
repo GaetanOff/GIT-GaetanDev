@@ -246,19 +246,21 @@ describe('commit', () => {
     expect(sh(repo, 'log', '-1', '--format=%B')).toBe('#12 fix login\n\n# not a comment')
   })
 
-  it('prefills a cherry-pick message that starts with "#" in full', async () => {
+  // Without a body, git's "# Conflicts:" block was stripped together with the subject: the prefill
+  // came out empty, and Continue failed on "Aborting commit due to empty commit message".
+  it.each(['#42 Fix login\n\nDetails here', '#42 Fix login'])('prefills a cherry-pick message that starts with "#" in full: %j', async message => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a.txt': 'base\n' })
     sh(repo, 'checkout', '-q', '-b', 'topic')
     write(repo, 'a.txt', 'topic\n')
     sh(repo, 'add', 'a.txt')
-    sh(repo, 'commit', '-q', '--cleanup=verbatim', '-m', '#42 Fix login\n\nDetails here')
+    sh(repo, 'commit', '-q', '--cleanup=verbatim', '-m', message)
     const pick = sh(repo, 'rev-parse', 'HEAD')
     sh(repo, 'checkout', '-q', 'main')
     commit(repo, 'ours', { 'a.txt': 'ours\n' })
     await expect(ops.cherryPick(repo, [pick])).rejects.toThrow()
     expect(readFileSync(join(repo, '.git', 'MERGE_MSG'), 'utf8')).toMatch(/# Conflicts:/)
-    expect(await ops.preparedMessage(repo)).toBe('#42 Fix login\n\nDetails here')
+    expect(await ops.preparedMessage(repo)).toBe(message)
   })
 
   it('refuses branch and tag names git would reject or read as options', async () => {

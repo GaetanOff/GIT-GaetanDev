@@ -240,7 +240,10 @@ export async function preparedMessage(repo: string): Promise<string> {
     const last = [...lines].reverse().find(l => l.trim())
     // "auto": git picked a character no line starts with; its own comments come last.
     const mark = configured && configured !== 'auto' ? configured : configured === 'auto' && last && '#;@!$%^&|:'.includes(last[0]) ? last[0] : '#'
-    while (lines.length && (!lines[lines.length - 1].trim() || lines[lines.length - 1].startsWith(mark))) lines.pop()
+    // git's own comment lines are the mark alone or followed by a space or a tab ("# Conflicts:",
+    // "#\tf.txt"): "#42 Fix login", a subject with no body, went with them, and the prefill was empty.
+    const comment = (l: string) => l.startsWith(mark) && [undefined, ' ', '\t'].includes(l[mark.length])
+    while (lines.length && (!lines[lines.length - 1].trim() || comment(lines[lines.length - 1]))) lines.pop()
     return lines.join('\n').trim()
   }
   return ''
