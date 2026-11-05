@@ -96,7 +96,11 @@ describe('destinations', () => {
   })
 
   it('tells a network location, which git reaches with the user\'s NTLM hash', () => {
-    for (const url of ['\\\\host\\share\\repo', '//host/share/repo', 'file://host/share/repo', 'FILE://10.0.0.1/r']) expect(networkUrl(url), url).toBe(true)
+    for (const url of [
+      '\\\\host\\share\\repo', '//host/share/repo', 'file://host/share/repo', 'FILE://10.0.0.1/r',
+      // git reads two separators after "file://" (or "file://localhost") as //host/share.
+      'file:////host/share/repo', 'file://///host/share', 'file:///\\\\host\\share', 'file://localhost//host/share', 'file:////?/UNC/host/share',
+    ]) expect(networkUrl(url), url).toBe(true)
     for (const url of ['https://github.com/a/b.git', 'git@github.com:a/b.git', 'C:\\repos\\b', 'file:///C:/repos/b', 'file://localhost/C:/repos/b', '/srv/git/b']) {
       expect(networkUrl(url), url).toBe(false)
     }

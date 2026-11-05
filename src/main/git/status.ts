@@ -157,11 +157,11 @@ export async function isRepo(path: string): Promise<boolean> {
     throw e
   }
   const [workTree, gitDirectory, bare] = out.trim().split(/\r?\n/)
-  if (workTree === 'true') return true
+  // A repository's data first: one whose config makes it its own working tree says both.
   if (gitDirectory === 'true' || bare === 'true') {
     throw new GitError('This folder is a repository\'s own data (a .git folder or a bare repository), with no working files to show. Open the folder that holds the files instead.')
   }
-  return false
+  return workTree === 'true'
 }
 
 export async function topLevel(path: string): Promise<string> {

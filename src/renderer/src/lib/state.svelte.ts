@@ -811,6 +811,21 @@ class AppState {
   }
 
   /**
+   * Closes a repository's full-screen tool and shows `view` there: in front,
+   * or in its tab's memory, for when the tab comes back. A rebase finishing
+   * after a switch to another tab closed the tool of the one then in front.
+   */
+  finishTool(id: string, view: MainView): void {
+    if (this.repo?.id === id) {
+      this.closeTool()
+      this.view = view
+      return
+    }
+    const mem = this.memory.get(id)
+    if (mem) Object.assign(mem, { view, fileTarget: null, rebaseTarget: null, compareTarget: null })
+  }
+
+  /**
    * Goes back to a point of the undo history, then offers to come back (redo).
    * `id`: the repository the point was shown for, read before any dialog.
    */

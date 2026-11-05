@@ -293,11 +293,12 @@ describe('commit', () => {
   })
 
   // The job holds git's output open: the commit, and its repository's queue, waited for it to end.
-  it('finishes a commit when git does, even with a job a hook left running', async () => {
+  // Then that output was closed, and the job died at the next line it wrote.
+  it('finishes a commit when git does, and leaves the job a hook started running', async () => {
     const repo = makeRepo()
     commit(repo, 'base')
     const late = join(repo, '.git', 'late')
-    writeFileSync(join(repo, '.git', 'hooks', 'post-commit'), '#!/bin/sh\n(sleep 10; echo done > .git/late) &\n', { mode: 0o755 })
+    writeFileSync(join(repo, '.git', 'hooks', 'post-commit'), '#!/bin/sh\n(sleep 10; echo still going; echo still going >&2; echo done > .git/late) &\n', { mode: 0o755 })
     write(repo, 'a.txt', 'a\n')
     await ops.stage(repo, ['a.txt'])
     await ops.commit(repo, 'add a', false)
@@ -323,6 +324,8 @@ describe('commit', () => {
     ['merge', ['merge', 'other']],
     // git's "ours" is then the branch rebased onto: "Use my version" kept the upstream file.
     ['rebase', ['rebase', 'main']],
+    // No operation then: "theirs" are the changes put back, and "Use my version" kept the branch's file.
+    ['stash pop', ['stash', 'pop']],
   ])('keeps the user’s own version of a file when a %s stops on it', async (_, command) => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a.txt': 'base\n' })
@@ -331,8 +334,13 @@ describe('commit', () => {
     sh(repo, 'checkout', '-q', 'main')
     commit(repo, 'main', { 'a.txt': 'main\n' })
     // Merging, the user is on main; rebasing, on the branch replayed onto main.
-    const mine = command[0] === 'merge' ? 'main\n' : 'other\n'
+    const mine = command[0] === 'merge' ? 'main\n' : command[0] === 'rebase' ? 'other\n' : 'stashed\n'
     if (command[0] === 'rebase') sh(repo, 'checkout', '-q', 'other')
+    if (command[0] === 'stash') {
+      write(repo, 'a.txt', 'stashed\n')
+      sh(repo, 'stash', '-q')
+      commit(repo, 'main again', { 'a.txt': 'main, again\n' })
+    }
     await git(repo, command, { okCodes: [1] })
     const [own, theirs] = conflictSides((await status(repo)).operation)
     await ops.resolve(repo, 'a.txt', own.side)
@@ -413,6 +421,29 @@ describe('commit', () => {
     expect(sh(repo, 'log', '-1', '--format=%P %s')).toBe(`${sh(repo, 'rev-parse', 'HEAD~1')} ${sh(repo, 'rev-parse', 'feature')} Merge feature`)
   })
 
+  // Put back in progress with them, aborting the merge deleted a file staged after it, for good.
+  it('undoes no merge commit while other changes are staged', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'a\n' })
+    sh(repo, 'checkout', '-q', '-b', 'feature')
+    commit(repo, 'feature', { 'b.txt': 'b\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    sh(repo, 'merge', '-q', '--no-ff', '-m', 'Merge feature', 'feature')
+    const merge = sh(repo, 'rev-parse', 'HEAD')
+    write(repo, 'notes.txt', 'notes\n')
+    await ops.stage(repo, ['notes.txt'])
+    await expect(ops.undoCommit(repo)).rejects.toThrow(/staged since this merge/)
+    expect(sh(repo, 'rev-parse', 'HEAD')).toBe(merge)
+    expect((await status(repo)).operation).toBeNull()
+    // Unstaged changes are left alone by an abort: the merge is undone with them.
+    sh(repo, 'reset', '-q')
+    write(repo, 'a.txt', 'edited\n')
+    expect(await ops.undoCommit(repo)).toMatchObject({ message: 'Merge feature' })
+    await ops.abortOp(repo)
+    expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('edited\n')
+    expect(existsSync(join(repo, 'notes.txt'))).toBe(true)
+  })
+
   it('undoes an amend back to the commit it replaced', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a.txt': 'a\n' })
@@ -434,6 +465,27 @@ describe('commit', () => {
     execFileSync('git', ['clone', '-q', '--depth', '1', pathToFileURL(origin).href, clone])
     await expect(ops.undoCommit(clone)).rejects.toThrow(/shallow clone/)
     expect(sh(clone, 'rev-parse', 'main')).toBe(sh(origin, 'rev-parse', 'main'))
+  })
+
+  // git shows them with no parent: rewritten, they got none, and the branch no longer shared any
+  // history with the remote's.
+  it('rewrites no commit at the edge of a shallow clone', async () => {
+    const origin = makeRepo('origin')
+    commit(origin, 'one', { 'a.txt': '1\n' })
+    commit(origin, 'two', { 'a.txt': '2\n' })
+    commit(origin, 'three', { 'a.txt': '3\n' })
+    const shallow = (depth: number) => {
+      const clone = join(origin, '..', `depth${depth}`)
+      execFileSync('git', ['clone', '-q', '--depth', String(depth), pathToFileURL(origin).href, clone])
+      for (const [k, v] of [['user.name', 'Test'], ['user.email', 'test@example.com']]) sh(clone, 'config', k, v)
+      return clone
+    }
+    const two = shallow(2)
+    await expect(rebasePlan(two, null)).rejects.toThrow(/shallow clone/)
+    expect((await rebasePlan(two, 'HEAD~1')).commits.map(c => c.subject)).toEqual(['three'])
+    const one = shallow(1)
+    await expect(ops.commit(one, 'three, amended', true)).rejects.toThrow(/shallow clone/)
+    expect(sh(one, 'log', '-1', '--format=%s')).toBe('three')
   })
 
   it('undoes no commit while an operation is under way', async () => {
@@ -675,11 +727,8 @@ describe('undo and force push', () => {
     expect(next.after.sha).toBe(tip)
   })
 
-  it.each([
-    ['push.default', 'matching'],
-    // The remote's own refspecs come before push.default, which then changed nothing.
-    ['remote.origin.push', 'refs/heads/*:refs/heads/*'],
-  ])('pushes the current branch only, even where %s says "%s"', async (key, value) => {
+  /** main and b pushed, then both moved locally: b is a rewrite not meant to be pushed yet. */
+  const twoBranches = () => {
     const bare = join(makeRepo(), '..', 'remote.git')
     execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare])
     const repo = makeRepo()
@@ -689,15 +738,35 @@ describe('undo and force push', () => {
     sh(repo, 'push', '-q', 'origin', 'main:refs/heads/b')
     sh(repo, 'fetch', '-q', 'origin')
     sh(repo, 'branch', 'b', 'origin/b')
-    // A local rewrite of b, not meant to be pushed yet.
     sh(repo, 'checkout', '-q', 'b')
     commit(repo, 'rewritten b', { 'b.txt': 'b\n' })
     sh(repo, 'checkout', '-q', 'main')
     commit(repo, 'main moves', { 'm.txt': 'm\n' })
+    const remoteLog = (ref: string) => execFileSync('git', ['-C', bare, 'log', '-1', '--format=%s', ref], { encoding: 'utf8' }).trim()
+    return { repo, remoteLog }
+  }
+
+  it.each([
+    ['push.default', 'matching'],
+    // The remote's own refspecs come before push.default, which then changed nothing.
+    ['remote.origin.push', 'refs/heads/*:refs/heads/*'],
+  ])('pushes the current branch only, even where %s says "%s"', async (key, value) => {
+    const { repo, remoteLog } = twoBranches()
     sh(repo, 'config', key, value)
     await ops.push(repo, { force: true }, () => undefined)
-    const remoteLog = (ref: string) => execFileSync('git', ['-C', bare, 'log', '-1', '--format=%s', ref], { encoding: 'utf8' }).trim()
     expect(remoteLog('main')).toBe('main moves')
+    expect(remoteLog('b')).toBe('base')
+  })
+
+  // With no destination for the branch, git pushed what those name instead, and said it succeeded.
+  it.each([
+    ['remote.origin.push', 'refs/heads/b:refs/heads/b'],
+    ['remote.origin.mirror', 'true'],
+  ])('pushes nothing else when %s "%s" leaves the current branch out', async (key, value) => {
+    const { repo, remoteLog } = twoBranches()
+    sh(repo, 'config', key, value)
+    await expect(ops.push(repo, { force: true }, () => undefined)).rejects.toThrow()
+    expect(remoteLog('main')).toBe('base')
     expect(remoteLog('b')).toBe('base')
   })
 
@@ -820,6 +889,24 @@ describe('edit history', () => {
     rmSync(hook)
     await ops.continueOp(repo)
     expect(sh(repo, 'log', '-1', '--format=%s')).toBe('one, reworded')
+  })
+
+  // Put back to run again, the step ran again on Skip too: a hook that always refused left Abort,
+  // which threw the whole plan away, as the only way out.
+  it('skips a reworded message a hook keeps refusing, and goes on with the rest', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'f.txt': 'base\n' })
+    commit(repo, 'c1', { 'f.txt': 'one\n' })
+    commit(repo, 'c2', { 'f.txt': 'two\n' })
+    writeFileSync(join(repo, '.git', 'hooks', 'commit-msg'), '#!/bin/sh\n! grep -q "refused" "$1"\n', { mode: 0o755 })
+    const plan = await rebasePlan(repo, 'HEAD~2')
+    const [c1, c2] = plan.commits
+    const steps = [{ sha: c1.sha, action: 'reword' as const, message: 'one, refused' }, { sha: c2.sha, action: 'reword' as const, message: 'two, reworded' }]
+    await expect(rebaseRun(repo, plan.base, steps, plan.head)).rejects.toThrow()
+    await expect(ops.continueOp(repo)).rejects.toThrow()
+    await ops.skipOp(repo)
+    expect((await status(repo)).operation).toBeNull()
+    expect(sh(repo, 'log', '-2', '--format=%s')).toBe('two, reworded\nc1')
   })
 
   it('keeps the messages of a stopped rebase when asked to edit history again', async () => {
@@ -1072,6 +1159,52 @@ describe('line operations', () => {
     const sel = { 0: [d.hunks[0].lines.findIndex(l => l.type === 'add' && l.text === 'c')] }
     await ops.stageLines(repo, 'a.txt', sel, false, undefined, selectionFingerprint(d, sel))
     expect(execFileSync('git', ['-C', repo, 'show', ':a.txt'], { encoding: 'utf8' })).toBe('a\nb\nc\n')
+  })
+
+  // git looks for a hunk where it starts in the file as the hunks before it left it: the diff's own
+  // starts counted the changes left out above, and a line went in a line or a block off.
+  it('stages and discards lines where they are, whatever is left out above them', async () => {
+    const repo = makeRepo()
+    const lines = Array.from({ length: 20 }, (_, i) => `L${i + 1}`)
+    commit(repo, 'base', { 'a.txt': `${lines.join('\n')}\n` })
+    const zero = { context: 0, ignoreWhitespace: false }
+    write(repo, 'a.txt', `${[...lines.slice(0, 2), 'X', ...lines.slice(2, 10), 'Y', ...lines.slice(10)].join('\n')}\n`)
+    let d = await diff(repo, { kind: 'worktree', path: 'a.txt' }, zero)
+    let sel: Record<number, number[]> = { 1: [0] }
+    await ops.stageLines(repo, 'a.txt', sel, false, zero, selectionFingerprint(d, sel))
+    expect(sh(repo, 'show', ':a.txt').split('\n').slice(9, 12)).toEqual(['L10', 'Y', 'L11'])
+    // Discarding a removal below an addition kept: the line comes back where it was.
+    commit(repo, 'staged')
+    write(repo, 'a.txt', `${['L1', 'L2', 'new', 'X', ...lines.slice(2, 9), 'Y', ...lines.slice(10)].join('\n')}\n`)
+    d = await diff(repo, { kind: 'worktree', path: 'a.txt' }, zero)
+    sel = { [d.hunks.length - 1]: [0] }
+    expect(d.hunks.at(-1)!.lines[0]).toMatchObject({ type: 'del', text: 'L10' })
+    await ops.discardLines(repo, 'a.txt', sel, zero, selectionFingerprint(d, sel))
+    expect(readFileSync(join(repo, 'a.txt'), 'utf8').split('\n').slice(10, 13)).toEqual(['L9', 'L10', 'Y'])
+  })
+
+  it('stages a line in the block it belongs to among identical ones', async () => {
+    const repo = makeRepo()
+    const block = (name?: string) => ['  {', ...(name ? [`    "name": "${name}",`] : []), '    "enabled": true', '  },']
+    const json = (blocks: string[][], top: string[] = []) => `${['[', ...top, ...blocks.flat(), ']'].join('\n')}\n`
+    commit(repo, 'base', { 'a.json': json([1, 2, 3, 4, 5, 6].map(() => block())) })
+    write(repo, 'a.json', json([block(), block(), block('third'), block(), block(), block()], ['  "one",', '  "two",', '  "three",']))
+    const d = await diff(repo, { kind: 'worktree', path: 'a.json' }, OPTS)
+    const hi = d.hunks.findIndex(h => h.lines.some(l => l.text.includes('third')))
+    const sel = { [hi]: [d.hunks[hi].lines.findIndex(l => l.text.includes('third'))] }
+    await ops.stageLines(repo, 'a.json', sel, false, undefined, selectionFingerprint(d, sel))
+    expect(sh(repo, 'show', ':a.json')).toBe(json([block(), block(), block('third'), block(), block(), block()]).trim())
+  })
+
+  it('stages one of two removed lines at the end of a file without joining what is left', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'b\nb\nb' })
+    write(repo, 'a.txt', 'b\n')
+    const zero = { context: 0, ignoreWhitespace: false }
+    const d = await diff(repo, { kind: 'worktree', path: 'a.txt' }, zero)
+    const sel = { 0: [d.hunks[0].lines.findIndex(l => l.type === 'del')] }
+    await ops.stageLines(repo, 'a.txt', sel, false, zero, selectionFingerprint(d, sel))
+    expect(execFileSync('git', ['-C', repo, 'show', ':a.txt'], { encoding: 'utf8' }).split('\n').length).toBe(2)
   })
 
   it('discards the removal of a last line that had no newline without joining it to the next', async () => {
@@ -1342,6 +1475,26 @@ describe('file history', () => {
     ])
   })
 
+  // --skip counted the commits walked, before --follow, -S and -G keep those that match: the next
+  // page repeated most of the one before, and one past a rename never followed it.
+  it('pages a file\'s history and a search by diff by the commits they show', async () => {
+    const repo = makeRepo()
+    for (let i = 0; i <= 6; i++) {
+      commit(repo, `f${i}`, { 'a.txt': `v${i}\n` })
+      commit(repo, `x${i}`, { 'x.txt': `x${i}\n` })
+      commit(repo, `y${i}`, { 'y.txt': `y${i}\n` })
+    }
+    const page = ['f3', 'f2', 'f1']
+    expect((await fileLog(repo, 'a.txt', 3, 3)).map(c => c.subject)).toEqual(page)
+    expect((await log(repo, { scope: 'current', skip: 3, limit: 3, path: 'a.txt' })).map(c => c.subject)).toEqual(page)
+    expect((await log(repo, { scope: 'current', skip: 3, limit: 3, search: 'v[0-9]', searchMode: 'regex' })).map(c => c.subject)).toEqual(page)
+    expect((await log(repo, { scope: 'current', skip: 3, limit: 3, search: 'f', searchMode: 'message' })).map(c => c.subject)).toEqual(page)
+    sh(repo, 'mv', 'a.txt', 'b.txt')
+    commit(repo, 'renamed')
+    commit(repo, 'g', { 'b.txt': 'v6\nw\n' })
+    expect((await fileLog(repo, 'b.txt', 3, 2)).map(c => c.subject)).toEqual(['f5', 'f4'])
+  })
+
   it('unquotes the C-quoted paths of blame output', () => {
     expect(unquote('plain name.txt')).toBe('plain name.txt')
     expect(unquote('"a\\"b\\\\c\\td.txt"')).toBe('a"b\\c\td.txt')
@@ -1563,6 +1716,18 @@ describe('history', () => {
     }
   })
 
+  // A folder that is a repository's data and its own working tree (core.worktree=.), as a clone or a
+  // checkout can plant one: it was opened as a repository, and its first status ran core.fsmonitor.
+  it('neither opens nor runs the config of a repository planted as plain files', async () => {
+    const root = join(makeRepo(), '..')
+    const planted = join(root, 'inner')
+    execFileSync('git', ['init', '-q', '--bare', planted])
+    for (const [k, v] of [['core.bare', 'false'], ['core.worktree', '.'], ['core.fsmonitor', 'echo ran > ../marker.txt; false']]) sh(planted, 'config', k, v)
+    await expect(isRepo(planted)).rejects.toThrow()
+    await status(planted).catch(() => undefined)
+    expect(existsSync(join(root, 'marker.txt'))).toBe(false)
+  })
+
   it('says a repository\'s folder is gone, not that git is missing', async () => {
     const repo = makeRepo()
     rmSync(repo, { recursive: true, force: true })
@@ -1576,6 +1741,22 @@ describe('history', () => {
     sh(repo, 'config', 'http.lowSpeedTime', '30')
     sh(repo, 'config', 'core.sshCommand', 'plink -batch')
     expect(await stallGuards(repo)).toEqual({})
+  })
+
+  // The usual way to use two accounts' keys: GIT_SSH_COMMAND replaced it, and the clone failed.
+  it('leaves the ssh command of a repository a clone creates to the user\'s includeIf', async () => {
+    const repo = makeRepo()
+    const global = join(repo, '..', 'global.gitconfig')
+    writeFileSync(global, `[includeIf "gitdir:${join(repo, '..', 'work').replace(/\\/g, '/')}/"]\n\tpath = work.inc\n`)
+    const saved = process.env.GIT_CONFIG_GLOBAL
+    process.env.GIT_CONFIG_GLOBAL = global
+    try {
+      expect(await stallGuards(join(repo, '..'), true)).not.toHaveProperty('GIT_SSH_COMMAND')
+      expect((await stallGuards(repo)).GIT_SSH_COMMAND).toMatch(/ServerAliveInterval/)
+    } finally {
+      if (saved === undefined) delete process.env.GIT_CONFIG_GLOBAL
+      else process.env.GIT_CONFIG_GLOBAL = saved
+    }
   })
 
   it.runIf(process.platform === 'win32')('tells Windows\' OpenSSH, which runs no shell script for prompts, from Git\'s ssh', () => {
@@ -1647,6 +1828,35 @@ describe('history', () => {
     await ops.clone(source, parent, 'copy', () => undefined)
     // The checkout follows the machine's core.autocrlf.
     expect(readFileSync(join(parent, 'copy', 'a.txt'), 'utf8')).toMatch(/^a\r?\n$/)
+  })
+
+  // git reads a "//host/share" URL of a .gitmodules from the disk, which sends the user's NTLM hash to
+  // that host, before any protocol check: --recurse-submodules followed them all unasked.
+  it('clones submodules, nested ones too, only from URLs it may', async () => {
+    const leaf = makeRepo('leaf')
+    commit(leaf, 'leaf', { 'l.txt': 'l\n' })
+    const lib = makeRepo('lib')
+    commit(lib, 'base', { 'a.txt': 'a\n' })
+    sh(lib, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', leaf, 'leaf')
+    commit(lib, 'leaf')
+    const app = makeRepo('app')
+    commit(app, 'base')
+    sh(app, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'lib')
+    commit(app, 'lib')
+    const parent = join(app, '..', 'clones')
+    mkdirSync(parent)
+    const asked: string[][] = []
+    Object.assign(process.env, { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'protocol.file.allow', GIT_CONFIG_VALUE_0: 'always' })
+    try {
+      await ops.clone(app, parent, 'all', () => undefined, undefined, async urls => { asked.push(urls); return true })
+      expect(readFileSync(join(parent, 'all', 'lib', 'leaf', 'l.txt'), 'utf8')).toMatch(/^l\r?\n$/)
+      expect(asked.map(urls => urls.map(u => basename(u)))).toEqual([['lib'], ['leaf']])
+      await ops.clone(app, parent, 'none', () => undefined, undefined, async () => false)
+      expect(existsSync(join(parent, 'none', '.gitmodules'))).toBe(true)
+      expect(existsSync(join(parent, 'none', 'lib', 'a.txt'))).toBe(false)
+    } finally {
+      for (const k of ['GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0']) delete process.env[k]
+    }
   })
 
   it('stops what git started too when the app quits', async () => {

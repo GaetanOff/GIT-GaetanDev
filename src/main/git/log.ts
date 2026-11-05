@@ -6,17 +6,19 @@ const US = '\x1f'
 export const LOG_FORMAT = ['%H', '%P', '%an', '%ae', '%at', '%s', '%D'].join('%x1f') + '%x1e'
 
 export async function log(repo: string, q: LogQuery): Promise<Commit[]> {
-  const args = ['log', `--format=${LOG_FORMAT}`, '--topo-order', `--skip=${q.skip}`, `-n${q.limit}`, '--decorate=full']
-  if (q.search?.trim()) {
-    const s = q.search.trim()
-    const author = /^@(.+)$/.exec(s)
-    const mode = author ? 'author' : q.searchMode ?? 'message'
-    // -S finds commits that add or remove the string; -G those whose diff matches the regex.
-    if (mode === 'author') args.push(`--author=${author?.[1] ?? s}`, '-i')
-    else if (mode === 'content') args.push(`-S${s}`)
-    else if (mode === 'regex') args.push(`-G${s}`)
-    else args.push(`--grep=${s}`, '-i', '-F')
-  }
+  const s = q.search?.trim() ?? ''
+  const author = /^@(.+)$/.exec(s)
+  const mode = !s ? null : author ? 'author' : q.searchMode ?? 'message'
+  // --skip counts the commits walked, before --follow, -S and -G keep those whose diff matches: a
+  // page after the first repeated most of the one before. -n counts the commits shown, so with
+  // those, the commits before the page are dropped here instead.
+  const byDiff = !!q.path || mode === 'content' || mode === 'regex'
+  const args = ['log', `--format=${LOG_FORMAT}`, '--topo-order', ...(byDiff ? [`-n${q.skip + q.limit}`] : [`--skip=${q.skip}`, `-n${q.limit}`]), '--decorate=full']
+  // -S finds commits that add or remove the string; -G those whose diff matches the regex.
+  if (mode === 'author') args.push(`--author=${author?.[1] ?? s}`, '-i')
+  else if (mode === 'content') args.push(`-S${s}`)
+  else if (mode === 'regex') args.push(`-G${s}`)
+  else if (mode) args.push(`--grep=${s}`, '-i', '-F')
   if (q.scope === 'all') args.push('--branches', '--remotes', '--tags', 'HEAD')
   else args.push('HEAD')
   if (q.path) args.push('--follow', '--', q.path)
@@ -29,7 +31,7 @@ export async function log(repo: string, q: LogQuery): Promise<Commit[]> {
     if (born.code !== 0) return []
     throw toGitError(r.stdout, r.stderr, r.code)
   }
-  const commits = parseLog(r.stdout)
+  const commits = parseLog(r.stdout).slice(byDiff ? q.skip : 0)
 
   // A hash typed in the search box should find the commit even if no message matches.
   if (q.search && q.skip === 0 && /^[0-9a-f]{4,64}$/i.test(q.search.trim()) && !commits.length) {

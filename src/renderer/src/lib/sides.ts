@@ -15,12 +15,22 @@ export interface ConflictSide {
  * rebase (a pull with rebase too) git's "ours" is the branch being rebased
  * onto and "theirs" the user's commit being replayed: "Use my version (ours)"
  * kept the upstream file, and the user's change left the rebased commit.
+ * With no operation under way, the conflict comes from putting changes back
+ * (a stash applied, the changes a pull or a switch set aside): "theirs" are
+ * those changes, "ours" the branch. "Use my version (ours)" kept the branch's
+ * file, and the user's own edits left it.
  */
 export function conflictSides(op: RepoOperation | null | undefined): [ConflictSide, ConflictSide] {
   if (op === 'rebase') {
     return [
       { side: 'theirs', label: 'Use my commit’s version (theirs)', title: 'Use your commit’s version?', becomes: 'your commit’s version', confirmLabel: 'Use mine' },
       { side: 'ours', label: 'Use the version rebased onto (ours)', title: 'Use the version rebased onto?', becomes: 'the version your commit is rebased onto', confirmLabel: 'Use it' },
+    ]
+  }
+  if (!op) {
+    return [
+      { side: 'theirs', label: 'Use my changes put back (theirs)', title: 'Use your changes put back?', becomes: 'your stashed or set-aside changes', confirmLabel: 'Use mine' },
+      { side: 'ours', label: 'Use the branch’s version (ours)', title: 'Use the branch’s version?', becomes: 'the branch’s version', confirmLabel: 'Use it' },
     ]
   }
   return [

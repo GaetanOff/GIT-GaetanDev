@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { selectionFingerprint, type DiffLine, type FileDiff, type RepoStatus } from '@shared/types'
-import { continueMessage, pendingCommit, untouchedPrefill, type Draft } from '../src/renderer/src/lib/drafts'
+import { continueMessage, draftAfterUndo, pendingCommit, untouchedPrefill, type Draft } from '../src/renderer/src/lib/drafts'
 import { splitRows, unifiedRows } from '../src/renderer/src/lib/diffrows'
 import { fuzzy, rank } from '../src/renderer/src/lib/fuzzy'
 import { pairLines, wordDiff } from '../src/renderer/src/lib/intraline'
@@ -116,5 +116,30 @@ describe('the message a pending merge or pick is committed with', () => {
     expect(untouchedPrefill(draft('Merge branch x', { for: 'merge:a', text: 'Merge branch x\n' }))).toBe(true)
     expect(untouchedPrefill(draft('Merge branch x, fixed', { for: 'merge:a', text: 'Merge branch x\n' }))).toBe(false)
     expect(untouchedPrefill(draft('Mine'))).toBe(false)
+  })
+})
+
+describe('the commit box once a commit is undone', () => {
+  const draft = (summary: string, amend = false): Draft => ({ summary, body: '', amend })
+
+  it('brings the commit\'s message back, with Amend for an amend and as git\'s for a merge', () => {
+    const d = draft('')
+    expect(draftAfterUndo(d, { message: 'Fix login\n\nWhy', amended: true }, '')).toBe(false)
+    expect(d).toMatchObject({ summary: 'Fix login', body: 'Why', amend: true, prefill: undefined })
+    const m = draft('')
+    draftAfterUndo(m, { message: 'Merge feature', amended: false }, 'merge:abc')
+    expect(m.prefill).toEqual({ for: 'merge:abc', text: 'Merge feature\n' })
+  })
+
+  // Amend ticked over a message kept (loaded by Amend itself, or an undone amend's): the next commit
+  // amended the parent of the commit taken back.
+  it('keeps a message being written, never Amend once the branch went back past its commit', () => {
+    const d = { ...draft('Fix login', true), amendBackup: { summary: '', body: '' } }
+    expect(draftAfterUndo(d, { message: 'Fix login', amended: false }, '')).toBe(true)
+    expect(d).toMatchObject({ summary: 'Fix login', amend: false, amendBackup: undefined })
+    // An amend taken back leaves the commit it was for in place: Amend may stay.
+    const a = draft('Fix login, again', true)
+    draftAfterUndo(a, { message: 'Fix login', amended: true }, '')
+    expect(a).toMatchObject({ summary: 'Fix login, again', amend: true })
   })
 })

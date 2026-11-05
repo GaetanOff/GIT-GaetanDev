@@ -12,11 +12,14 @@ export async function fileLog(repo: string, path: string, skip: number, limit: n
   const format = `${RS}${['%H', '%P', '%an', '%ae', '%at', '%s', '%D'].join('%x1f')}`
   // -z: paths come out as they are. Without it, a name holding a tab, a quote or a backslash is
   // C-quoted ("a\tb"), and the tab-separated status line split it apart.
+  // No --skip: it counts the commits walked, before --follow keeps those that touch the file (and
+  // finds its renames). A page after the first repeated most of the one before, and history before
+  // a rename skipped over was never reached. -n counts the commits shown: those before are dropped here.
   const r = await git(repo, [
-    'log', `--format=${format}`, '--decorate=full', '--follow', '--name-status', '-M', '-z', `--skip=${skip}`, `-n${limit}`, '--', path,
+    'log', `--format=${format}`, '--decorate=full', '--follow', '--name-status', '-M', '-z', `-n${skip + limit}`, '--', path,
   ], { okCodes: [128] })
   if (r.code !== 0) return []
-  return parseFileLog(r.stdout, path)
+  return parseFileLog(r.stdout, path).slice(skip)
 }
 
 /** `RS header NUL \n status NUL path NUL [new path NUL]`, per commit. */

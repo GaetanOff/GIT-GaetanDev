@@ -236,14 +236,17 @@
       const message = r.action === 'reword' || ((r.action === 'pick') && hasSquash) ? messageOf(i) : undefined
       return { sha: r.sha, action: r.action, message }
     })
+    // Read before the rebase: once another tab is in front, this view may show its plan instead.
+    const id = app.repo.id
+    const key = planKey
+    const counts = `${commitRows.length} commits → ${resulting}`
     running = true
     const ok = await app.run('Rebasing', () => api['git:rebaseRun'](repo, p.base, steps, p.head).then(() => true))
     running = false
     if (ok) {
-      kept.delete(planKey)
-      toast('success', `History rewritten: ${commitRows.length} commits → ${resulting}.`, { label: 'Undo', run: () => { app.view = 'undo' } })
-      app.closeTool()
-      app.view = 'history'
+      kept.delete(key)
+      toast('success', `History rewritten: ${counts}.`, { label: 'Undo', run: () => { if (app.stillOn(id)) app.view = 'undo' } })
+      app.finishTool(id, 'history')
     }
   }
 

@@ -7,6 +7,7 @@ import { selectionFingerprint, type Author, type DiffOptions, type FileChange, t
 import { resolveWhole } from './conflict'
 import { applyPatch, buildPartialPatch, diff } from './diff'
 import { assertRefName, git, gitOut, GitError, literal } from './exec'
+import { initSubmodules, type SubmoduleUrlCheck } from './modules'
 import { currentBranch, defaultRemote, remoteOf, upstreamOf } from './refs'
 import { gitDir, operation, status } from './status'
 import { withPruneJournal } from './recovery'
@@ -171,10 +172,28 @@ export async function ignore(repo: string, pattern: string): Promise<void> {
 
 /* ─── Commits ───────────────────────────────────────────────────────────────── */
 
+/**
+ * The commits of a shallow clone whose parents were not downloaded. git shows
+ * them with none, and a commit rewritten from one (amended, reworded, squashed
+ * into) got none: a history unrelated to the remote's, which pull then refused
+ * and a force push put in place of the remote branch's whole history.
+ */
+export async function shallowEdges(repo: string): Promise<Set<string>> {
+  const path = (await gitOut(repo, ['rev-parse', '--git-path', 'shallow'])).trim()
+  const text = await readFile(isAbsolute(path) ? path : join(repo, path), 'utf8').catch(() => '')
+  return new Set(text.split('\n').map(l => l.trim()).filter(Boolean))
+}
+
+export const SHALLOW_EDGE = 'its parent was not downloaded (a shallow clone), and rewritten it would have none. Fetch the full history first ("git fetch --unshallow").'
+
 export async function commit(repo: string, message: string, amend: boolean, opts: { noVerify?: boolean } = {}): Promise<string> {
   // whitespace, not strip: the message comes from the app, and a line like "#123 fix login" is content.
   const args = ['commit', '-F', '-', '--cleanup=whitespace']
-  if (amend) args.push('--amend')
+  if (amend) {
+    const head = (await git(repo, ['rev-parse', '-q', '--verify', 'HEAD'], { okCodes: [1] })).stdout.trim()
+    if ((await shallowEdges(repo)).has(head)) throw new GitError(`The last commit cannot be amended: ${SHALLOW_EDGE}`)
+    args.push('--amend')
+  }
   if (opts.noVerify) args.push('--no-verify')
   try {
     await git(repo, args, { input: message })
@@ -277,6 +296,11 @@ export async function undoCommit(repo: string, expect?: string): Promise<{ messa
     return { message, amended: true }
   }
   const parents = (await gitOut(repo, ['rev-parse', 'HEAD^@'])).split('\n').filter(Boolean)
+  // Staged since the merge, changes would become part of the merge in progress: aborting it, as
+  // the toast offers, ran "reset --merge" and deleted them for good, and committing it took them in.
+  if (parents.length > 1 && (await git(repo, ['diff-index', '--cached', '--quiet', 'HEAD', '--'], { okCodes: [1] })).code === 1) {
+    throw new GitError('Changes are staged since this merge, so it was not undone: put back in progress, the merge would take them in, and aborting it would delete them. Commit or unstage them first.')
+  }
   if (parents.length) {
     await git(repo, ['reset', '--soft', 'HEAD~1'])
     if (parents.length > 1) {
@@ -344,7 +368,27 @@ export async function abortOp(repo: string): Promise<void> {
 
 export async function skipOp(repo: string): Promise<void> {
   const op = await currentOp(repo)
+  if (op === 'rebase' && (await skipRefusedMessage(repo))) return
   if (op && op !== 'merge') await git(repo, [op, '--skip'], NO_EDITOR)
+}
+
+/**
+ * Skips the step of an Edit history that applies a new message, when a
+ * commit-msg hook refused it. The rebase puts that step back to run again
+ * (--reschedule-failed-exec), so Continue and Skip both ran it again, and a
+ * hook that always refuses left Abort, which throws away the whole plan, as
+ * the only way out. Skipped, the commit keeps the message it had.
+ */
+async function skipRefusedMessage(repo: string): Promise<boolean> {
+  const dir = join(await gitDir(repo), 'rebase-merge')
+  const lines = async (name: string) => (await readFile(join(dir, name), 'utf8').catch(() => '')).split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'))
+  const [todo, done] = await Promise.all([lines('git-rebase-todo'), lines('done')])
+  const failed = done.at(-1)
+  // Stopped by that step itself, not on a conflict of a pick with the step next in line.
+  if (!failed || todo[0] !== failed || !/^exec git commit --amend --allow-empty --cleanup=whitespace -F .*gdg-rebase[\\/]msg-\d+\.txt'$/.test(failed)) return false
+  await writeFile(join(dir, 'git-rebase-todo'), `${todo.slice(1).join('\n')}\n`)
+  await git(repo, ['rebase', '--continue'], NO_EDITOR)
+  return true
 }
 
 /**
@@ -617,14 +661,30 @@ export async function push(repo: string, opts: { force?: boolean; setUpstream?: 
     // `refs/heads/*:refs/heads/*` published every local branch, and a force push rewrote them all.
     // The branch goes where git itself would push it, named, so nothing else goes along. With no
     // single destination (an upstream of another name under "simple"), git's own push says why.
-    const [remote, ref] = (await gitOut(repo, ['for-each-ref', '--format=%(push:remotename)%00%(push:remoteref)', `refs/heads/${branch}`])).trim().split('\0')
+    const format = '--format=%(push:remotename)%00%(push:remoteref)%00%(upstream:remotename)'
+    const [remote, ref, upstreamRemote] = (await gitOut(repo, ['for-each-ref', format, `refs/heads/${branch}`])).trim().split('\0')
     if (remote && ref) args.push(remote, `HEAD:${ref}`)
+    else {
+      // Unless the remote names refs of its own to push that leave this branch out, or mirrors:
+      // git then pushed those instead (another branch, every ref, deleting the server's others),
+      // said it succeeded, and a force push rewrote them.
+      const name = remote || upstreamRemote
+      if (name && (await pushesOwnRefs(repo, name))) {
+        throw new GitError(`"${name}" is set to push other refs than this branch (remote.${name}.push or remote.${name}.mirror), so nothing was pushed. Push this branch from a terminal, naming where it goes, or change that setting.`)
+      }
+    }
   }
   try {
     await git(repo, args, { onStderrLine: progressHandler('push', upstream ? 'Pushing' : 'Publishing branch', report) })
   } finally {
     report(null)
   }
+}
+
+/** Whether a remote pushes refs of its own (remote.<name>.push) or everything (mirror), whatever is asked. */
+async function pushesOwnRefs(repo: string, remote: string): Promise<boolean> {
+  if ((await git(repo, ['config', '--get-all', `remote.${remote}.push`], { okCodes: [1] })).stdout.trim()) return true
+  return (await git(repo, ['config', '--type=bool', '--get', `remote.${remote}.mirror`], { okCodes: [1] })).stdout.trim() === 'true'
 }
 
 /**
@@ -658,12 +718,15 @@ export async function deleteRemoteBranch(repo: string, remote: string, branch: s
 }
 
 /**
- * Clones into a new folder `parent/name`. Stopped through `signal`, the folder
- * it was creating is removed: git, ended from outside, leaves it half filled.
+ * Clones into a new folder `parent/name`, then its submodules, whose URLs go
+ * through `allowed` first (see initSubmodules); those not allowed are left out.
+ * Stopped through `signal`, the folder it was creating is removed: git, ended
+ * from outside, leaves it half filled.
  */
-export async function clone(url: string, parent: string, name: string, report: Reporter, signal?: AbortSignal): Promise<void> {
+export async function clone(url: string, parent: string, name: string, report: Reporter, signal?: AbortSignal, allowed: SubmoduleUrlCheck = async () => true): Promise<void> {
   try {
-    await git(parent, ['clone', '--progress', '--recurse-submodules', '--', url, name], { onStderrLine: progressHandler('clone', `Cloning ${name}`, report), signal })
+    await git(parent, ['clone', '--progress', '--', url, name], { onStderrLine: progressHandler('clone', `Cloning ${name}`, report), signal })
+    await initSubmodules(join(parent, name), null, report, allowed, signal)
   } catch (e) {
     if (e instanceof GitError && e.code === 'CANCELLED') {
       await rm(join(parent, name), { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => undefined)
