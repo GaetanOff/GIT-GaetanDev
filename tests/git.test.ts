@@ -1747,6 +1747,35 @@ describe('history', () => {
     expect(readFileSync(join(parent, 'copy', 'a.txt'), 'utf8')).toMatch(/^a\r?\n$/)
   })
 
+  // git reads a "//host/share" URL of a .gitmodules from the disk, which sends the user's NTLM hash to
+  // that host, before any protocol check: --recurse-submodules followed them all unasked.
+  it('clones submodules, nested ones too, only from URLs it may', async () => {
+    const leaf = makeRepo('leaf')
+    commit(leaf, 'leaf', { 'l.txt': 'l\n' })
+    const lib = makeRepo('lib')
+    commit(lib, 'base', { 'a.txt': 'a\n' })
+    sh(lib, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', leaf, 'leaf')
+    commit(lib, 'leaf')
+    const app = makeRepo('app')
+    commit(app, 'base')
+    sh(app, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'lib')
+    commit(app, 'lib')
+    const parent = join(app, '..', 'clones')
+    mkdirSync(parent)
+    const asked: string[][] = []
+    Object.assign(process.env, { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'protocol.file.allow', GIT_CONFIG_VALUE_0: 'always' })
+    try {
+      await ops.clone(app, parent, 'all', () => undefined, undefined, async urls => { asked.push(urls); return true })
+      expect(readFileSync(join(parent, 'all', 'lib', 'leaf', 'l.txt'), 'utf8')).toMatch(/^l\r?\n$/)
+      expect(asked.map(urls => urls.map(u => basename(u)))).toEqual([['lib'], ['leaf']])
+      await ops.clone(app, parent, 'none', () => undefined, undefined, async () => false)
+      expect(existsSync(join(parent, 'none', '.gitmodules'))).toBe(true)
+      expect(existsSync(join(parent, 'none', 'lib', 'a.txt'))).toBe(false)
+    } finally {
+      for (const k of ['GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0']) delete process.env[k]
+    }
+  })
+
   it('stops what git started too when the app quits', async () => {
     const repo = makeRepo()
     const running = git(repo, ['-c', 'alias.slow=!sleep 4 && echo done > marker', 'slow']).catch(() => undefined)

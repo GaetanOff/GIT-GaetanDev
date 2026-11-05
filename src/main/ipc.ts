@@ -111,6 +111,15 @@ export const opensAsProgram = (folder: string, platform = process.platform): boo
  * "localhost"), git reads two separators as a network path too:
  * "file:////host/share" reached //host/share unasked.
  */
+/**
+ * Submodule URLs a .gitmodules names, written by whoever made the repository:
+ * those on a network location are asked, as a remote's are.
+ */
+const allowSubmodules = async (urls: string[]): Promise<boolean> => {
+  const remote = urls.filter(networkUrl)
+  return !remote.length || ask('Fetch submodules from this network location?', `${remote.join('\n')}\n\nCancel leaves them out.`, 'Fetch them')
+}
+
 export const networkUrl = (url: string): boolean => {
   if (isUnc(url)) return true
   const rest = /^file:\/\/(.*)$/is.exec(url)?.[1].replace(/^localhost(?=[\\/])/i, '')
@@ -221,7 +230,7 @@ export function registerIpc(watcher: RepoWatcher): void {
       const key = folderKey(target)
       cloneAborts.set(key, abort)
       try {
-        await ops.clone(url, parent, name, progress, abort.signal)
+        await ops.clone(url, parent, name, progress, abort.signal, allowSubmodules)
       } finally {
         if (cloneAborts.get(key) === abort) cloneAborts.delete(key)
       }
@@ -321,7 +330,7 @@ export function registerIpc(watcher: RepoWatcher): void {
       return ops.addRemote(repo, name, url)
     },
     'git:removeRemote': async (repo, name) => ops.removeRemote(repo, name),
-    'git:submoduleUpdate': async (repo, path) => submoduleUpdate(repo, path, progress),
+    'git:submoduleUpdate': async (repo, path) => submoduleUpdate(repo, path, progress, allowSubmodules),
     'git:lfsPull': async repo => lfsPull(repo, progress),
     'git:worktreeAdd': async (repo, path, branch, create, from) => {
       // Where the dialog puts it needs no confirmation: "<repo>-<branch>" next to the repository.

@@ -7,6 +7,7 @@ import { selectionFingerprint, type Author, type DiffOptions, type FileChange, t
 import { resolveWhole } from './conflict'
 import { applyPatch, buildPartialPatch, diff } from './diff'
 import { assertRefName, git, gitOut, GitError, literal } from './exec'
+import { initSubmodules, type SubmoduleUrlCheck } from './modules'
 import { currentBranch, defaultRemote, remoteOf, upstreamOf } from './refs'
 import { gitDir, operation, status } from './status'
 import { withPruneJournal } from './recovery'
@@ -663,12 +664,15 @@ export async function deleteRemoteBranch(repo: string, remote: string, branch: s
 }
 
 /**
- * Clones into a new folder `parent/name`. Stopped through `signal`, the folder
- * it was creating is removed: git, ended from outside, leaves it half filled.
+ * Clones into a new folder `parent/name`, then its submodules, whose URLs go
+ * through `allowed` first (see initSubmodules); those not allowed are left out.
+ * Stopped through `signal`, the folder it was creating is removed: git, ended
+ * from outside, leaves it half filled.
  */
-export async function clone(url: string, parent: string, name: string, report: Reporter, signal?: AbortSignal): Promise<void> {
+export async function clone(url: string, parent: string, name: string, report: Reporter, signal?: AbortSignal, allowed: SubmoduleUrlCheck = async () => true): Promise<void> {
   try {
-    await git(parent, ['clone', '--progress', '--recurse-submodules', '--', url, name], { onStderrLine: progressHandler('clone', `Cloning ${name}`, report), signal })
+    await git(parent, ['clone', '--progress', '--', url, name], { onStderrLine: progressHandler('clone', `Cloning ${name}`, report), signal })
+    await initSubmodules(join(parent, name), null, report, allowed, signal)
   } catch (e) {
     if (e instanceof GitError && e.code === 'CANCELLED') {
       await rm(join(parent, name), { recursive: true, force: true, maxRetries: 5, retryDelay: 200 }).catch(() => undefined)

@@ -2,7 +2,7 @@ import { existsSync, realpathSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { join, normalize } from 'node:path'
 import type { LfsInfo, Progress, Submodule, Worktree } from '@shared/types'
-import { assertRefName, git, gitOut } from './exec'
+import { assertRefName, git, GitError, gitOut } from './exec'
 
 type Reporter = (p: Progress | null) => void
 
@@ -23,20 +23,11 @@ const progress = (op: string, title: string, report: Reporter) => {
  */
 export async function submodules(repo: string): Promise<Submodule[]> {
   if (!existsSync(join(repo, '.gitmodules'))) return []
-  const [index, config] = await Promise.all([
+  const [index, declared] = await Promise.all([
     git(repo, ['ls-files', '-s', '-z']).then(r => r.stdout),
-    git(repo, ['config', '-f', '.gitmodules', '--get-regexp', '^submodule\\..*\\.(path|url)$'], { okCodes: [1] }).then(r => r.stdout),
+    gitmodules(repo),
   ])
-  // .gitmodules maps a submodule name to its path and URL.
-  const byName = new Map<string, { path?: string; url?: string }>()
-  for (const line of config.split('\n')) {
-    const kv = /^submodule\.(.+)\.(path|url) (.+)$/.exec(line.trim())
-    if (!kv) continue
-    const entry = byName.get(kv[1]) ?? {}
-    entry[kv[2] as 'path' | 'url'] = kv[3]
-    byName.set(kv[1], entry)
-  }
-  const urlByPath = new Map([...byName.values()].filter(e => e.path).map(e => [e.path!, e.url ?? '']))
+  const urlByPath = new Map(declared.map(e => [e.path, e.url]))
 
   // Gitlinks have mode 160000; a stage above 0 means the submodule is in conflict.
   const links = new Map<string, { sha: string; conflict: boolean }>()
@@ -64,6 +55,22 @@ export async function submodules(repo: string): Promise<Submodule[]> {
   })
 }
 
+/** The submodules a repository's .gitmodules declares, by path, with their URL ('' when none). */
+async function gitmodules(repo: string): Promise<{ path: string; url: string }[]> {
+  if (!existsSync(join(repo, '.gitmodules'))) return []
+  const config = (await git(repo, ['config', '-f', '.gitmodules', '--get-regexp', '^submodule\\..*\\.(path|url)$'], { okCodes: [1] })).stdout
+  // .gitmodules maps a submodule name to its path and URL.
+  const byName = new Map<string, { path?: string; url?: string }>()
+  for (const line of config.split('\n')) {
+    const kv = /^submodule\.(.+)\.(path|url) (.+)$/.exec(line.trim())
+    if (!kv) continue
+    const entry = byName.get(kv[1]) ?? {}
+    entry[kv[2] as 'path' | 'url'] = kv[3]
+    byName.set(kv[1], entry)
+  }
+  return [...byName.values()].filter(e => e.path).map(e => ({ path: e.path!, url: e.url ?? '' }))
+}
+
 /** Like Promise.all over `items.map(fn)`, with at most `limit` calls running at once; keeps the order. */
 async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promise<R>): Promise<R[]> {
   const out: R[] = new Array(items.length)
@@ -78,11 +85,35 @@ async function mapLimit<T, R>(items: T[], limit: number, fn: (item: T) => Promis
   return out
 }
 
-export async function submoduleUpdate(repo: string, path: string | null, report: Reporter): Promise<void> {
+/** Whether submodules may be fetched from these URLs, read from a .gitmodules; asked before git reads them. */
+export type SubmoduleUrlCheck = (urls: string[]) => Promise<boolean>
+
+/**
+ * Initializes and updates a repository's submodules, nested ones too, one
+ * level at a time. Their URLs come from .gitmodules, written by whoever made
+ * the repository: git reads a "//host/share" one from the disk, sending the
+ * user's NTLM hash to that host, before any protocol check, so each level's
+ * URLs go through `allowed` first (as --recursive cannot). A level not allowed
+ * is left uninitialized; false then says some were.
+ */
+export async function initSubmodules(repo: string, path: string | null, report: Reporter, allowed: SubmoduleUrlCheck, signal?: AbortSignal): Promise<boolean> {
+  const declared = (await gitmodules(repo)).filter(e => !path || e.path === path)
+  if (!declared.length) return true
+  if (!(await allowed(declared.map(e => e.url)))) return false
+  await git(repo, ['submodule', 'update', '--init', '--progress', ...(path ? ['--', path] : [])], {
+    onStderrLine: progress('submodule', path ? `Updating ${path}` : 'Updating submodules', report),
+    signal,
+  })
+  let all = true
+  for (const e of declared) {
+    if (existsSync(join(repo, e.path, '.git'))) all = (await initSubmodules(join(repo, e.path), null, report, allowed, signal)) && all
+  }
+  return all
+}
+
+export async function submoduleUpdate(repo: string, path: string | null, report: Reporter, allowed: SubmoduleUrlCheck): Promise<void> {
   try {
-    await git(repo, ['submodule', 'update', '--init', '--recursive', '--progress', ...(path ? ['--', path] : [])], {
-      onStderrLine: progress('submodule', path ? `Updating ${path}` : 'Updating submodules', report),
-    })
+    if (!(await initSubmodules(repo, path, report, allowed))) throw new GitError('Cancelled: the submodules on a network location were not updated.', 'CANCELLED')
   } finally {
     report(null)
   }
