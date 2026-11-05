@@ -699,11 +699,8 @@ describe('undo and force push', () => {
     expect(next.after.sha).toBe(tip)
   })
 
-  it.each([
-    ['push.default', 'matching'],
-    // The remote's own refspecs come before push.default, which then changed nothing.
-    ['remote.origin.push', 'refs/heads/*:refs/heads/*'],
-  ])('pushes the current branch only, even where %s says "%s"', async (key, value) => {
+  /** main and b pushed, then both moved locally: b is a rewrite not meant to be pushed yet. */
+  const twoBranches = () => {
     const bare = join(makeRepo(), '..', 'remote.git')
     execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare])
     const repo = makeRepo()
@@ -713,15 +710,35 @@ describe('undo and force push', () => {
     sh(repo, 'push', '-q', 'origin', 'main:refs/heads/b')
     sh(repo, 'fetch', '-q', 'origin')
     sh(repo, 'branch', 'b', 'origin/b')
-    // A local rewrite of b, not meant to be pushed yet.
     sh(repo, 'checkout', '-q', 'b')
     commit(repo, 'rewritten b', { 'b.txt': 'b\n' })
     sh(repo, 'checkout', '-q', 'main')
     commit(repo, 'main moves', { 'm.txt': 'm\n' })
+    const remoteLog = (ref: string) => execFileSync('git', ['-C', bare, 'log', '-1', '--format=%s', ref], { encoding: 'utf8' }).trim()
+    return { repo, remoteLog }
+  }
+
+  it.each([
+    ['push.default', 'matching'],
+    // The remote's own refspecs come before push.default, which then changed nothing.
+    ['remote.origin.push', 'refs/heads/*:refs/heads/*'],
+  ])('pushes the current branch only, even where %s says "%s"', async (key, value) => {
+    const { repo, remoteLog } = twoBranches()
     sh(repo, 'config', key, value)
     await ops.push(repo, { force: true }, () => undefined)
-    const remoteLog = (ref: string) => execFileSync('git', ['-C', bare, 'log', '-1', '--format=%s', ref], { encoding: 'utf8' }).trim()
     expect(remoteLog('main')).toBe('main moves')
+    expect(remoteLog('b')).toBe('base')
+  })
+
+  // With no destination for the branch, git pushed what those name instead, and said it succeeded.
+  it.each([
+    ['remote.origin.push', 'refs/heads/b:refs/heads/b'],
+    ['remote.origin.mirror', 'true'],
+  ])('pushes nothing else when %s "%s" leaves the current branch out', async (key, value) => {
+    const { repo, remoteLog } = twoBranches()
+    sh(repo, 'config', key, value)
+    await expect(ops.push(repo, { force: true }, () => undefined)).rejects.toThrow()
+    expect(remoteLog('main')).toBe('base')
     expect(remoteLog('b')).toBe('base')
   })
 

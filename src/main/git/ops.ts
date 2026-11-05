@@ -623,14 +623,30 @@ export async function push(repo: string, opts: { force?: boolean; setUpstream?: 
     // `refs/heads/*:refs/heads/*` published every local branch, and a force push rewrote them all.
     // The branch goes where git itself would push it, named, so nothing else goes along. With no
     // single destination (an upstream of another name under "simple"), git's own push says why.
-    const [remote, ref] = (await gitOut(repo, ['for-each-ref', '--format=%(push:remotename)%00%(push:remoteref)', `refs/heads/${branch}`])).trim().split('\0')
+    const format = '--format=%(push:remotename)%00%(push:remoteref)%00%(upstream:remotename)'
+    const [remote, ref, upstreamRemote] = (await gitOut(repo, ['for-each-ref', format, `refs/heads/${branch}`])).trim().split('\0')
     if (remote && ref) args.push(remote, `HEAD:${ref}`)
+    else {
+      // Unless the remote names refs of its own to push that leave this branch out, or mirrors:
+      // git then pushed those instead (another branch, every ref, deleting the server's others),
+      // said it succeeded, and a force push rewrote them.
+      const name = remote || upstreamRemote
+      if (name && (await pushesOwnRefs(repo, name))) {
+        throw new GitError(`"${name}" is set to push other refs than this branch (remote.${name}.push or remote.${name}.mirror), so nothing was pushed. Push this branch from a terminal, naming where it goes, or change that setting.`)
+      }
+    }
   }
   try {
     await git(repo, args, { onStderrLine: progressHandler('push', upstream ? 'Pushing' : 'Publishing branch', report) })
   } finally {
     report(null)
   }
+}
+
+/** Whether a remote pushes refs of its own (remote.<name>.push) or everything (mirror), whatever is asked. */
+async function pushesOwnRefs(repo: string, remote: string): Promise<boolean> {
+  if ((await git(repo, ['config', '--get-all', `remote.${remote}.push`], { okCodes: [1] })).stdout.trim()) return true
+  return (await git(repo, ['config', '--type=bool', '--get', `remote.${remote}.mirror`], { okCodes: [1] })).stdout.trim() === 'true'
 }
 
 /**
