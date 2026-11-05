@@ -324,6 +324,8 @@ describe('commit', () => {
     ['merge', ['merge', 'other']],
     // git's "ours" is then the branch rebased onto: "Use my version" kept the upstream file.
     ['rebase', ['rebase', 'main']],
+    // No operation then: "theirs" are the changes put back, and "Use my version" kept the branch's file.
+    ['stash pop', ['stash', 'pop']],
   ])('keeps the user’s own version of a file when a %s stops on it', async (_, command) => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a.txt': 'base\n' })
@@ -332,8 +334,13 @@ describe('commit', () => {
     sh(repo, 'checkout', '-q', 'main')
     commit(repo, 'main', { 'a.txt': 'main\n' })
     // Merging, the user is on main; rebasing, on the branch replayed onto main.
-    const mine = command[0] === 'merge' ? 'main\n' : 'other\n'
+    const mine = command[0] === 'merge' ? 'main\n' : command[0] === 'rebase' ? 'other\n' : 'stashed\n'
     if (command[0] === 'rebase') sh(repo, 'checkout', '-q', 'other')
+    if (command[0] === 'stash') {
+      write(repo, 'a.txt', 'stashed\n')
+      sh(repo, 'stash', '-q')
+      commit(repo, 'main again', { 'a.txt': 'main, again\n' })
+    }
     await git(repo, command, { okCodes: [1] })
     const [own, theirs] = conflictSides((await status(repo)).operation)
     await ops.resolve(repo, 'a.txt', own.side)
