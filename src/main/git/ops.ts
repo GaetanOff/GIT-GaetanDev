@@ -251,27 +251,45 @@ export async function lastCommitMessage(repo: string): Promise<string> {
 }
 
 /**
- * Moves HEAD back one commit and keeps its changes staged; returns its message.
- * With `expect`, only that commit is undone: a toast's Undo must not take back
- * a commit made after it.
+ * Takes back the last commit and keeps its changes staged; returns its message
+ * and whether it was an amend. With `expect`, only that commit is undone: a
+ * toast's Undo must not take back a commit made after it.
+ * - An amend goes back to the commit it replaced: going to that commit's
+ *   parent took it back too.
+ * - A merge becomes the merge in progress it was. The reset alone kept its
+ *   changes staged without MERGE_HEAD, and committing them again made an
+ *   ordinary commit, a squash of the merged branch.
  */
-export async function undoCommit(repo: string, expect?: string): Promise<string> {
-  if (expect) {
-    const head = (await git(repo, ['rev-parse', '-q', '--verify', 'HEAD'], { okCodes: [1] })).stdout.trim()
-    if (head !== expect) throw new GitError('That commit is no longer the last one on this branch, so it was not undone.')
-  }
+export async function undoCommit(repo: string, expect?: string): Promise<{ message: string; amended: boolean }> {
+  const dir = await gitDir(repo)
+  const busy = operation(dir).operation
+  if (busy) throw new GitError(`A ${busy} is in progress. Continue or abort it first.`)
+  const head = (await git(repo, ['rev-parse', '-q', '--verify', 'HEAD'], { okCodes: [1] })).stdout.trim()
+  if (expect && head !== expect) throw new GitError('That commit is no longer the last one on this branch, so it was not undone.')
   const message = await lastCommitMessage(repo)
-  const hasParent = await git(repo, ['rev-parse', '--verify', '-q', 'HEAD~1'], { okCodes: [1] }).then(r => r.code === 0)
-  if (hasParent) {
+  const [last, before] = (await git(repo, ['reflog', 'show', '-n2', '--format=%H%x1f%gs', 'HEAD', '--'], { okCodes: [128] })).stdout
+    .split('\n').filter(Boolean).map(l => l.split('\x1f'))
+  if (last?.[0] === head && last[1].startsWith('commit (amend):') && before?.[0]) {
+    await git(repo, ['reset', '--soft', before[0]])
+    return { message, amended: true }
+  }
+  const parents = (await gitOut(repo, ['rev-parse', 'HEAD^@'])).split('\n').filter(Boolean)
+  if (parents.length) {
     await git(repo, ['reset', '--soft', 'HEAD~1'])
-    return message
+    if (parents.length > 1) {
+      // As git leaves a merge stopped before its commit; "no-ff" keeps both parents when it is made.
+      await writeFile(join(dir, 'MERGE_HEAD'), parents.slice(1).map(p => `${p}\n`).join(''))
+      await writeFile(join(dir, 'MERGE_MSG'), `${message}\n`)
+      await writeFile(join(dir, 'MERGE_MODE'), 'no-ff')
+    }
+    return { message, amended: false }
   }
   // The first commit: its branch goes back to unborn. Never `update-ref -d HEAD`, which on a
   // detached HEAD deletes .git/HEAD itself and leaves a folder git no longer sees as a repository.
   const branch = (await git(repo, ['symbolic-ref', '-q', 'HEAD'], { okCodes: [1] })).stdout.trim()
   if (!branch) throw new GitError('This is the first commit and no branch is checked out, so there is nothing to undo it into.')
   await git(repo, ['update-ref', '-d', branch])
-  return message
+  return { message, amended: false }
 }
 
 /**

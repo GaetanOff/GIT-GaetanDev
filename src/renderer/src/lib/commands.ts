@@ -1,4 +1,5 @@
 import { api } from './api'
+import { pendingCommit } from './drafts'
 import type { IconName } from './icons'
 import { app } from './state.svelte'
 import { confirm, openDialog, openPalette, overlays, prompt, toast } from './ui.svelte'
@@ -83,18 +84,25 @@ export async function undoLastCommit(opts: { ask?: boolean; repoId?: string; sha
     })
     if (!ok) return
   }
-  const message = await app.run('Undoing commit', () => api['git:undoCommit'](repo, expect))
-  if (message === undefined) return
+  const undone = await app.run('Undoing commit', () => api['git:undoCommit'](repo, expect))
+  if (undone === undefined) return
+  // A merge taken back is in progress again, and its message is the one to commit it with.
+  const pending = app.repo?.path === repo ? pendingCommit(app.status) : ''
   // Never replace a message being written; otherwise bring the commit's back.
   const writing = !!(draft.summary.trim() || draft.body.trim())
   if (!writing) {
-    const [summary, ...rest] = message.split('\n')
-    Object.assign(draft, { summary, body: rest.join('\n').trim(), amend: false })
+    const [summary, ...rest] = undone.message.split('\n')
+    const body = rest.join('\n').trim()
+    // An amend taken back leaves its message and Amend ticked, ready to amend again.
+    Object.assign(draft, { summary, body, amend: undone.amended, prefill: pending ? { for: pending, text: `${summary}\n${body}` } : undefined })
+    app.saveDrafts()
   }
   if (app.repo?.path === repo) app.view = 'changes'
-  toast('info', writing
-    ? 'Last commit undone. Its changes are staged; the message you were writing was kept.'
-    : 'Last commit undone. Its changes are staged and its message is back in the commit box.')
+  toast('info', pending.startsWith('merge:')
+    ? 'Merge commit undone: the merge is in progress again, its changes staged. Commit it again, or abort it.'
+    : writing
+      ? 'Last commit undone. Its changes are staged; the message you were writing was kept.'
+      : 'Last commit undone. Its changes are staged and its message is back in the commit box.')
 }
 
 export async function renameCurrentBranch(): Promise<void> {

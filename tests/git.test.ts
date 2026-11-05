@@ -375,8 +375,50 @@ describe('commit', () => {
     commit(repo, 'second')
     await expect(ops.undoCommit(repo, first)).rejects.toThrow(/no longer the last one/)
     expect(sh(repo, 'log', '-1', '--format=%s')).toBe('second')
-    expect(await ops.undoCommit(repo, sh(repo, 'rev-parse', 'HEAD'))).toBe('second')
+    expect(await ops.undoCommit(repo, sh(repo, 'rev-parse', 'HEAD'))).toEqual({ message: 'second', amended: false })
     expect(sh(repo, 'log', '-1', '--format=%s')).toBe('first')
+  })
+
+  // A reset alone kept the merged changes staged without MERGE_HEAD: committing them again made a
+  // one-parent commit, a squash of the merged branch.
+  it('undoes a merge commit into the merge in progress it was', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'a\n' })
+    sh(repo, 'checkout', '-q', '-b', 'feature')
+    commit(repo, 'feature', { 'b.txt': 'b\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    // A merge git could have fast-forwarded: made again, it must keep both parents.
+    sh(repo, 'merge', '-q', '--no-ff', '-m', 'Merge feature', 'feature')
+    expect(await ops.undoCommit(repo)).toEqual({ message: 'Merge feature', amended: false })
+    expect(await status(repo)).toMatchObject({ operation: 'merge', operationHead: sh(repo, 'rev-parse', 'feature') })
+    expect(sh(repo, 'diff', '--cached', '--name-only')).toBe('b.txt')
+    await ops.continueOp(repo)
+    expect(sh(repo, 'log', '-1', '--format=%P %s')).toBe(`${sh(repo, 'rev-parse', 'HEAD~1')} ${sh(repo, 'rev-parse', 'feature')} Merge feature`)
+  })
+
+  it('undoes an amend back to the commit it replaced', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'a\n' })
+    commit(repo, 'first', { 'b.txt': 'b\n' })
+    const first = sh(repo, 'rev-parse', 'HEAD')
+    write(repo, 'c.txt', 'c\n')
+    await ops.stage(repo, ['c.txt'])
+    await ops.commit(repo, 'first, amended', true)
+    expect(await ops.undoCommit(repo)).toEqual({ message: 'first, amended', amended: true })
+    expect(sh(repo, 'rev-parse', 'HEAD')).toBe(first)
+    expect(sh(repo, 'diff', '--cached', '--name-only')).toBe('c.txt')
+  })
+
+  it('undoes no commit while an operation is under way', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'base\n' })
+    sh(repo, 'checkout', '-q', '-b', 'other')
+    commit(repo, 'other', { 'a.txt': 'other\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'main', { 'a.txt': 'main\n' })
+    await git(repo, ['merge', 'other'], { okCodes: [1] })
+    await expect(ops.undoCommit(repo)).rejects.toThrow(/merge is in progress/)
+    expect(sh(repo, 'log', '-1', '--format=%s')).toBe('main')
   })
 
   it('undoes the first commit into an unborn branch, and never on a detached HEAD', async () => {
@@ -387,7 +429,7 @@ describe('commit', () => {
     await expect(ops.undoCommit(repo)).rejects.toThrow(/no branch is checked out/)
     expect(sh(repo, 'rev-parse', 'HEAD')).toBe(sh(repo, 'rev-parse', 'main~1'))
     sh(repo, 'checkout', '-q', '-b', 'only-root')
-    expect(await ops.undoCommit(repo)).toBe('root')
+    expect(await ops.undoCommit(repo)).toEqual({ message: 'root', amended: false })
     expect(sh(repo, 'symbolic-ref', 'HEAD')).toBe('refs/heads/only-root')
     expect(sh(repo, 'diff', '--cached', '--name-only')).toBe('a.txt')
   })

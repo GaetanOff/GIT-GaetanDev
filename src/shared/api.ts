@@ -54,7 +54,7 @@ export interface Api {
   'git:lastCommitMessage'(repo: string): Promise<string>
   'git:preparedMessage'(repo: string): Promise<string>
   /** `expect`: the commit to undo; refused if HEAD is another one by now. */
-  'git:undoCommit'(repo: string, expect?: string): Promise<string>
+  'git:undoCommit'(repo: string, expect?: string): Promise<{ message: string; amended: boolean }>
   'git:resolve'(repo: string, path: string, side: 'ours' | 'theirs'): Promise<void>
   /** `message`: the commit message the user wrote, for a merge, cherry-pick or revert; git's own otherwise. */
   'git:continue'(repo: string, message?: string): Promise<void>
