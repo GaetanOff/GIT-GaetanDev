@@ -4,6 +4,7 @@ import { homedir, tmpdir } from 'node:os'
 import { basename, isAbsolute, join } from 'node:path'
 import { shell } from 'electron'
 import { selectionFingerprint, type Author, type DiffOptions, type FileChange, type FileDiff, type LineSelection, type Progress, type PullMode, type ResetMode, type RepoStatus } from '@shared/types'
+import { resolveWhole } from './conflict'
 import { applyPatch, buildPartialPatch, diff } from './diff'
 import { assertRefName, git, gitOut, GitError, literal } from './exec'
 import { currentBranch, defaultRemote, remoteOf, upstreamOf } from './refs'
@@ -273,9 +274,13 @@ export async function undoCommit(repo: string, expect?: string): Promise<string>
   return message
 }
 
+/**
+ * Takes one side of a conflicted file whole, from the file list. The same as
+ * the conflict view's pick: "checkout --theirs" did nothing to a submodule,
+ * and the "add" after it recorded the commit it had checked out, ours.
+ */
 export async function resolve(repo: string, path: string, side: 'ours' | 'theirs'): Promise<void> {
-  await git(repo, ['checkout', `--${side}`, '--', literal(path)])
-  await git(repo, ['add', '--', path])
+  await resolveWhole(repo, path, side)
 }
 
 /** Commands that keep going without opening an editor. */

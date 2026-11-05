@@ -1011,7 +1011,11 @@ describe('conflicts', () => {
     expect(f.chunks[0]).toEqual({ kind: 'conflict', ours: ['name = cafe'], base: ['name = x'], theirs: ['name = café'] })
   })
 
-  it('resolves a submodule conflict with the side picked', async () => {
+  it.each([
+    ['the conflict view', (repo: string, path: string) => resolveWhole(repo, path, 'theirs')],
+    // The file list's "Use their version" kept ours: "checkout --theirs" does nothing to a gitlink.
+    ['the file list', (repo: string, path: string) => ops.resolve(repo, path, 'theirs')],
+  ])('resolves a submodule conflict with the side picked in %s', async (_, pick) => {
     const lib = makeRepo('lib')
     commit(lib, 'l1')
     sh(lib, 'checkout', '-q', '-b', 'a')
@@ -1031,7 +1035,7 @@ describe('conflicts', () => {
     await git(app, ['merge', 'other'], { okCodes: [1] })
     expect((await status(app)).files.find(f => f.path === 'lib')).toMatchObject({ conflicted: true, submodule: true })
     expect(await conflict(app, 'lib')).toMatchObject({ mode: 'whole', oursExists: true, theirsExists: true })
-    await resolveWhole(app, 'lib', 'theirs')
+    await pick(app, 'lib')
     expect(sh(app, 'ls-files', '-s', 'lib')).toBe(`160000 ${sh(lib, 'rev-parse', 'b')} 0\tlib`)
   })
 
