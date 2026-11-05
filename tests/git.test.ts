@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { selectionFingerprint } from '@shared/types'
@@ -830,6 +830,33 @@ describe('line operations', () => {
     const sel = { 0: d.hunks[0].lines.flatMap((l, i) => (l.type === 'ctx' ? [] : [i])) }
     await ops.unstageLines(repo, 'new.txt', sel, undefined, selectionFingerprint(d, sel), 'old.txt')
     expect(sh(repo, 'status', '--porcelain')).toBe('RM old.txt -> new.txt')
+  })
+
+  // The names put back into the patch's header were written in the content's encoding: git read
+  // "r\351sum\351.txt", another file, and the index got an entry of that invalid name.
+  it('unstages some lines of a new file named with accents and not stored as UTF-8', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'x.txt': 'x\n' })
+    writeFileSync(join(repo, 'résumé.txt'), Buffer.from('caf\xe9 1\nline 2\n', 'latin1'))
+    sh(repo, 'add', 'résumé.txt')
+    const d = await diff(repo, { kind: 'index', path: 'résumé.txt' }, OPTS)
+    expect(d.encoding).toBe('windows-1252')
+    const sel = { 0: [1] }
+    await ops.unstageLines(repo, 'résumé.txt', sel, undefined, selectionFingerprint(d, sel))
+    expect(sh(repo, '-c', 'core.quotepath=false', 'status', '--porcelain')).toBe('AM résumé.txt')
+    expect(execFileSync('git', ['-C', repo, 'show', ':résumé.txt']).toString('latin1')).toBe('caf\xe9 1\n')
+  })
+
+  it('stages some lines of a deleted file named with accents and not stored as UTF-8', async () => {
+    const repo = makeRepo()
+    writeFileSync(join(repo, 'résumé.txt'), Buffer.from('caf\xe9 1\nline 2\n', 'latin1'))
+    commit(repo, 'base')
+    rmSync(join(repo, 'résumé.txt'))
+    const d = await diff(repo, { kind: 'worktree', path: 'résumé.txt' }, OPTS)
+    const sel = { 0: [0] }
+    await ops.stageLines(repo, 'résumé.txt', sel, false, undefined, selectionFingerprint(d, sel))
+    expect(sh(repo, '-c', 'core.quotepath=false', 'status', '--porcelain')).toBe('MD résumé.txt')
+    expect(execFileSync('git', ['-C', repo, 'show', ':résumé.txt']).toString('latin1')).toBe('line 2\n')
   })
 
   it('stages lines whatever diff prefixes and log options the user configured', async () => {

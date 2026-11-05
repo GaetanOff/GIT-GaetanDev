@@ -359,11 +359,17 @@ export function buildPartialPatch(d: FileDiff, selection: LineSelection, directi
       .filter(h => !/^(rename|copy) (from|to) /.test(h))
       .map(h => (h.startsWith('diff --git ') ? `diff --git ${source} ${target}` : h.startsWith('--- ') ? `--- ${source}` : h))
   }
-  // Part of a created/deleted file is a plain modification of the target.
+  // Part of a created/deleted file is a plain modification of the target. Its missing name is
+  // taken from the header's other one, decoded and written back like the rest of the patch: the
+  // path itself, written in the content's encoding (Windows-1252), was another name to git, and an
+  // entry of that invalid name went into the index.
   if (partial && ((direction === 'reverse' && d.isNew) || (direction === 'forward' && d.isDeleted))) {
+    const named = (prefix: string) => header.find(h => h.startsWith(prefix) && h !== `${prefix}/dev/null`)?.slice(prefix.length)
+    const after = named('+++ ')
+    const before = named('--- ')
     header = header
       .filter(h => !/^(new|deleted) file mode/.test(h))
-      .map(h => (h === '--- /dev/null' ? `--- a/${d.path}` : h === '+++ /dev/null' ? `+++ b/${d.path}` : h))
+      .map(h => (h === '--- /dev/null' && after ? `--- ${after.replace(/^("?)b\//, '$1a/')}` : h === '+++ /dev/null' && before ? `+++ ${before.replace(/^("?)a\//, '$1b/')}` : h))
   }
   return [...header, ...out, ''].join('\n')
 }
