@@ -1244,6 +1244,22 @@ describe('conflicts', () => {
     expect(sh(app, 'ls-files', '-s', 'lib')).toBe(`160000 ${sh(lib, 'rev-parse', 'b')} 0\tlib`)
   })
 
+  it.each(['short', 'log', 'diff'])('shows a submodule moved to another commit as such, with diff.submodule=%s', async format => {
+    const lib = makeRepo('lib')
+    commit(lib, 'l1')
+    const first = sh(lib, 'rev-parse', 'HEAD')
+    commit(lib, 'l2', { 'x.txt': 'x\n' })
+    const app = makeRepo('app')
+    sh(app, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'lib')
+    sh(app, 'commit', '-q', '-m', 'base')
+    sh(join(app, 'lib'), 'checkout', '-q', first)
+    sh(app, 'config', 'diff.submodule', format)
+    const d = await diff(app, { kind: 'worktree', path: 'lib' }, OPTS)
+    expect(d.submodule).toEqual({ before: sh(lib, 'rev-parse', 'HEAD').slice(0, 12), after: first.slice(0, 12) })
+    expect(d.typeChange).toBeFalsy()
+    await expect(ops.discardLines(app, 'lib', { 0: [0] }, undefined, selectionFingerprint(d, { 0: [0] }))).rejects.toThrow(/as a whole/)
+  })
+
   it('resolves a conflict on a Git LFS file by picking a side', async () => {
     const repo = makeRepo()
     const pointer = (oid: string) => `version https://git-lfs.github.com/spec/v1\noid sha256:${oid.repeat(64)}\nsize 1234\n`

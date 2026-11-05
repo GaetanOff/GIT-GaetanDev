@@ -135,9 +135,9 @@ export function parseDiff(raw: string, path: string, force = false): FileDiff {
     else if (l.startsWith('new mode') && result.modeChange) result.modeChange += ` → ${l.slice(9)}`
     else if (l.startsWith('rename from ')) result.oldPath = l.slice(12)
     else if (l.startsWith('Binary files') || l === 'GIT binary patch') result.binary = true
-    else if (l.startsWith('Subproject commit')) {
-      result.submodule ??= {}
-    }
+    // A submodule (mode 160000): its "Subproject commit" lines come in the hunk, where they were
+    // never looked for, so it showed as a two-line text file with lines to stage and discard.
+    if (/^(?:index [0-9a-f]+\.\.[0-9a-f]+|(?:new|deleted) file mode) 160000$/.test(l)) result.submodule ??= {}
   }
 
   const total = lines.length - i
@@ -317,6 +317,7 @@ function lfsPointer(d: FileDiff): FileDiff['lfs'] {
  */
 export function buildPartialPatch(d: FileDiff, selection: LineSelection, direction: 'forward' | 'reverse'): string | null {
   if (d.typeChange) throw new GitError('This file became a link or a submodule (or the reverse): stage it whole.')
+  if (d.submodule) throw new GitError('A submodule changes as a whole: stage or discard it whole.')
   const out: string[] = []
   let partial = false
 
