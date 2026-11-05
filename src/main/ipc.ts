@@ -111,8 +111,13 @@ export const opensAsProgram = (folder: string, platform = process.platform): boo
  */
 export const networkUrl = (url: string): boolean => isUnc(url) || /^file:\/\/(?!\/|localhost\/)[^/]/i.test(url)
 
-/** Stops the clone under way, if any: a large one or a stalled network no longer leaves only waiting. */
-let cloneAbort: AbortController | null = null
+/**
+ * Stops a clone under way, by the folder it clones into: a large one or a
+ * stalled network no longer leaves only waiting. One for all made "Cancel
+ * clone" on a clone left running in the background stop the one started
+ * after it instead, and delete that one's folder.
+ */
+const cloneAborts = new Map<string, AbortController>()
 
 /** A folder the app was launched with; the renderer opens it instead of the last repo. */
 let launchPath: string | null = null
@@ -206,15 +211,16 @@ export function registerIpc(watcher: RepoWatcher): void {
       if (existsSync(target)) throw new GitError(`"${target}" already exists.`)
       mkdirSync(parent, { recursive: true })
       const abort = new AbortController()
-      cloneAbort = abort
+      const key = folderKey(target)
+      cloneAborts.set(key, abort)
       try {
         await ops.clone(url, parent, name, progress, abort.signal)
       } finally {
-        if (cloneAbort === abort) cloneAbort = null
+        if (cloneAborts.get(key) === abort) cloneAborts.delete(key)
       }
       return upsertRepo(target)
     },
-    'repo:cancelClone': async () => cloneAbort?.abort(),
+    'repo:cancelClone': async (parent, name) => cloneAborts.get(folderKey(join(parent, name)))?.abort(),
     'repo:remove': async id => removeRepo(id),
     'repo:open': async id => {
       const r = repoById(id)
@@ -591,6 +597,7 @@ export function checkArgs(channel: string, args: unknown[]): void {
   if ((channel === 'git:resolveContent' || channel === 'git:resolveWhole') && args[channel === 'git:resolveWhole' ? 3 : 4] !== undefined && typeof args[channel === 'git:resolveWhole' ? 3 : 4] !== 'string') {
     throw new GitError('Invalid file state.')
   }
+  if (channel === 'repo:cancelClone' && (typeof args[0] !== 'string' || typeof args[1] !== 'string')) throw new GitError('Invalid clone.')
   if (channel === 'repo:pin' && typeof args[1] !== 'boolean') throw new GitError('Invalid pin.')
   if (channel === 'askpass:respond' && (typeof args[0] !== 'string' || (args[1] !== null && typeof args[1] !== 'string'))) throw new GitError('Invalid answer.')
   for (const r of refs) {

@@ -32,7 +32,8 @@ export interface Api {
   'repo:init'(path: string): Promise<RepoEntry>
   'repo:clone'(url: string, parent: string, name: string): Promise<RepoEntry>
   /** Stops the clone under way; it then fails with code CANCELLED and its folder is removed. */
-  'repo:cancelClone'(): Promise<void>
+  /** Stops the clone into `parent`/`name`, as given to repo:clone. */
+  'repo:cancelClone'(parent: string, name: string): Promise<void>
   'repo:remove'(id: string): Promise<RepoEntry[]>
   'repo:open'(id: string): Promise<RepoEntry>
   'repo:pin'(id: string, pinned: boolean): Promise<RepoEntry[]>

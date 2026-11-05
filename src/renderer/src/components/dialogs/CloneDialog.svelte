@@ -63,14 +63,18 @@
    */
   let hidden = false
   let running: number | null = null
+  /** Where the clone under way goes, which names it to cancel it: the fields may change meanwhile. */
+  let into = { parent: '', name: '' }
+  const cancel = () => void api['repo:cancelClone'](into.parent, into.name)
 
   async function clone() {
     if (!valid || cloning) return
     cloning = true
     error = null
+    into = { parent: parent.trim(), name: name.trim() }
     try {
       try { localStorage.setItem('clone-parent', parent) } catch { /* ignore */ }
-      const entry = await api['repo:clone'](url.trim(), parent.trim(), name.trim())
+      const entry = await api['repo:clone'](url.trim(), into.parent, into.name)
       if (hidden) {
         // The user is at work elsewhere by now: the new repository does not take the front unasked.
         toast('success', `Cloned ${entry.name}.`, { label: 'Open', run: () => void app.openRepo(entry.id) })
@@ -83,7 +87,7 @@
     } catch (e) {
       const err = asError(e)
       if (err.code === 'CANCELLED') toast('info', err.message)
-      else if (hidden) toast('error', `Clone of ${name.trim()} failed: ${err.message}`)
+      else if (hidden) toast('error', `Clone of ${into.name} failed: ${err.message}`)
       else error = err.message
     } finally {
       cloning = false
@@ -95,7 +99,7 @@
   function close() {
     if (cloning && !hidden) {
       hidden = true
-      running = toast('info', `Cloning ${name.trim()}…`, { label: 'Cancel clone', run: () => void api['repo:cancelClone']() }, Infinity)
+      running = toast('info', `Cloning ${into.name}…`, { label: 'Cancel clone', run: cancel }, Infinity)
     }
     onclose()
   }
@@ -145,7 +149,7 @@
 
   {#snippet footer()}
     {#if cloning}
-      <button type="button" class="btn btn-danger" onclick={() => api['repo:cancelClone']()}>Cancel clone</button>
+      <button type="button" class="btn btn-danger" onclick={cancel}>Cancel clone</button>
       <button type="button" class="btn btn-secondary" onclick={close}>Close</button>
     {:else}
       <button type="button" class="btn btn-secondary" onclick={close}>Cancel</button>
