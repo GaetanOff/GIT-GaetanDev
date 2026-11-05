@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { accessSync, constants, statSync } from 'node:fs'
+import { accessSync, constants, existsSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, isAbsolute, join } from 'node:path'
 import type { GitErrorCode } from '@shared/api'
@@ -298,7 +298,11 @@ function run(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecR
     let grace: ReturnType<typeof setTimeout> | undefined
     child.on('error', (e: NodeJS.ErrnoException) => {
       settled = true
-      if (e.code === 'ENOENT') {
+      // Node reports a working folder that is gone (a repository moved, a drive removed) as ENOENT
+      // too: "Install Git" then showed at every focus of the window, and git was looked up again.
+      if (e.code === 'ENOENT' && !existsSync(cwd)) {
+        reject(new GitError(`"${cwd}" no longer exists: it was moved, renamed or deleted, or its drive is not connected.`))
+      } else if (e.code === 'ENOENT') {
         gitPath = null
         reject(new GitError(NOT_FOUND, 'GIT_NOT_FOUND'))
       } else reject(new GitError(e.message))

@@ -1426,6 +1426,13 @@ describe('history', () => {
     expect((await gitVersion())?.supported).toBe(true)
   })
 
+  it('says a repository\'s folder is gone, not that git is missing', async () => {
+    const repo = makeRepo()
+    rmSync(repo, { recursive: true, force: true })
+    await expect(git(repo, ['status'])).rejects.toThrow(/no longer exists/)
+    expect((await gitVersion())?.supported).toBe(true)
+  })
+
   it('guards network commands against dead connections only, and not over the user\'s own limits', async () => {
     const repo = makeRepo()
     expect(await stallGuards(repo)).toMatchObject({ GIT_HTTP_LOW_SPEED_LIMIT: '1', GIT_HTTP_LOW_SPEED_TIME: '300' })
