@@ -293,11 +293,12 @@ describe('commit', () => {
   })
 
   // The job holds git's output open: the commit, and its repository's queue, waited for it to end.
-  it('finishes a commit when git does, even with a job a hook left running', async () => {
+  // Then that output was closed, and the job died at the next line it wrote.
+  it('finishes a commit when git does, and leaves the job a hook started running', async () => {
     const repo = makeRepo()
     commit(repo, 'base')
     const late = join(repo, '.git', 'late')
-    writeFileSync(join(repo, '.git', 'hooks', 'post-commit'), '#!/bin/sh\n(sleep 10; echo done > .git/late) &\n', { mode: 0o755 })
+    writeFileSync(join(repo, '.git', 'hooks', 'post-commit'), '#!/bin/sh\n(sleep 10; echo still going; echo still going >&2; echo done > .git/late) &\n', { mode: 0o755 })
     write(repo, 'a.txt', 'a\n')
     await ops.stage(repo, ['a.txt'])
     await ops.commit(repo, 'add a', false)
