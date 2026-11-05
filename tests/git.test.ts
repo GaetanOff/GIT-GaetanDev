@@ -640,7 +640,11 @@ describe('undo and force push', () => {
     expect(second).toMatchObject({ kind: 'rebase', before: { sha: otherTip, branch: 'other' } })
   })
 
-  it('pushes the current branch only, even where push.default says "matching"', async () => {
+  it.each([
+    ['push.default', 'matching'],
+    // The remote's own refspecs come before push.default, which then changed nothing.
+    ['remote.origin.push', 'refs/heads/*:refs/heads/*'],
+  ])('pushes the current branch only, even where %s says "%s"', async (key, value) => {
     const bare = join(makeRepo(), '..', 'remote.git')
     execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare])
     const repo = makeRepo()
@@ -655,7 +659,7 @@ describe('undo and force push', () => {
     commit(repo, 'rewritten b', { 'b.txt': 'b\n' })
     sh(repo, 'checkout', '-q', 'main')
     commit(repo, 'main moves', { 'm.txt': 'm\n' })
-    sh(repo, 'config', 'push.default', 'matching')
+    sh(repo, 'config', key, value)
     await ops.push(repo, { force: true }, () => undefined)
     const remoteLog = (ref: string) => execFileSync('git', ['-C', bare, 'log', '-1', '--format=%s', ref], { encoding: 'utf8' }).trim()
     expect(remoteLog('main')).toBe('main moves')

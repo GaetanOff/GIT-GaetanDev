@@ -609,6 +609,13 @@ export async function push(repo: string, opts: { force?: boolean; setUpstream?: 
     const remote = await defaultRemote(repo)
     if (!remote) throw new GitError('This repository has no remote. Add one in the sidebar first.')
     args.push('--set-upstream', remote, `HEAD:refs/heads/${branch}`)
+  } else {
+    // A remote's own push refspecs (remote.<name>.push) come before push.default: left to git,
+    // `refs/heads/*:refs/heads/*` published every local branch, and a force push rewrote them all.
+    // The branch goes where git itself would push it, named, so nothing else goes along. With no
+    // single destination (an upstream of another name under "simple"), git's own push says why.
+    const [remote, ref] = (await gitOut(repo, ['for-each-ref', '--format=%(push:remotename)%00%(push:remoteref)', `refs/heads/${branch}`])).trim().split('\0')
+    if (remote && ref) args.push(remote, `HEAD:${ref}`)
   }
   try {
     await git(repo, args, { onStderrLine: progressHandler('push', upstream ? 'Pushing' : 'Publishing branch', report) })
