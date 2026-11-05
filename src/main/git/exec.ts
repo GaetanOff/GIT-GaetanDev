@@ -197,9 +197,17 @@ function bundledSsh(): boolean {
  * server preparing a pack or running a push hook still sends progress, so
  * only a silent connection trips them. Settings of the user's own (git config
  * or environment) are left alone. Windows' OpenSSH gets its own prompt helper.
+ *
+ * `elsewhere`: the command also talks to the remote from another repository
+ * than `cwd`'s (the one a clone creates, a submodule), whose config is not
+ * the one read here. An includeIf of the user's (gitdir:~/work/, or
+ * hasconfig:remote.*.url:) can give it a core.sshCommand of its own, the
+ * usual way to use two accounts' keys, which GIT_SSH_COMMAND would replace:
+ * the clone used the default key and failed ("Permission denied
+ * (publickey)") where git itself succeeded. SSH is then left as git sets it.
  */
-export async function stallGuards(cwd: string): Promise<NodeJS.ProcessEnv> {
-  const r = await run(cwd, ['config', '--get-regexp', '^(http\\.lowspeed(limit|time)|core\\.sshcommand)$'], { okCodes: [1] })
+export async function stallGuards(cwd: string, elsewhere = false): Promise<NodeJS.ProcessEnv> {
+  const r = await run(cwd, ['config', '--get-regexp', '^(http\\.lowspeed(limit|time)|core\\.sshcommand|includeif\\..*)$'], { okCodes: [1] })
   const values = new Map(r.stdout.split('\n').filter(Boolean).map(l => {
     const i = l.indexOf(' ')
     return [(i < 0 ? l : l.slice(0, i)).toLowerCase(), i < 0 ? '' : l.slice(i + 1)] as const
@@ -208,7 +216,8 @@ export async function stallGuards(cwd: string): Promise<NodeJS.ProcessEnv> {
   const http = ['http.lowspeedlimit', 'http.lowspeedtime'].some(k => values.has(k)) || process.env.GIT_HTTP_LOW_SPEED_LIMIT || process.env.GIT_HTTP_LOW_SPEED_TIME
   if (!http) Object.assign(env, { GIT_HTTP_LOW_SPEED_LIMIT: '1', GIT_HTTP_LOW_SPEED_TIME: '300' })
   const sshCommand = process.env.GIT_SSH_COMMAND || process.env.GIT_SSH || values.get('core.sshcommand') || null
-  if (!sshCommand) env.GIT_SSH_COMMAND = 'ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=8'
+  const conditional = [...values.keys()].some(k => k.startsWith('includeif.'))
+  if (!sshCommand && !(elsewhere && conditional)) env.GIT_SSH_COMMAND = 'ssh -o ServerAliveInterval=15 -o ServerAliveCountMax=8'
   if (baseEnv.GDG_ASKPASS_HELPER_EXE && windowsOpenSsh(sshCommand, bundledSsh())) env.SSH_ASKPASS = baseEnv.GDG_ASKPASS_HELPER_EXE
   return env
 }
@@ -218,8 +227,9 @@ export async function stallGuards(cwd: string): Promise<NodeJS.ProcessEnv> {
  * is the last meaningful stderr line, and whose code classifies the failure.
  */
 export async function git(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecResult> {
-  if (!NETWORK_COMMANDS.has(subcommand(args) ?? '')) return run(cwd, args, opts)
-  return run(cwd, args, { ...opts, env: { ...(await stallGuards(cwd)), ...opts.env } })
+  const command = subcommand(args) ?? ''
+  if (!NETWORK_COMMANDS.has(command)) return run(cwd, args, opts)
+  return run(cwd, args, { ...opts, env: { ...(await stallGuards(cwd, command === 'clone' || command === 'submodule')), ...opts.env } })
 }
 
 /**

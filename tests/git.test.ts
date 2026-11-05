@@ -1660,6 +1660,22 @@ describe('history', () => {
     expect(await stallGuards(repo)).toEqual({})
   })
 
+  // The usual way to use two accounts' keys: GIT_SSH_COMMAND replaced it, and the clone failed.
+  it('leaves the ssh command of a repository a clone creates to the user\'s includeIf', async () => {
+    const repo = makeRepo()
+    const global = join(repo, '..', 'global.gitconfig')
+    writeFileSync(global, `[includeIf "gitdir:${join(repo, '..', 'work').replace(/\\/g, '/')}/"]\n\tpath = work.inc\n`)
+    const saved = process.env.GIT_CONFIG_GLOBAL
+    process.env.GIT_CONFIG_GLOBAL = global
+    try {
+      expect(await stallGuards(join(repo, '..'), true)).not.toHaveProperty('GIT_SSH_COMMAND')
+      expect((await stallGuards(repo)).GIT_SSH_COMMAND).toMatch(/ServerAliveInterval/)
+    } finally {
+      if (saved === undefined) delete process.env.GIT_CONFIG_GLOBAL
+      else process.env.GIT_CONFIG_GLOBAL = saved
+    }
+  })
+
   it.runIf(process.platform === 'win32')('tells Windows\' OpenSSH, which runs no shell script for prompts, from Git\'s ssh', () => {
     expect(windowsOpenSsh(null, true)).toBe(false)
     expect(windowsOpenSsh(null, false)).toBe(true)
