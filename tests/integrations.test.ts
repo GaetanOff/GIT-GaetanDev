@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { launch, resolveProgram } from '../src/main/integrations'
+import { launch, resolveProgram, withTarget } from '../src/main/integrations'
 
 // Made when the tests run, not on import: skipped (another platform, a name filter), they left it behind.
 let bin = ''
@@ -40,5 +40,25 @@ describe.runIf(process.platform === 'win32')('editor and terminal commands', () 
     const child = launch('cmd /c echo', 'a & echo INJECTED> injected.txt', bin)
     await new Promise(resolve => child.on('exit', resolve))
     expect(existsSync(marker)).toBe(false)
+  })
+
+  it('keeps the path one quoted word when the command already quotes {path}', async () => {
+    const marker = join(bin, 'injected.txt')
+    // Quoted a second time, `""%GDG_TARGET%""` left the "&" outside any quotes.
+    const child = launch('cmd /c echo "{path}"', 'a & echo INJECTED> injected.txt', bin)
+    await new Promise(resolve => child.on('exit', resolve))
+    expect(existsSync(marker)).toBe(false)
+  })
+})
+
+describe('the path in a command line', () => {
+  it('is quoted once, inside or outside the quotes the user wrote', () => {
+    expect(withTarget('code {path}', false)).toBe('code "%GDG_TARGET%"')
+    expect(withTarget('code -n "{path}"', false)).toBe('code -n "%GDG_TARGET%"')
+    expect(withTarget('ed "--file={path}:1"', false)).toBe('ed "--file=%GDG_TARGET%:1"')
+    expect(withTarget('code {path}', true)).toBe('code "$GDG_TARGET"')
+    expect(withTarget('code -n "{path}"', true)).toBe('code -n "${GDG_TARGET}"')
+    expect(withTarget("code -n '{path}'", true)).toBe(`code -n ''"$GDG_TARGET"''`)
+    expect(withTarget('ed \\"{path}', true)).toBe('ed \\""$GDG_TARGET"')
   })
 })
