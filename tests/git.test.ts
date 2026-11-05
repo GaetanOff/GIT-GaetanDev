@@ -863,6 +863,24 @@ describe('edit history', () => {
     expect(sh(repo, 'log', '-1', '--format=%s')).toBe('one, reworded')
   })
 
+  // Put back to run again, the step ran again on Skip too: a hook that always refused left Abort,
+  // which threw the whole plan away, as the only way out.
+  it('skips a reworded message a hook keeps refusing, and goes on with the rest', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'f.txt': 'base\n' })
+    commit(repo, 'c1', { 'f.txt': 'one\n' })
+    commit(repo, 'c2', { 'f.txt': 'two\n' })
+    writeFileSync(join(repo, '.git', 'hooks', 'commit-msg'), '#!/bin/sh\n! grep -q "refused" "$1"\n', { mode: 0o755 })
+    const plan = await rebasePlan(repo, 'HEAD~2')
+    const [c1, c2] = plan.commits
+    const steps = [{ sha: c1.sha, action: 'reword' as const, message: 'one, refused' }, { sha: c2.sha, action: 'reword' as const, message: 'two, reworded' }]
+    await expect(rebaseRun(repo, plan.base, steps, plan.head)).rejects.toThrow()
+    await expect(ops.continueOp(repo)).rejects.toThrow()
+    await ops.skipOp(repo)
+    expect((await status(repo)).operation).toBeNull()
+    expect(sh(repo, 'log', '-2', '--format=%s')).toBe('two, reworded\nc1')
+  })
+
   it('keeps the messages of a stopped rebase when asked to edit history again', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'f.txt': 'base\n' })

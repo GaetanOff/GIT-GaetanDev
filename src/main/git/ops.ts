@@ -350,7 +350,27 @@ export async function abortOp(repo: string): Promise<void> {
 
 export async function skipOp(repo: string): Promise<void> {
   const op = await currentOp(repo)
+  if (op === 'rebase' && (await skipRefusedMessage(repo))) return
   if (op && op !== 'merge') await git(repo, [op, '--skip'], NO_EDITOR)
+}
+
+/**
+ * Skips the step of an Edit history that applies a new message, when a
+ * commit-msg hook refused it. The rebase puts that step back to run again
+ * (--reschedule-failed-exec), so Continue and Skip both ran it again, and a
+ * hook that always refuses left Abort, which throws away the whole plan, as
+ * the only way out. Skipped, the commit keeps the message it had.
+ */
+async function skipRefusedMessage(repo: string): Promise<boolean> {
+  const dir = join(await gitDir(repo), 'rebase-merge')
+  const lines = async (name: string) => (await readFile(join(dir, name), 'utf8').catch(() => '')).split('\n').map(l => l.trim()).filter(l => l && !l.startsWith('#'))
+  const [todo, done] = await Promise.all([lines('git-rebase-todo'), lines('done')])
+  const failed = done.at(-1)
+  // Stopped by that step itself, not on a conflict of a pick with the step next in line.
+  if (!failed || todo[0] !== failed || !/^exec git commit --amend --allow-empty --cleanup=whitespace -F .*gdg-rebase[\\/]msg-\d+\.txt'$/.test(failed)) return false
+  await writeFile(join(dir, 'git-rebase-todo'), `${todo.slice(1).join('\n')}\n`)
+  await git(repo, ['rebase', '--continue'], NO_EDITOR)
+  return true
 }
 
 /**
