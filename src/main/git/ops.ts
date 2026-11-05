@@ -277,6 +277,11 @@ export async function undoCommit(repo: string, expect?: string): Promise<{ messa
     return { message, amended: true }
   }
   const parents = (await gitOut(repo, ['rev-parse', 'HEAD^@'])).split('\n').filter(Boolean)
+  // Staged since the merge, changes would become part of the merge in progress: aborting it, as
+  // the toast offers, ran "reset --merge" and deleted them for good, and committing it took them in.
+  if (parents.length > 1 && (await git(repo, ['diff-index', '--cached', '--quiet', 'HEAD', '--'], { okCodes: [1] })).code === 1) {
+    throw new GitError('Changes are staged since this merge, so it was not undone: put back in progress, the merge would take them in, and aborting it would delete them. Commit or unstage them first.')
+  }
   if (parents.length) {
     await git(repo, ['reset', '--soft', 'HEAD~1'])
     if (parents.length > 1) {

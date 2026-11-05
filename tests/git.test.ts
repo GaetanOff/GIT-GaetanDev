@@ -413,6 +413,29 @@ describe('commit', () => {
     expect(sh(repo, 'log', '-1', '--format=%P %s')).toBe(`${sh(repo, 'rev-parse', 'HEAD~1')} ${sh(repo, 'rev-parse', 'feature')} Merge feature`)
   })
 
+  // Put back in progress with them, aborting the merge deleted a file staged after it, for good.
+  it('undoes no merge commit while other changes are staged', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'a\n' })
+    sh(repo, 'checkout', '-q', '-b', 'feature')
+    commit(repo, 'feature', { 'b.txt': 'b\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    sh(repo, 'merge', '-q', '--no-ff', '-m', 'Merge feature', 'feature')
+    const merge = sh(repo, 'rev-parse', 'HEAD')
+    write(repo, 'notes.txt', 'notes\n')
+    await ops.stage(repo, ['notes.txt'])
+    await expect(ops.undoCommit(repo)).rejects.toThrow(/staged since this merge/)
+    expect(sh(repo, 'rev-parse', 'HEAD')).toBe(merge)
+    expect((await status(repo)).operation).toBeNull()
+    // Unstaged changes are left alone by an abort: the merge is undone with them.
+    sh(repo, 'reset', '-q')
+    write(repo, 'a.txt', 'edited\n')
+    expect(await ops.undoCommit(repo)).toMatchObject({ message: 'Merge feature' })
+    await ops.abortOp(repo)
+    expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe('edited\n')
+    expect(existsSync(join(repo, 'notes.txt'))).toBe(true)
+  })
+
   it('undoes an amend back to the commit it replaced', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a.txt': 'a\n' })
