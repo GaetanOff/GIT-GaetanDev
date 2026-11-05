@@ -284,6 +284,12 @@ export async function undoCommit(repo: string, expect?: string): Promise<{ messa
     }
     return { message, amended: false }
   }
+  // The oldest commit of a shallow clone: its parent exists, only not here. Taken for the first
+  // commit, its branch was deleted, and the next commit began a history unrelated to the remote's.
+  const raw = await gitOut(repo, ['cat-file', 'commit', 'HEAD'])
+  if (/^parent /m.test(raw.slice(0, raw.indexOf('\n\n')))) {
+    throw new GitError('The commit before this one was not downloaded (a shallow clone), so this commit cannot be undone here. Fetch the full history first.')
+  }
   // The first commit: its branch goes back to unborn. Never `update-ref -d HEAD`, which on a
   // detached HEAD deletes .git/HEAD itself and leaves a folder git no longer sees as a repository.
   const branch = (await git(repo, ['symbolic-ref', '-q', 'HEAD'], { okCodes: [1] })).stdout.trim()

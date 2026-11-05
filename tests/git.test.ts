@@ -1,6 +1,7 @@
 import { execFileSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { selectionFingerprint } from '@shared/types'
 import { conflictSides } from '../src/renderer/src/lib/sides'
@@ -407,6 +408,16 @@ describe('commit', () => {
     expect(await ops.undoCommit(repo)).toEqual({ message: 'first, amended', amended: true })
     expect(sh(repo, 'rev-parse', 'HEAD')).toBe(first)
     expect(sh(repo, 'diff', '--cached', '--name-only')).toBe('c.txt')
+  })
+
+  it('keeps the branch of a shallow clone, whose oldest commit has a parent elsewhere', async () => {
+    const origin = makeRepo('origin')
+    commit(origin, 'one')
+    commit(origin, 'two')
+    const clone = join(origin, '..', 'clone')
+    execFileSync('git', ['clone', '-q', '--depth', '1', pathToFileURL(origin).href, clone])
+    await expect(ops.undoCommit(clone)).rejects.toThrow(/shallow clone/)
+    expect(sh(clone, 'rev-parse', 'main')).toBe(sh(origin, 'rev-parse', 'main'))
   })
 
   it('undoes no commit while an operation is under way', async () => {
