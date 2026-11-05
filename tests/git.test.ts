@@ -290,6 +290,20 @@ describe('commit', () => {
     expect(readFileSync(join(repo, '.git', 'seen'), 'utf8').trim()).toBe('y.js')
   })
 
+  // The job holds git's output open: the commit, and its repository's queue, waited for it to end.
+  it('finishes a commit when git does, even with a job a hook left running', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base')
+    const late = join(repo, '.git', 'late')
+    writeFileSync(join(repo, '.git', 'hooks', 'post-commit'), '#!/bin/sh\n(sleep 10; echo done > .git/late) &\n', { mode: 0o755 })
+    write(repo, 'a.txt', 'a\n')
+    await ops.stage(repo, ['a.txt'])
+    await ops.commit(repo, 'add a', false)
+    expect(existsSync(late)).toBe(false)
+    // Ended before the folder is removed.
+    await vi.waitFor(() => expect(existsSync(late)).toBe(true), { timeout: 30_000, interval: 250 })
+  })
+
   it('takes a side of a conflict for that file only, whatever its name', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a[1].txt': 'base\n', 'a1.txt': 'base\n' })

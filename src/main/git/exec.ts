@@ -90,6 +90,8 @@ export function findOnPath(name: string, exts = process.platform === 'win32' ? [
 }
 
 const MAX_STDERR = 1024 * 1024
+/** How long git's output may keep arriving once git has exited (see run). */
+const EXIT_GRACE_MS = 1000
 
 /** Looked up on the first call, and again after it went missing (installed or moved while the app runs). */
 let gitPath: string | null = null
@@ -292,14 +294,33 @@ function run(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecR
       for (const line of parts) if (line.trim()) opts.onStderrLine(line)
     })
 
+    let settled = false
+    let grace: ReturnType<typeof setTimeout> | undefined
     child.on('error', (e: NodeJS.ErrnoException) => {
+      settled = true
       if (e.code === 'ENOENT') {
         gitPath = null
         reject(new GitError(NOT_FOUND, 'GIT_NOT_FOUND'))
       } else reject(new GitError(e.message))
     })
 
-    child.on('close', code => {
+    // 'close' waits for every process that holds git's output: a hook that leaves a job running in
+    // the background without redirecting it ("npm ci &" in post-checkout) kept the command, and the
+    // repository's queue behind it, going until that job ended. Once git itself has exited, the
+    // rest of its output gets a moment to arrive, and the job keeps running on its own.
+    child.on('exit', code => {
+      grace = setTimeout(() => {
+        child.stdout.destroy()
+        child.stderr.destroy()
+        finish(code)
+      }, EXIT_GRACE_MS)
+    })
+    child.on('close', code => finish(code))
+
+    function finish(code: number | null) {
+      if (settled) return
+      settled = true
+      clearTimeout(grace)
       const raw = Buffer.concat(out)
       const stdout = raw.toString('utf8')
       const stderr = Buffer.concat(err).toString('utf8')
@@ -308,7 +329,7 @@ function run(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecR
       const exit = code ?? 1
       if (exit === 0 || opts.okCodes?.includes(exit)) return resolve({ stdout, stderr, code: exit, raw })
       reject(toGitError(stdout, stderr, exit))
-    })
+    }
 
     // Git may exit before reading all its input (a lock held elsewhere, a failing hook): the write then
     // fails, which 'close' already reports through the exit code. Unhandled, it would crash the main process.
