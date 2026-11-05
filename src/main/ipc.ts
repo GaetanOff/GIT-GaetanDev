@@ -107,9 +107,16 @@ export const opensAsProgram = (folder: string, platform = process.platform): boo
  * A repository git reaches through Windows file sharing: "\\host\share",
  * "//host/share" or "file://host/share". Reaching it sends the user's NTLM
  * hash to that host, so the main process asks before cloning from or adding
- * such a remote: the page could name an attacker's host.
+ * such a remote: the page could name an attacker's host. After "file://" (and
+ * "localhost"), git reads two separators as a network path too:
+ * "file:////host/share" reached //host/share unasked.
  */
-export const networkUrl = (url: string): boolean => isUnc(url) || /^file:\/\/(?!\/|localhost\/)[^/]/i.test(url)
+export const networkUrl = (url: string): boolean => {
+  if (isUnc(url)) return true
+  const rest = /^file:\/\/(.*)$/is.exec(url)?.[1].replace(/^localhost(?=[\\/])/i, '')
+  if (rest === undefined) return false
+  return /^[\\/]/.test(rest) ? isUnc(rest) : rest.length > 0
+}
 
 /**
  * Stops a clone under way, by the folder it clones into: a large one or a
