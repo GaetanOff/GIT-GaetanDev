@@ -24,6 +24,26 @@ export function pendingCommit(s: RepoStatus | null | undefined): string {
   return s && (s.operation === 'merge' || s.operation === 'cherry-pick' || s.operation === 'revert') ? `${s.operation}:${s.operationHead ?? ''}` : ''
 }
 
+/**
+ * The draft once a commit is undone; says whether it held a message being
+ * written, which is kept. Otherwise the commit's message comes back, with
+ * Amend ticked again for an amend taken back, and as git's prepared message
+ * for a merge in progress again (`pending`, see pendingCommit). Amend never
+ * stays ticked once the branch went back past the commit it was for: kept
+ * with a message being written, the next commit amended that commit's parent.
+ */
+export function draftAfterUndo(d: Draft, undone: { message: string; amended: boolean }, pending: string): boolean {
+  const writing = !!(d.summary.trim() || d.body.trim())
+  if (!writing) {
+    const [summary, ...rest] = undone.message.split('\n')
+    const body = rest.join('\n').trim()
+    Object.assign(d, { summary, body, amend: undone.amended, amendBackup: undefined, prefill: pending ? { for: pending, text: `${summary}\n${body}` } : undefined })
+  } else if (d.amend && !undone.amended) {
+    Object.assign(d, { amend: false, amendBackup: undefined })
+  }
+  return writing
+}
+
 /** Whether the draft still says what git prepared, untouched. */
 export const untouchedPrefill = (d: Draft): boolean => !!d.prefill && `${d.summary}\n${d.body}` === d.prefill.text
 

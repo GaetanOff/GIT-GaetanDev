@@ -1,5 +1,5 @@
 import { api } from './api'
-import { pendingCommit } from './drafts'
+import { draftAfterUndo, pendingCommit } from './drafts'
 import type { IconName } from './icons'
 import { app } from './state.svelte'
 import { confirm, openDialog, openPalette, overlays, prompt, toast } from './ui.svelte'
@@ -89,14 +89,8 @@ export async function undoLastCommit(opts: { ask?: boolean; repoId?: string; sha
   // A merge taken back is in progress again, and its message is the one to commit it with.
   const pending = app.repo?.path === repo ? pendingCommit(app.status) : ''
   // Never replace a message being written; otherwise bring the commit's back.
-  const writing = !!(draft.summary.trim() || draft.body.trim())
-  if (!writing) {
-    const [summary, ...rest] = undone.message.split('\n')
-    const body = rest.join('\n').trim()
-    // An amend taken back leaves its message and Amend ticked, ready to amend again.
-    Object.assign(draft, { summary, body, amend: undone.amended, prefill: pending ? { for: pending, text: `${summary}\n${body}` } : undefined })
-    app.saveDrafts()
-  }
+  const writing = draftAfterUndo(draft, undone, pending)
+  app.saveDrafts()
   if (app.repo?.path === repo) app.view = 'changes'
   toast('info', pending.startsWith('merge:')
     ? 'Merge commit undone: the merge is in progress again, its changes staged. Commit it again, or abort it.'
