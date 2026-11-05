@@ -35,6 +35,18 @@
     if (onEnd && scrollTop + height > items.length * rowHeight - rowHeight * 30) onEnd()
   }
 
+  /**
+   * A row clicked took the focus itself (rows have tabindex -1), and lost it
+   * to the page once scrolled out of the rows drawn: the arrow keys then did
+   * nothing until the next click. The listbox around the rows, which points
+   * at the selected one, keeps the focus instead.
+   */
+  function onFocusIn(e: FocusEvent) {
+    const owner = viewport?.closest<HTMLElement>('[role="listbox"]')
+    const target = e.target as HTMLElement
+    if (owner && target !== owner && target.getAttribute('tabindex') === '-1') owner.focus({ preventScroll: true })
+  }
+
   /** Keeps a row in view, for keyboard navigation. */
   export function reveal(index: number) {
     if (!viewport) return
@@ -44,7 +56,7 @@
   }
 </script>
 
-<div class="vl {cls}" class:hscroll={!!width} bind:this={viewport} bind:clientHeight={height} onscroll={onScroll}>
+<div class="vl {cls}" class:hscroll={!!width} bind:this={viewport} bind:clientHeight={height} onscroll={onScroll} onfocusin={onFocusIn}>
   <div class="spacer" style="height:{items.length * rowHeight}px;{width ? `min-width:${width}` : ''}">
     <div class="window" style="transform:translateY({start * rowHeight}px)">
       {#each visible as item, i (start + i)}
