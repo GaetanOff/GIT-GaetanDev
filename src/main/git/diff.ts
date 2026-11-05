@@ -329,6 +329,8 @@ export function buildPartialPatch(d: FileDiff, selection: LineSelection, directi
   if (d.submodule) throw new GitError('A submodule changes as a whole: stage or discard it whole.')
   const out: string[] = []
   let partial = false
+  // How many lines the hunks already written add (remove when negative) to the file they change.
+  let delta = 0
 
   d.hunks.forEach((hunk, hi) => {
     const picked = new Set(selection[hi] ?? [])
@@ -357,10 +359,21 @@ export function buildPartialPatch(d: FileDiff, selection: LineSelection, directi
     })
 
     if (!changed) return
-    // With zero context git locates a hunk by its start line, so it must be exact
-    // on the side being matched; an empty side keeps git's "line before" convention.
-    const oldStart = direction === 'forward' && firstOld !== undefined ? firstOld : hunk.oldStart
-    const newStart = direction === 'reverse' && firstNew !== undefined ? firstNew : hunk.newStart
+    // git looks for a hunk first where the side it leaves in place starts (the new one, the old one
+    // under --reverse), in the file as the hunks before it left it, then further away by content.
+    // The diff's own starts counted every change above, picked or not: with little context or
+    // repeated lines, a line went in a few lines off (staging Y alone, added below an unstaged X,
+    // put it one line too low). The side matched is exact; an empty one keeps git's "line before".
+    let oldStart: number
+    let newStart: number
+    if (direction === 'forward') {
+      oldStart = firstOld ?? hunk.oldStart
+      newStart = (firstOld ?? hunk.oldStart + 1) + delta
+    } else {
+      newStart = firstNew ?? hunk.newStart
+      oldStart = (firstNew ?? hunk.newStart + 1) - delta
+    }
+    delta += newCount - oldCount
     out.push(`@@ -${oldStart},${oldCount} +${newStart},${newCount} @@`, ...endLines(body))
   })
 

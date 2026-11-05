@@ -1097,6 +1097,52 @@ describe('line operations', () => {
     expect(execFileSync('git', ['-C', repo, 'show', ':a.txt'], { encoding: 'utf8' })).toBe('a\nb\nc\n')
   })
 
+  // git looks for a hunk where it starts in the file as the hunks before it left it: the diff's own
+  // starts counted the changes left out above, and a line went in a line or a block off.
+  it('stages and discards lines where they are, whatever is left out above them', async () => {
+    const repo = makeRepo()
+    const lines = Array.from({ length: 20 }, (_, i) => `L${i + 1}`)
+    commit(repo, 'base', { 'a.txt': `${lines.join('\n')}\n` })
+    const zero = { context: 0, ignoreWhitespace: false }
+    write(repo, 'a.txt', `${[...lines.slice(0, 2), 'X', ...lines.slice(2, 10), 'Y', ...lines.slice(10)].join('\n')}\n`)
+    let d = await diff(repo, { kind: 'worktree', path: 'a.txt' }, zero)
+    let sel: Record<number, number[]> = { 1: [0] }
+    await ops.stageLines(repo, 'a.txt', sel, false, zero, selectionFingerprint(d, sel))
+    expect(sh(repo, 'show', ':a.txt').split('\n').slice(9, 12)).toEqual(['L10', 'Y', 'L11'])
+    // Discarding a removal below an addition kept: the line comes back where it was.
+    commit(repo, 'staged')
+    write(repo, 'a.txt', `${['L1', 'L2', 'new', 'X', ...lines.slice(2, 9), 'Y', ...lines.slice(10)].join('\n')}\n`)
+    d = await diff(repo, { kind: 'worktree', path: 'a.txt' }, zero)
+    sel = { [d.hunks.length - 1]: [0] }
+    expect(d.hunks.at(-1)!.lines[0]).toMatchObject({ type: 'del', text: 'L10' })
+    await ops.discardLines(repo, 'a.txt', sel, zero, selectionFingerprint(d, sel))
+    expect(readFileSync(join(repo, 'a.txt'), 'utf8').split('\n').slice(10, 13)).toEqual(['L9', 'L10', 'Y'])
+  })
+
+  it('stages a line in the block it belongs to among identical ones', async () => {
+    const repo = makeRepo()
+    const block = (name?: string) => ['  {', ...(name ? [`    "name": "${name}",`] : []), '    "enabled": true', '  },']
+    const json = (blocks: string[][], top: string[] = []) => `${['[', ...top, ...blocks.flat(), ']'].join('\n')}\n`
+    commit(repo, 'base', { 'a.json': json([1, 2, 3, 4, 5, 6].map(() => block())) })
+    write(repo, 'a.json', json([block(), block(), block('third'), block(), block(), block()], ['  "one",', '  "two",', '  "three",']))
+    const d = await diff(repo, { kind: 'worktree', path: 'a.json' }, OPTS)
+    const hi = d.hunks.findIndex(h => h.lines.some(l => l.text.includes('third')))
+    const sel = { [hi]: [d.hunks[hi].lines.findIndex(l => l.text.includes('third'))] }
+    await ops.stageLines(repo, 'a.json', sel, false, undefined, selectionFingerprint(d, sel))
+    expect(sh(repo, 'show', ':a.json')).toBe(json([block(), block(), block('third'), block(), block(), block()]).trim())
+  })
+
+  it('stages one of two removed lines at the end of a file without joining what is left', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'b\nb\nb' })
+    write(repo, 'a.txt', 'b\n')
+    const zero = { context: 0, ignoreWhitespace: false }
+    const d = await diff(repo, { kind: 'worktree', path: 'a.txt' }, zero)
+    const sel = { 0: [d.hunks[0].lines.findIndex(l => l.type === 'del')] }
+    await ops.stageLines(repo, 'a.txt', sel, false, zero, selectionFingerprint(d, sel))
+    expect(execFileSync('git', ['-C', repo, 'show', ':a.txt'], { encoding: 'utf8' }).split('\n').length).toBe(2)
+  })
+
   it('discards the removal of a last line that had no newline without joining it to the next', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a.txt': 'a\nb' })
