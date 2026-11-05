@@ -119,6 +119,15 @@ async function rawDiff(repo: string, source: DiffSource, opts: DiffOptions): Pro
 const HUNK_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$/
 
 export function parseDiff(raw: string, path: string, force = false): FileDiff {
+  // Sections of other files: in a file's history, a copy that "--follow" reports is diffed by both
+  // names, without copy detection, which gives one section each. The source's section was taken
+  // for the second half of a type change, and both files' changes were shown mixed as one.
+  // Only the file's own sections count (two of them are a type change).
+  const sections = raw.split(/^(?=diff --git )/m).filter(Boolean)
+  if (sections.length > 1) {
+    const own = sections.filter(s => s.slice(0, s.indexOf('\n')).endsWith(` b/${path}`))
+    if (own.length && own.length < sections.length) raw = own.join('')
+  }
   const result: FileDiff = {
     path, header: [], hunks: [], binary: false, isNew: false, isDeleted: false, additions: 0, deletions: 0, encoding: 'utf8',
   }

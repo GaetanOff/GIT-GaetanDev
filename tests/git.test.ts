@@ -1315,6 +1315,21 @@ describe('file history', () => {
     expect(b.lines.map(l => l.sha)).toEqual([sha])
   })
 
+  it('shows only the file\'s own change in a commit that copied it from another', async () => {
+    const repo = makeRepo()
+    const lines = Array.from({ length: 20 }, (_, i) => `line ${i}`).join('\n') + '\n'
+    commit(repo, 'one', { 'a.txt': lines })
+    write(repo, 'b.txt', lines)
+    write(repo, 'a.txt', `${lines}more\n`)
+    commit(repo, 'copy')
+    const sha = sh(repo, 'rev-parse', 'HEAD')
+    // As file history asks for it: "--follow" reported the copy, with its source as old path.
+    const d = await diff(repo, { kind: 'commit', sha, path: 'b.txt', oldPath: 'a.txt' }, OPTS)
+    expect(d.typeChange).toBeFalsy()
+    expect(d.additions).toBe(20)
+    expect(d.hunks.flatMap(h => h.lines).some(l => l.text === 'more')).toBe(false)
+  })
+
   it('follows a file across a rename, paths kept as they are', async () => {
     const repo = makeRepo()
     commit(repo, 'one', { 'a.txt': 'x\ny\nz\n' })
