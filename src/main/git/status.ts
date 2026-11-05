@@ -1,7 +1,7 @@
 import { existsSync, readFileSync } from 'node:fs'
 import { isAbsolute, join } from 'node:path'
 import type { FileChange, RepoOperation, RepoStatus, StatusChar } from '@shared/types'
-import { git, gitOut } from './exec'
+import { git, GitError, gitOut } from './exec'
 
 const gitDirs = new Map<string, string>()
 
@@ -141,14 +141,27 @@ export function operation(dir: string): { operation: RepoOperation; operationSte
   return { operation: null }
 }
 
-/** True when `path` is the top level of a git working tree. */
+/**
+ * True when `path` is inside a git working tree; false only where a
+ * repository may be created. Every failure read as "not a repository": one git
+ * refuses (dubious ownership, on a network share or an exFAT drive) was
+ * offered "git init", which made a second repository inside it. A bare
+ * repository and a .git folder hold no working files to show either.
+ */
 export async function isRepo(path: string): Promise<boolean> {
+  let out: string
   try {
-    const r = await git(path, ['rev-parse', '--is-inside-work-tree'])
-    return r.stdout.trim() === 'true'
-  } catch {
-    return false
+    out = (await git(path, ['rev-parse', '--is-inside-work-tree', '--is-inside-git-dir', '--is-bare-repository'])).stdout
+  } catch (e) {
+    if (e instanceof GitError && e.code === 'NOT_A_REPO') return false
+    throw e
   }
+  const [workTree, gitDirectory, bare] = out.trim().split(/\r?\n/)
+  if (workTree === 'true') return true
+  if (gitDirectory === 'true' || bare === 'true') {
+    throw new GitError('This folder is a repository\'s own data (a .git folder or a bare repository), with no working files to show. Open the folder that holds the files instead.')
+  }
+  return false
 }
 
 export async function topLevel(path: string): Promise<string> {

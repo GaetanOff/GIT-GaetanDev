@@ -21,7 +21,7 @@ vi.mock('electron', () => ({
 }))
 
 const ops = await import('../src/main/git/ops')
-const { indexRefreshDue, refreshIndex, status } = await import('../src/main/git/status')
+const { indexRefreshDue, isRepo, refreshIndex, status } = await import('../src/main/git/status')
 const { diff, parseDiff } = await import('../src/main/git/diff')
 const { conflict, resolveContent, resolveWhole } = await import('../src/main/git/conflict')
 const { refs, upstreamOf } = await import('../src/main/git/refs')
@@ -1424,6 +1424,23 @@ describe('history', () => {
     expect(readGitVersion('git version 3.0')).toMatchObject({ supported: true, recommended: true })
     expect(readGitVersion('not git')).toBeNull()
     expect((await gitVersion())?.supported).toBe(true)
+  })
+
+  // A repository git refuses was taken for a plain folder, and "Create one in it?" made a second
+  // repository inside it.
+  it('tells a folder a repository may be created in from one git refuses', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base')
+    mkdirSync(join(repo, 'src'))
+    expect(await isRepo(join(repo, '..'))).toBe(false)
+    expect(await isRepo(join(repo, 'src'))).toBe(true)
+    await expect(isRepo(join(repo, '.git'))).rejects.toThrow(/repository's own data/)
+    process.env.GIT_TEST_ASSUME_DIFFERENT_OWNER = '1'
+    try {
+      await expect(isRepo(join(repo, 'src'))).rejects.toThrow(/dubious ownership/)
+    } finally {
+      delete process.env.GIT_TEST_ASSUME_DIFFERENT_OWNER
+    }
   })
 
   it('says a repository\'s folder is gone, not that git is missing', async () => {
