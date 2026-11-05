@@ -189,8 +189,10 @@ export async function rebaseRun(repo: string, base: string | null, steps: Rebase
   const todoFile = join(dir, 'todo')
   await writeFile(todoFile, `${todo.join('\n')}\n`, 'utf8')
   // Staged changes come back staged afterwards (see keepingIndex), not all unstaged.
+  // --reschedule-failed-exec: a message a commit-msg hook refuses stops the rebase and is applied
+  // again on Continue. Without it, Continue went on past it and the commit kept its old message.
   await keepingIndex(repo, 'Changes set aside by GaetanDev Git before editing history', autostash =>
-    git(repo, ['rebase', '-i', ...(merges ? ['--rebase-merges'] : []), autostash ? '--autostash' : '--no-autostash', ...(base ? [base] : ['--root'])], {
+    git(repo, ['rebase', '-i', '--reschedule-failed-exec', ...(merges ? ['--rebase-merges'] : []), autostash ? '--autostash' : '--no-autostash', ...(base ? [base] : ['--root'])], {
       env: { GIT_SEQUENCE_EDITOR: `cp ${quote(todoFile)}`, GIT_EDITOR: 'true' },
     }))
 }

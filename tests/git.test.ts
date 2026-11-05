@@ -775,6 +775,22 @@ describe('edit history', () => {
     expect(sh(repo, 'log', '-1', '--format=%s')).toBe('made elsewhere')
   })
 
+  // The message is applied by an "exec" step, which Continue went on past once it had failed.
+  it('keeps a reworded message a hook refused, to apply it again on Continue', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'f.txt': 'base\n' })
+    commit(repo, 'c1', { 'f.txt': 'one\n' })
+    const hook = join(repo, '.git', 'hooks', 'commit-msg')
+    writeFileSync(hook, '#!/bin/sh\ngrep -q "^JIRA-" "$1" || { echo "missing ticket" >&2; exit 1; }\n', { mode: 0o755 })
+    const plan = await rebasePlan(repo, 'HEAD~1')
+    await expect(rebaseRun(repo, plan.base, [{ sha: plan.commits[0].sha, action: 'reword', message: 'one, reworded' }], plan.head)).rejects.toThrow()
+    expect((await status(repo)).operation).toBe('rebase')
+    // The hook fixed (or bypassed), Continue applies the message it refused.
+    rmSync(hook)
+    await ops.continueOp(repo)
+    expect(sh(repo, 'log', '-1', '--format=%s')).toBe('one, reworded')
+  })
+
   it('keeps the messages of a stopped rebase when asked to edit history again', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'f.txt': 'base\n' })
