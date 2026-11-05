@@ -26,11 +26,24 @@ export function smokeTest(win: BrowserWindow): void {
   win.webContents.on('console-message', e => { if (e.level === 'error') console.error('[renderer]', e.message) })
   win.webContents.once('did-fail-load', (_e, code, description) => fail(1, `the page failed to load (${code} ${description})`))
   win.webContents.once('render-process-gone', (_e, details) => fail(2, `the page crashed (${details.reason})`))
+  // Started means the interface got past its loading screen. The page's root always holds the
+  // window's frame, which also shows "could not start" (a preload that did not run, the main process
+  // refusing the page, app:state failing) or a spinner that never ends: those passed all the same.
+  const check = `(() => {
+    if (!window.gdg) return 'the preload did not run'
+    if (!document.querySelector('.shell')) return 'starting'
+    const failed = document.querySelector('.boot.failed')
+    if (failed) return 'it says: ' + failed.textContent
+    return document.querySelector('.boot') ? 'starting' : 'ok'
+  })()`
   win.webContents.once('did-finish-load', async () => {
-    await new Promise(resolve => setTimeout(resolve, 1500))
-    const mounted = await win.webContents.executeJavaScript("!!document.getElementById('app')?.children.length").catch(() => false)
+    let state = 'starting'
+    for (const end = Date.now() + 30_000; state === 'starting' && Date.now() < end;) {
+      await new Promise(resolve => setTimeout(resolve, 500))
+      state = await win.webContents.executeJavaScript(check).catch((e: Error) => `the page could not be checked: ${e.message}`)
+    }
     clearTimeout(timer)
-    if (!mounted) return fail(4, 'the page loaded but the interface did not mount')
+    if (state !== 'ok') return fail(4, `the interface did not start (${state === 'starting' ? 'still loading after 30 seconds' : state})`)
     console.log('Smoke test passed.')
     app.exit(0)
   })
