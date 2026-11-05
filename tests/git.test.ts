@@ -640,6 +640,30 @@ describe('undo and force push', () => {
     expect(second).toMatchObject({ kind: 'rebase', before: { sha: otherTip, branch: 'other' } })
   })
 
+  // git names those entries after the whole command, "pull --rebase --no-autostash --progress (pick)":
+  // undoing the top one did nothing, and each pick undid to a half-rebased branch.
+  it('undoes the app\'s own pull with rebase as one operation', async () => {
+    const bare = join(makeRepo(), '..', 'remote.git')
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare])
+    const repo = makeRepo()
+    sh(repo, 'remote', 'add', 'origin', bare)
+    commit(repo, 'base')
+    await ops.push(repo, { setUpstream: true }, () => undefined)
+    const other = makeRepo()
+    sh(other, 'remote', 'add', 'origin', bare)
+    sh(other, 'fetch', '-q', 'origin')
+    sh(other, 'checkout', '-q', '-B', 'main', 'origin/main')
+    commit(other, 'theirs', { 'c.txt': 'c\n' })
+    sh(other, 'push', '-q', 'origin', 'main')
+    commit(repo, 'mine 1', { 'm1.txt': '1\n' })
+    commit(repo, 'mine 2', { 'm2.txt': '2\n' })
+    const tip = sh(repo, 'rev-parse', 'HEAD')
+    await ops.pull(repo, 'rebase', () => undefined)
+    const [pull, next] = await operations(repo)
+    expect(pull).toMatchObject({ kind: 'pull', before: { sha: tip, branch: 'main' }, after: { sha: sh(repo, 'rev-parse', 'HEAD') } })
+    expect(next.after.sha).toBe(tip)
+  })
+
   it.each([
     ['push.default', 'matching'],
     // The remote's own refspecs come before push.default, which then changed nothing.
