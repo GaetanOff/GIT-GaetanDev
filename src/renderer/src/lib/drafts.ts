@@ -11,6 +11,12 @@ export interface Draft {
   amend: boolean
   coAuthors?: string[]
   prefill?: { for: string; text: string }
+  /**
+   * What the box held when Amend was ticked, put back when it is unticked.
+   * The repository's own: kept by the commit box for all of them, another
+   * tab's text came back here, and after a restart none did.
+   */
+  amendBackup?: { summary: string; body: string }
 }
 
 /** The merge, cherry-pick or revert commit waiting to be made, as "operation:commit"; '' when none. */
