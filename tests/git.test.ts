@@ -989,6 +989,20 @@ describe('line operations', () => {
     expect(execFileSync('git', ['-C', repo, 'show', ':résumé.txt']).toString('latin1')).toBe('caf\xe9 1\n')
   })
 
+  it('unstages lines of a file renamed from a name with accents, its content not UTF-8', async () => {
+    const repo = makeRepo()
+    writeFileSync(join(repo, 'résumé.txt'), Buffer.from('caf\xe9 1\nline 2\nline 3\nline 4\n', 'latin1'))
+    commit(repo, 'base')
+    sh(repo, 'mv', 'résumé.txt', 'new.txt')
+    writeFileSync(join(repo, 'new.txt'), Buffer.from('caf\xe9 1\nLINE 2\nline 3\nline 4\n', 'latin1'))
+    sh(repo, 'add', 'new.txt')
+    const d = await diff(repo, { kind: 'index', path: 'new.txt', oldPath: 'résumé.txt' }, OPTS)
+    expect(d.oldPath).toBe('résumé.txt')
+    const sel = { 0: d.hunks[0].lines.flatMap((l, i) => (l.type === 'ctx' ? [] : [i])) }
+    await ops.unstageLines(repo, 'new.txt', sel, undefined, selectionFingerprint(d, sel), d.oldPath)
+    expect(sh(repo, '-c', 'core.quotepath=false', 'status', '--porcelain')).toBe('RM résumé.txt -> new.txt')
+  })
+
   it('stages some lines of a deleted file named with accents and not stored as UTF-8', async () => {
     const repo = makeRepo()
     writeFileSync(join(repo, 'résumé.txt'), Buffer.from('caf\xe9 1\nline 2\n', 'latin1'))

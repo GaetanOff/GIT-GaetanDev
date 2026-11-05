@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { extname, join } from 'node:path'
 import type { DiffHunk, DiffLine, DiffOptions, DiffSource, FileDiff, LineSelection, TextEncoding } from '@shared/types'
+import { unquote } from './blame'
 import { decode, decodeOutput, detect, encode } from './encoding'
 import { git, gitOut, GitError } from './exec'
 
@@ -57,6 +58,14 @@ async function parsed(repo: string, source: DiffSource, opts: DiffOptions, out: 
   const { text, encoding } = decodeOutput(out.raw)
   // Cut at MAX_DIFF_BYTES: the end is missing, so it is shown as too large, without hunks to act on.
   const parsed = parseDiff(text, source.path, opts.force && !out.truncated)
+  // git writes paths in UTF-8, quoting unusual ones, whatever the content's encoding: decoded with
+  // that encoding (Windows-1252), a renamed file's old name came out garbled ("rÃ©sumÃ©.txt"),
+  // and sent back to git with "Unstage lines", whose diff then no longer matched the one shown.
+  if (parsed.oldPath) {
+    const end = out.raw.indexOf('\n@@')
+    const from = /^rename from (.*)$/m.exec(out.raw.subarray(0, end < 0 ? undefined : end).toString('utf8'))?.[1]
+    if (from) parsed.oldPath = unquote(from)
+  }
   if (out.truncated) {
     parsed.tooLarge = true
     parsed.truncated = true
