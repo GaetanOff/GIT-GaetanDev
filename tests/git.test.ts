@@ -1468,6 +1468,26 @@ describe('file history', () => {
     ])
   })
 
+  // --skip counted the commits walked, before --follow, -S and -G keep those that match: the next
+  // page repeated most of the one before, and one past a rename never followed it.
+  it('pages a file\'s history and a search by diff by the commits they show', async () => {
+    const repo = makeRepo()
+    for (let i = 0; i <= 6; i++) {
+      commit(repo, `f${i}`, { 'a.txt': `v${i}\n` })
+      commit(repo, `x${i}`, { 'x.txt': `x${i}\n` })
+      commit(repo, `y${i}`, { 'y.txt': `y${i}\n` })
+    }
+    const page = ['f3', 'f2', 'f1']
+    expect((await fileLog(repo, 'a.txt', 3, 3)).map(c => c.subject)).toEqual(page)
+    expect((await log(repo, { scope: 'current', skip: 3, limit: 3, path: 'a.txt' })).map(c => c.subject)).toEqual(page)
+    expect((await log(repo, { scope: 'current', skip: 3, limit: 3, search: 'v[0-9]', searchMode: 'regex' })).map(c => c.subject)).toEqual(page)
+    expect((await log(repo, { scope: 'current', skip: 3, limit: 3, search: 'f', searchMode: 'message' })).map(c => c.subject)).toEqual(page)
+    sh(repo, 'mv', 'a.txt', 'b.txt')
+    commit(repo, 'renamed')
+    commit(repo, 'g', { 'b.txt': 'v6\nw\n' })
+    expect((await fileLog(repo, 'b.txt', 3, 2)).map(c => c.subject)).toEqual(['f5', 'f4'])
+  })
+
   it('unquotes the C-quoted paths of blame output', () => {
     expect(unquote('plain name.txt')).toBe('plain name.txt')
     expect(unquote('"a\\"b\\\\c\\td.txt"')).toBe('a"b\\c\td.txt')
