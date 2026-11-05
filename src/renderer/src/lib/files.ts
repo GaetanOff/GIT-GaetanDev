@@ -2,6 +2,7 @@ import type { FileChange } from '@shared/types'
 import { api } from './api'
 import { basename } from './format'
 import { ignoreLiteral } from './gitignore'
+import { conflictSides, type ConflictSide } from './sides'
 import { app, type Area } from './state.svelte'
 import { confirm, openDialog, prompt, toast, type MenuItem } from './ui.svelte'
 
@@ -57,14 +58,14 @@ export async function markResolved(path: string): Promise<void> {
 }
 
 /** Takes one side of a conflicted file whole; any hand edits in the file are replaced, so ask first. */
-export async function resolveWith(path: string, side: 'ours' | 'theirs'): Promise<void> {
+export async function resolveWith(path: string, pick: ConflictSide): Promise<void> {
   const target = repo()
   const ok = await confirm({
-    title: side === 'ours' ? 'Use your version?' : 'Use their version?',
-    message: `“${basename(path)}” becomes ${side === 'ours' ? 'your' : 'their'} version as a whole. Edits you made to it while resolving are replaced.`,
-    confirmLabel: side === 'ours' ? 'Use mine' : 'Use theirs',
+    title: pick.title,
+    message: `“${basename(path)}” becomes ${pick.becomes} as a whole. Edits you made to it while resolving are replaced.`,
+    confirmLabel: pick.confirmLabel,
   })
-  if (ok) await app.run('Resolving', () => api['git:resolve'](target, path, side))
+  if (ok) await app.run('Resolving', () => api['git:resolve'](target, path, pick.side))
 }
 
 export function fileMenu(file: FileChange, area: Area, selection: string[]): MenuItem[] {
@@ -75,9 +76,10 @@ export function fileMenu(file: FileChange, area: Area, selection: string[]): Men
   const items: MenuItem[] = []
 
   if (area === 'conflicted') {
+    const [mine, other] = conflictSides(app.status?.operation)
     items.push(
-      { label: 'Use my version (ours)', icon: 'check', run: () => resolveWith(file.path, 'ours') },
-      { label: 'Use their version (theirs)', icon: 'check', run: () => resolveWith(file.path, 'theirs') },
+      { label: mine.label, icon: 'check', run: () => resolveWith(file.path, mine) },
+      { label: other.label, icon: 'check', run: () => resolveWith(file.path, other) },
       { label: 'Mark as resolved', icon: 'check', hint: 'Stage', run: () => markResolved(file.path) },
       'sep',
     )

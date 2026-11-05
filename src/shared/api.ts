@@ -32,7 +32,8 @@ export interface Api {
   'repo:init'(path: string): Promise<RepoEntry>
   'repo:clone'(url: string, parent: string, name: string): Promise<RepoEntry>
   /** Stops the clone under way; it then fails with code CANCELLED and its folder is removed. */
-  'repo:cancelClone'(): Promise<void>
+  /** Stops the clone into `parent`/`name`, as given to repo:clone. */
+  'repo:cancelClone'(parent: string, name: string): Promise<void>
   'repo:remove'(id: string): Promise<RepoEntry[]>
   'repo:open'(id: string): Promise<RepoEntry>
   'repo:pin'(id: string, pinned: boolean): Promise<RepoEntry[]>
@@ -54,7 +55,7 @@ export interface Api {
   'git:lastCommitMessage'(repo: string): Promise<string>
   'git:preparedMessage'(repo: string): Promise<string>
   /** `expect`: the commit to undo; refused if HEAD is another one by now. */
-  'git:undoCommit'(repo: string, expect?: string): Promise<string>
+  'git:undoCommit'(repo: string, expect?: string): Promise<{ message: string; amended: boolean }>
   'git:resolve'(repo: string, path: string, side: 'ours' | 'theirs'): Promise<void>
   /** `message`: the commit message the user wrote, for a merge, cherry-pick or revert; git's own otherwise. */
   'git:continue'(repo: string, message?: string): Promise<void>

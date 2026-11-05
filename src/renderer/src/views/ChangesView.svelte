@@ -111,8 +111,13 @@
       anchor = key(target.r.area, target.r.file.path)
       list?.reveal(target.i)
     }
+    // Keys on a button of the list (a section's toggle, "Stage all", a row's own buttons) are that
+    // button's: Enter or Space staged the selected file instead, and Delete discarded it. Nor is
+    // the selection acted on while its section is collapsed, out of sight.
+    if ((e.target as HTMLElement).closest('button') && e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return
     if (e.key === 'ArrowDown') { e.preventDefault(); move(pos + 1) }
     else if (e.key === 'ArrowUp') { e.preventDefault(); move(pos - 1) }
+    else if (!selectedFile) return
     else if ((e.key === ' ' || e.key === 'Enter') && app.selected) {
       e.preventDefault()
       const area = app.selected.area

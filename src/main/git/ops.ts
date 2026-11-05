@@ -4,6 +4,7 @@ import { homedir, tmpdir } from 'node:os'
 import { basename, isAbsolute, join } from 'node:path'
 import { shell } from 'electron'
 import { selectionFingerprint, type Author, type DiffOptions, type FileChange, type FileDiff, type LineSelection, type Progress, type PullMode, type ResetMode, type RepoStatus } from '@shared/types'
+import { resolveWhole } from './conflict'
 import { applyPatch, buildPartialPatch, diff } from './diff'
 import { assertRefName, git, gitOut, GitError, literal } from './exec'
 import { currentBranch, defaultRemote, remoteOf, upstreamOf } from './refs'
@@ -239,7 +240,10 @@ export async function preparedMessage(repo: string): Promise<string> {
     const last = [...lines].reverse().find(l => l.trim())
     // "auto": git picked a character no line starts with; its own comments come last.
     const mark = configured && configured !== 'auto' ? configured : configured === 'auto' && last && '#;@!$%^&|:'.includes(last[0]) ? last[0] : '#'
-    while (lines.length && (!lines[lines.length - 1].trim() || lines[lines.length - 1].startsWith(mark))) lines.pop()
+    // git's own comment lines are the mark alone or followed by a space or a tab ("# Conflicts:",
+    // "#\tf.txt"): "#42 Fix login", a subject with no body, went with them, and the prefill was empty.
+    const comment = (l: string) => l.startsWith(mark) && [undefined, ' ', '\t'].includes(l[mark.length])
+    while (lines.length && (!lines[lines.length - 1].trim() || comment(lines[lines.length - 1]))) lines.pop()
     return lines.join('\n').trim()
   }
   return ''
@@ -250,32 +254,60 @@ export async function lastCommitMessage(repo: string): Promise<string> {
 }
 
 /**
- * Moves HEAD back one commit and keeps its changes staged; returns its message.
- * With `expect`, only that commit is undone: a toast's Undo must not take back
- * a commit made after it.
+ * Takes back the last commit and keeps its changes staged; returns its message
+ * and whether it was an amend. With `expect`, only that commit is undone: a
+ * toast's Undo must not take back a commit made after it.
+ * - An amend goes back to the commit it replaced: going to that commit's
+ *   parent took it back too.
+ * - A merge becomes the merge in progress it was. The reset alone kept its
+ *   changes staged without MERGE_HEAD, and committing them again made an
+ *   ordinary commit, a squash of the merged branch.
  */
-export async function undoCommit(repo: string, expect?: string): Promise<string> {
-  if (expect) {
-    const head = (await git(repo, ['rev-parse', '-q', '--verify', 'HEAD'], { okCodes: [1] })).stdout.trim()
-    if (head !== expect) throw new GitError('That commit is no longer the last one on this branch, so it was not undone.')
-  }
+export async function undoCommit(repo: string, expect?: string): Promise<{ message: string; amended: boolean }> {
+  const dir = await gitDir(repo)
+  const busy = operation(dir).operation
+  if (busy) throw new GitError(`A ${busy} is in progress. Continue or abort it first.`)
+  const head = (await git(repo, ['rev-parse', '-q', '--verify', 'HEAD'], { okCodes: [1] })).stdout.trim()
+  if (expect && head !== expect) throw new GitError('That commit is no longer the last one on this branch, so it was not undone.')
   const message = await lastCommitMessage(repo)
-  const hasParent = await git(repo, ['rev-parse', '--verify', '-q', 'HEAD~1'], { okCodes: [1] }).then(r => r.code === 0)
-  if (hasParent) {
+  const [last, before] = (await git(repo, ['reflog', 'show', '-n2', '--format=%H%x1f%gs', 'HEAD', '--'], { okCodes: [128] })).stdout
+    .split('\n').filter(Boolean).map(l => l.split('\x1f'))
+  if (last?.[0] === head && last[1].startsWith('commit (amend):') && before?.[0]) {
+    await git(repo, ['reset', '--soft', before[0]])
+    return { message, amended: true }
+  }
+  const parents = (await gitOut(repo, ['rev-parse', 'HEAD^@'])).split('\n').filter(Boolean)
+  if (parents.length) {
     await git(repo, ['reset', '--soft', 'HEAD~1'])
-    return message
+    if (parents.length > 1) {
+      // As git leaves a merge stopped before its commit; "no-ff" keeps both parents when it is made.
+      await writeFile(join(dir, 'MERGE_HEAD'), parents.slice(1).map(p => `${p}\n`).join(''))
+      await writeFile(join(dir, 'MERGE_MSG'), `${message}\n`)
+      await writeFile(join(dir, 'MERGE_MODE'), 'no-ff')
+    }
+    return { message, amended: false }
+  }
+  // The oldest commit of a shallow clone: its parent exists, only not here. Taken for the first
+  // commit, its branch was deleted, and the next commit began a history unrelated to the remote's.
+  const raw = await gitOut(repo, ['cat-file', 'commit', 'HEAD'])
+  if (/^parent /m.test(raw.slice(0, raw.indexOf('\n\n')))) {
+    throw new GitError('The commit before this one was not downloaded (a shallow clone), so this commit cannot be undone here. Fetch the full history first.')
   }
   // The first commit: its branch goes back to unborn. Never `update-ref -d HEAD`, which on a
   // detached HEAD deletes .git/HEAD itself and leaves a folder git no longer sees as a repository.
   const branch = (await git(repo, ['symbolic-ref', '-q', 'HEAD'], { okCodes: [1] })).stdout.trim()
   if (!branch) throw new GitError('This is the first commit and no branch is checked out, so there is nothing to undo it into.')
   await git(repo, ['update-ref', '-d', branch])
-  return message
+  return { message, amended: false }
 }
 
+/**
+ * Takes one side of a conflicted file whole, from the file list. The same as
+ * the conflict view's pick: "checkout --theirs" did nothing to a submodule,
+ * and the "add" after it recorded the commit it had checked out, ours.
+ */
 export async function resolve(repo: string, path: string, side: 'ours' | 'theirs'): Promise<void> {
-  await git(repo, ['checkout', `--${side}`, '--', literal(path)])
-  await git(repo, ['add', '--', path])
+  await resolveWhole(repo, path, side)
 }
 
 /** Commands that keep going without opening an editor. */
@@ -580,6 +612,13 @@ export async function push(repo: string, opts: { force?: boolean; setUpstream?: 
     const remote = await defaultRemote(repo)
     if (!remote) throw new GitError('This repository has no remote. Add one in the sidebar first.')
     args.push('--set-upstream', remote, `HEAD:refs/heads/${branch}`)
+  } else {
+    // A remote's own push refspecs (remote.<name>.push) come before push.default: left to git,
+    // `refs/heads/*:refs/heads/*` published every local branch, and a force push rewrote them all.
+    // The branch goes where git itself would push it, named, so nothing else goes along. With no
+    // single destination (an upstream of another name under "simple"), git's own push says why.
+    const [remote, ref] = (await gitOut(repo, ['for-each-ref', '--format=%(push:remotename)%00%(push:remoteref)', `refs/heads/${branch}`])).trim().split('\0')
+    if (remote && ref) args.push(remote, `HEAD:${ref}`)
   }
   try {
     await git(repo, args, { onStderrLine: progressHandler('push', upstream ? 'Pushing' : 'Publishing branch', report) })
@@ -588,7 +627,18 @@ export async function push(repo: string, opts: { force?: boolean; setUpstream?: 
   }
 }
 
+/**
+ * A remote this repository has. Given anything else, git pushed to it as a
+ * URL: a compromised page could publish a tag's whole history anywhere, or
+ * name "\\host\share" and send the user's NTLM hash there.
+ */
+async function assertRemote(repo: string, remote: string): Promise<void> {
+  const remotes = (await gitOut(repo, ['remote'])).split('\n').filter(Boolean)
+  if (!remotes.includes(remote)) throw new GitError(`"${remote}" is not a remote of this repository.`)
+}
+
 export async function pushTag(repo: string, remote: string, name: string, report: Reporter): Promise<void> {
+  await assertRemote(repo, remote)
   try {
     await git(repo, ['push', '--progress', remote, `refs/tags/${name}`], { onStderrLine: progressHandler('push', `Pushing tag ${name}`, report) })
   } finally {
@@ -597,6 +647,7 @@ export async function pushTag(repo: string, remote: string, name: string, report
 }
 
 export async function deleteRemoteBranch(repo: string, remote: string, branch: string, report: Reporter): Promise<void> {
+  await assertRemote(repo, remote)
   try {
     // By its full name: a bare one is resolved on the server, where a tag of that name (the branch
     // itself already gone) was deleted instead.

@@ -1,8 +1,10 @@
 import { execFileSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { basename, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { afterAll, describe, expect, it, vi } from 'vitest'
 import { selectionFingerprint } from '@shared/types'
+import { conflictSides } from '../src/renderer/src/lib/sides'
 import { cleanup, commit, makeRepo, sh, write } from './helpers'
 
 /** The recycle bin, in tests: a file "moved to the trash" is renamed next to itself. */
@@ -19,7 +21,7 @@ vi.mock('electron', () => ({
 }))
 
 const ops = await import('../src/main/git/ops')
-const { indexRefreshDue, refreshIndex, status } = await import('../src/main/git/status')
+const { indexRefreshDue, isRepo, refreshIndex, status } = await import('../src/main/git/status')
 const { diff, parseDiff } = await import('../src/main/git/diff')
 const { conflict, resolveContent, resolveWhole } = await import('../src/main/git/conflict')
 const { refs, upstreamOf } = await import('../src/main/git/refs')
@@ -244,19 +246,21 @@ describe('commit', () => {
     expect(sh(repo, 'log', '-1', '--format=%B')).toBe('#12 fix login\n\n# not a comment')
   })
 
-  it('prefills a cherry-pick message that starts with "#" in full', async () => {
+  // Without a body, git's "# Conflicts:" block was stripped together with the subject: the prefill
+  // came out empty, and Continue failed on "Aborting commit due to empty commit message".
+  it.each(['#42 Fix login\n\nDetails here', '#42 Fix login'])('prefills a cherry-pick message that starts with "#" in full: %j', async message => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a.txt': 'base\n' })
     sh(repo, 'checkout', '-q', '-b', 'topic')
     write(repo, 'a.txt', 'topic\n')
     sh(repo, 'add', 'a.txt')
-    sh(repo, 'commit', '-q', '--cleanup=verbatim', '-m', '#42 Fix login\n\nDetails here')
+    sh(repo, 'commit', '-q', '--cleanup=verbatim', '-m', message)
     const pick = sh(repo, 'rev-parse', 'HEAD')
     sh(repo, 'checkout', '-q', 'main')
     commit(repo, 'ours', { 'a.txt': 'ours\n' })
     await expect(ops.cherryPick(repo, [pick])).rejects.toThrow()
     expect(readFileSync(join(repo, '.git', 'MERGE_MSG'), 'utf8')).toMatch(/# Conflicts:/)
-    expect(await ops.preparedMessage(repo)).toBe('#42 Fix login\n\nDetails here')
+    expect(await ops.preparedMessage(repo)).toBe(message)
   })
 
   it('refuses branch and tag names git would reject or read as options', async () => {
@@ -288,6 +292,20 @@ describe('commit', () => {
     expect(readFileSync(join(repo, '.git', 'seen'), 'utf8').trim()).toBe('y.js')
   })
 
+  // The job holds git's output open: the commit, and its repository's queue, waited for it to end.
+  it('finishes a commit when git does, even with a job a hook left running', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base')
+    const late = join(repo, '.git', 'late')
+    writeFileSync(join(repo, '.git', 'hooks', 'post-commit'), '#!/bin/sh\n(sleep 10; echo done > .git/late) &\n', { mode: 0o755 })
+    write(repo, 'a.txt', 'a\n')
+    await ops.stage(repo, ['a.txt'])
+    await ops.commit(repo, 'add a', false)
+    expect(existsSync(late)).toBe(false)
+    // Ended before the folder is removed.
+    await vi.waitFor(() => expect(existsSync(late)).toBe(true), { timeout: 30_000, interval: 250 })
+  })
+
   it('takes a side of a conflict for that file only, whatever its name', async () => {
     const repo = makeRepo()
     commit(repo, 'base', { 'a[1].txt': 'base\n', 'a1.txt': 'base\n' })
@@ -299,6 +317,27 @@ describe('commit', () => {
     await ops.resolve(repo, 'a[1].txt', 'theirs')
     expect(readFileSync(join(repo, 'a[1].txt'), 'utf8')).toBe('theirs\n')
     expect(readFileSync(join(repo, 'a1.txt'), 'utf8')).toMatch(/^<<<<<<< /m)
+  })
+
+  it.each([
+    ['merge', ['merge', 'other']],
+    // git's "ours" is then the branch rebased onto: "Use my version" kept the upstream file.
+    ['rebase', ['rebase', 'main']],
+  ])('keeps the user’s own version of a file when a %s stops on it', async (_, command) => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'base\n' })
+    sh(repo, 'checkout', '-q', '-b', 'other')
+    commit(repo, 'other', { 'a.txt': 'other\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'main', { 'a.txt': 'main\n' })
+    // Merging, the user is on main; rebasing, on the branch replayed onto main.
+    const mine = command[0] === 'merge' ? 'main\n' : 'other\n'
+    if (command[0] === 'rebase') sh(repo, 'checkout', '-q', 'other')
+    await git(repo, command, { okCodes: [1] })
+    const [own, theirs] = conflictSides((await status(repo)).operation)
+    await ops.resolve(repo, 'a.txt', own.side)
+    expect(readFileSync(join(repo, 'a.txt'), 'utf8')).toBe(mine)
+    expect(theirs.side).not.toBe(own.side)
   })
 
   it('shows the identity a commit really gets, includeIf included', async () => {
@@ -353,8 +392,60 @@ describe('commit', () => {
     commit(repo, 'second')
     await expect(ops.undoCommit(repo, first)).rejects.toThrow(/no longer the last one/)
     expect(sh(repo, 'log', '-1', '--format=%s')).toBe('second')
-    expect(await ops.undoCommit(repo, sh(repo, 'rev-parse', 'HEAD'))).toBe('second')
+    expect(await ops.undoCommit(repo, sh(repo, 'rev-parse', 'HEAD'))).toEqual({ message: 'second', amended: false })
     expect(sh(repo, 'log', '-1', '--format=%s')).toBe('first')
+  })
+
+  // A reset alone kept the merged changes staged without MERGE_HEAD: committing them again made a
+  // one-parent commit, a squash of the merged branch.
+  it('undoes a merge commit into the merge in progress it was', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'a\n' })
+    sh(repo, 'checkout', '-q', '-b', 'feature')
+    commit(repo, 'feature', { 'b.txt': 'b\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    // A merge git could have fast-forwarded: made again, it must keep both parents.
+    sh(repo, 'merge', '-q', '--no-ff', '-m', 'Merge feature', 'feature')
+    expect(await ops.undoCommit(repo)).toEqual({ message: 'Merge feature', amended: false })
+    expect(await status(repo)).toMatchObject({ operation: 'merge', operationHead: sh(repo, 'rev-parse', 'feature') })
+    expect(sh(repo, 'diff', '--cached', '--name-only')).toBe('b.txt')
+    await ops.continueOp(repo)
+    expect(sh(repo, 'log', '-1', '--format=%P %s')).toBe(`${sh(repo, 'rev-parse', 'HEAD~1')} ${sh(repo, 'rev-parse', 'feature')} Merge feature`)
+  })
+
+  it('undoes an amend back to the commit it replaced', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'a\n' })
+    commit(repo, 'first', { 'b.txt': 'b\n' })
+    const first = sh(repo, 'rev-parse', 'HEAD')
+    write(repo, 'c.txt', 'c\n')
+    await ops.stage(repo, ['c.txt'])
+    await ops.commit(repo, 'first, amended', true)
+    expect(await ops.undoCommit(repo)).toEqual({ message: 'first, amended', amended: true })
+    expect(sh(repo, 'rev-parse', 'HEAD')).toBe(first)
+    expect(sh(repo, 'diff', '--cached', '--name-only')).toBe('c.txt')
+  })
+
+  it('keeps the branch of a shallow clone, whose oldest commit has a parent elsewhere', async () => {
+    const origin = makeRepo('origin')
+    commit(origin, 'one')
+    commit(origin, 'two')
+    const clone = join(origin, '..', 'clone')
+    execFileSync('git', ['clone', '-q', '--depth', '1', pathToFileURL(origin).href, clone])
+    await expect(ops.undoCommit(clone)).rejects.toThrow(/shallow clone/)
+    expect(sh(clone, 'rev-parse', 'main')).toBe(sh(origin, 'rev-parse', 'main'))
+  })
+
+  it('undoes no commit while an operation is under way', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'a.txt': 'base\n' })
+    sh(repo, 'checkout', '-q', '-b', 'other')
+    commit(repo, 'other', { 'a.txt': 'other\n' })
+    sh(repo, 'checkout', '-q', 'main')
+    commit(repo, 'main', { 'a.txt': 'main\n' })
+    await git(repo, ['merge', 'other'], { okCodes: [1] })
+    await expect(ops.undoCommit(repo)).rejects.toThrow(/merge is in progress/)
+    expect(sh(repo, 'log', '-1', '--format=%s')).toBe('main')
   })
 
   it('undoes the first commit into an unborn branch, and never on a detached HEAD', async () => {
@@ -365,7 +456,7 @@ describe('commit', () => {
     await expect(ops.undoCommit(repo)).rejects.toThrow(/no branch is checked out/)
     expect(sh(repo, 'rev-parse', 'HEAD')).toBe(sh(repo, 'rev-parse', 'main~1'))
     sh(repo, 'checkout', '-q', '-b', 'only-root')
-    expect(await ops.undoCommit(repo)).toBe('root')
+    expect(await ops.undoCommit(repo)).toEqual({ message: 'root', amended: false })
     expect(sh(repo, 'symbolic-ref', 'HEAD')).toBe('refs/heads/only-root')
     expect(sh(repo, 'diff', '--cached', '--name-only')).toBe('a.txt')
   })
@@ -551,7 +642,44 @@ describe('undo and force push', () => {
     expect(second).toMatchObject({ kind: 'rebase', before: { sha: otherTip, branch: 'other' } })
   })
 
-  it('pushes the current branch only, even where push.default says "matching"', async () => {
+  // Any other name reached git as a URL: a tag's history published anywhere, or "\\host" looked up.
+  it('pushes tags and deletes remote branches on the repository\'s own remotes only', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base')
+    sh(repo, 'tag', 'v1')
+    await expect(ops.pushTag(repo, '\\\\attacker\\share\\r', 'v1', () => undefined)).rejects.toThrow(/not a remote/)
+    await expect(ops.deleteRemoteBranch(repo, 'https://example.com/x.git', 'main', () => undefined)).rejects.toThrow(/not a remote/)
+  })
+
+  // git names those entries after the whole command, "pull --rebase --no-autostash --progress (pick)":
+  // undoing the top one did nothing, and each pick undid to a half-rebased branch.
+  it('undoes the app\'s own pull with rebase as one operation', async () => {
+    const bare = join(makeRepo(), '..', 'remote.git')
+    execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare])
+    const repo = makeRepo()
+    sh(repo, 'remote', 'add', 'origin', bare)
+    commit(repo, 'base')
+    await ops.push(repo, { setUpstream: true }, () => undefined)
+    const other = makeRepo()
+    sh(other, 'remote', 'add', 'origin', bare)
+    sh(other, 'fetch', '-q', 'origin')
+    sh(other, 'checkout', '-q', '-B', 'main', 'origin/main')
+    commit(other, 'theirs', { 'c.txt': 'c\n' })
+    sh(other, 'push', '-q', 'origin', 'main')
+    commit(repo, 'mine 1', { 'm1.txt': '1\n' })
+    commit(repo, 'mine 2', { 'm2.txt': '2\n' })
+    const tip = sh(repo, 'rev-parse', 'HEAD')
+    await ops.pull(repo, 'rebase', () => undefined)
+    const [pull, next] = await operations(repo)
+    expect(pull).toMatchObject({ kind: 'pull', before: { sha: tip, branch: 'main' }, after: { sha: sh(repo, 'rev-parse', 'HEAD') } })
+    expect(next.after.sha).toBe(tip)
+  })
+
+  it.each([
+    ['push.default', 'matching'],
+    // The remote's own refspecs come before push.default, which then changed nothing.
+    ['remote.origin.push', 'refs/heads/*:refs/heads/*'],
+  ])('pushes the current branch only, even where %s says "%s"', async (key, value) => {
     const bare = join(makeRepo(), '..', 'remote.git')
     execFileSync('git', ['init', '-q', '--bare', '-b', 'main', bare])
     const repo = makeRepo()
@@ -566,7 +694,7 @@ describe('undo and force push', () => {
     commit(repo, 'rewritten b', { 'b.txt': 'b\n' })
     sh(repo, 'checkout', '-q', 'main')
     commit(repo, 'main moves', { 'm.txt': 'm\n' })
-    sh(repo, 'config', 'push.default', 'matching')
+    sh(repo, 'config', key, value)
     await ops.push(repo, { force: true }, () => undefined)
     const remoteLog = (ref: string) => execFileSync('git', ['-C', bare, 'log', '-1', '--format=%s', ref], { encoding: 'utf8' }).trim()
     expect(remoteLog('main')).toBe('main moves')
@@ -656,6 +784,42 @@ describe('edit history', () => {
     const steps = plan.commits.map(c => ({ sha: c.sha, action: 'pick' as const }))
     await expect(rebaseRun(repo, plan.base, steps, plan.head)).rejects.toThrow(/changed since this plan/)
     expect(sh(repo, 'log', '-1', '--format=%s')).toBe('made elsewhere')
+  })
+
+  // `rebase -i <base>` moved the branch onto a base outside it, from a plan that never showed it.
+  it('edits only the current branch\'s own history', async () => {
+    const repo = makeRepo()
+    commit(repo, 'b0', { 'b.txt': '0\n' })
+    sh(repo, 'checkout', '-q', '-b', 'release')
+    commit(repo, 'r1', { 'r.txt': '1\n' })
+    commit(repo, 'r2', { 'r.txt': '2\n' })
+    sh(repo, 'checkout', '-q', '-b', 'feature', 'main')
+    commit(repo, 'f1', { 'f.txt': '1\n' })
+    const tip = sh(repo, 'rev-parse', 'HEAD')
+    await expect(rebasePlan(repo, 'release~1')).rejects.toThrow(/not in the history of the current branch/)
+    await expect(rebaseRun(repo, sh(repo, 'rev-parse', 'release~1'), [{ sha: tip, action: 'pick' }], tip)).rejects.toThrow(/not in the history/)
+    expect(sh(repo, 'rev-parse', 'HEAD')).toBe(tip)
+    // Behind its upstream as well: the unpushed commits are edited where they are.
+    sh(repo, 'branch', '-q', '--set-upstream-to=release')
+    const plan = await rebasePlan(repo, 'release')
+    expect(plan.base).toBe(sh(repo, 'rev-parse', 'main'))
+    expect(plan.commits.map(c => c.subject)).toEqual(['f1'])
+  })
+
+  // The message is applied by an "exec" step, which Continue went on past once it had failed.
+  it('keeps a reworded message a hook refused, to apply it again on Continue', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'f.txt': 'base\n' })
+    commit(repo, 'c1', { 'f.txt': 'one\n' })
+    const hook = join(repo, '.git', 'hooks', 'commit-msg')
+    writeFileSync(hook, '#!/bin/sh\ngrep -q "^JIRA-" "$1" || { echo "missing ticket" >&2; exit 1; }\n', { mode: 0o755 })
+    const plan = await rebasePlan(repo, 'HEAD~1')
+    await expect(rebaseRun(repo, plan.base, [{ sha: plan.commits[0].sha, action: 'reword', message: 'one, reworded' }], plan.head)).rejects.toThrow()
+    expect((await status(repo)).operation).toBe('rebase')
+    // The hook fixed (or bypassed), Continue applies the message it refused.
+    rmSync(hook)
+    await ops.continueOp(repo)
+    expect(sh(repo, 'log', '-1', '--format=%s')).toBe('one, reworded')
   })
 
   it('keeps the messages of a stopped rebase when asked to edit history again', async () => {
@@ -808,6 +972,47 @@ describe('line operations', () => {
     const sel = { 0: d.hunks[0].lines.flatMap((l, i) => (l.type === 'ctx' ? [] : [i])) }
     await ops.unstageLines(repo, 'new.txt', sel, undefined, selectionFingerprint(d, sel), 'old.txt')
     expect(sh(repo, 'status', '--porcelain')).toBe('RM old.txt -> new.txt')
+  })
+
+  // The names put back into the patch's header were written in the content's encoding: git read
+  // "r\351sum\351.txt", another file, and the index got an entry of that invalid name.
+  it('unstages some lines of a new file named with accents and not stored as UTF-8', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base', { 'x.txt': 'x\n' })
+    writeFileSync(join(repo, 'résumé.txt'), Buffer.from('caf\xe9 1\nline 2\n', 'latin1'))
+    sh(repo, 'add', 'résumé.txt')
+    const d = await diff(repo, { kind: 'index', path: 'résumé.txt' }, OPTS)
+    expect(d.encoding).toBe('windows-1252')
+    const sel = { 0: [1] }
+    await ops.unstageLines(repo, 'résumé.txt', sel, undefined, selectionFingerprint(d, sel))
+    expect(sh(repo, '-c', 'core.quotepath=false', 'status', '--porcelain')).toBe('AM résumé.txt')
+    expect(execFileSync('git', ['-C', repo, 'show', ':résumé.txt']).toString('latin1')).toBe('caf\xe9 1\n')
+  })
+
+  it('unstages lines of a file renamed from a name with accents, its content not UTF-8', async () => {
+    const repo = makeRepo()
+    writeFileSync(join(repo, 'résumé.txt'), Buffer.from('caf\xe9 1\nline 2\nline 3\nline 4\n', 'latin1'))
+    commit(repo, 'base')
+    sh(repo, 'mv', 'résumé.txt', 'new.txt')
+    writeFileSync(join(repo, 'new.txt'), Buffer.from('caf\xe9 1\nLINE 2\nline 3\nline 4\n', 'latin1'))
+    sh(repo, 'add', 'new.txt')
+    const d = await diff(repo, { kind: 'index', path: 'new.txt', oldPath: 'résumé.txt' }, OPTS)
+    expect(d.oldPath).toBe('résumé.txt')
+    const sel = { 0: d.hunks[0].lines.flatMap((l, i) => (l.type === 'ctx' ? [] : [i])) }
+    await ops.unstageLines(repo, 'new.txt', sel, undefined, selectionFingerprint(d, sel), d.oldPath)
+    expect(sh(repo, '-c', 'core.quotepath=false', 'status', '--porcelain')).toBe('RM résumé.txt -> new.txt')
+  })
+
+  it('stages some lines of a deleted file named with accents and not stored as UTF-8', async () => {
+    const repo = makeRepo()
+    writeFileSync(join(repo, 'résumé.txt'), Buffer.from('caf\xe9 1\nline 2\n', 'latin1'))
+    commit(repo, 'base')
+    rmSync(join(repo, 'résumé.txt'))
+    const d = await diff(repo, { kind: 'worktree', path: 'résumé.txt' }, OPTS)
+    const sel = { 0: [0] }
+    await ops.stageLines(repo, 'résumé.txt', sel, false, undefined, selectionFingerprint(d, sel))
+    expect(sh(repo, '-c', 'core.quotepath=false', 'status', '--porcelain')).toBe('MD résumé.txt')
+    expect(execFileSync('git', ['-C', repo, 'show', ':résumé.txt']).toString('latin1')).toBe('line 2\n')
   })
 
   it('stages lines whatever diff prefixes and log options the user configured', async () => {
@@ -1011,7 +1216,11 @@ describe('conflicts', () => {
     expect(f.chunks[0]).toEqual({ kind: 'conflict', ours: ['name = cafe'], base: ['name = x'], theirs: ['name = café'] })
   })
 
-  it('resolves a submodule conflict with the side picked', async () => {
+  it.each([
+    ['the conflict view', (repo: string, path: string) => resolveWhole(repo, path, 'theirs')],
+    // The file list's "Use their version" kept ours: "checkout --theirs" does nothing to a gitlink.
+    ['the file list', (repo: string, path: string) => ops.resolve(repo, path, 'theirs')],
+  ])('resolves a submodule conflict with the side picked in %s', async (_, pick) => {
     const lib = makeRepo('lib')
     commit(lib, 'l1')
     sh(lib, 'checkout', '-q', '-b', 'a')
@@ -1031,8 +1240,24 @@ describe('conflicts', () => {
     await git(app, ['merge', 'other'], { okCodes: [1] })
     expect((await status(app)).files.find(f => f.path === 'lib')).toMatchObject({ conflicted: true, submodule: true })
     expect(await conflict(app, 'lib')).toMatchObject({ mode: 'whole', oursExists: true, theirsExists: true })
-    await resolveWhole(app, 'lib', 'theirs')
+    await pick(app, 'lib')
     expect(sh(app, 'ls-files', '-s', 'lib')).toBe(`160000 ${sh(lib, 'rev-parse', 'b')} 0\tlib`)
+  })
+
+  it.each(['short', 'log', 'diff'])('shows a submodule moved to another commit as such, with diff.submodule=%s', async format => {
+    const lib = makeRepo('lib')
+    commit(lib, 'l1')
+    const first = sh(lib, 'rev-parse', 'HEAD')
+    commit(lib, 'l2', { 'x.txt': 'x\n' })
+    const app = makeRepo('app')
+    sh(app, '-c', 'protocol.file.allow=always', 'submodule', 'add', '-q', lib, 'lib')
+    sh(app, 'commit', '-q', '-m', 'base')
+    sh(join(app, 'lib'), 'checkout', '-q', first)
+    sh(app, 'config', 'diff.submodule', format)
+    const d = await diff(app, { kind: 'worktree', path: 'lib' }, OPTS)
+    expect(d.submodule).toEqual({ before: sh(lib, 'rev-parse', 'HEAD').slice(0, 12), after: first.slice(0, 12) })
+    expect(d.typeChange).toBeFalsy()
+    await expect(ops.discardLines(app, 'lib', { 0: [0] }, undefined, selectionFingerprint(d, { 0: [0] }))).rejects.toThrow(/as a whole/)
   })
 
   it('resolves a conflict on a Git LFS file by picking a side', async () => {
@@ -1088,6 +1313,21 @@ describe('file history', () => {
     expect((await diff(root, { kind: 'commit', sha, path: 'a.txt' }, OPTS)).additions).toBe(1)
     const b = await blame(root, 'a.txt', null)
     expect(b.lines.map(l => l.sha)).toEqual([sha])
+  })
+
+  it('shows only the file\'s own change in a commit that copied it from another', async () => {
+    const repo = makeRepo()
+    const lines = Array.from({ length: 20 }, (_, i) => `line ${i}`).join('\n') + '\n'
+    commit(repo, 'one', { 'a.txt': lines })
+    write(repo, 'b.txt', lines)
+    write(repo, 'a.txt', `${lines}more\n`)
+    commit(repo, 'copy')
+    const sha = sh(repo, 'rev-parse', 'HEAD')
+    // As file history asks for it: "--follow" reported the copy, with its source as old path.
+    const d = await diff(repo, { kind: 'commit', sha, path: 'b.txt', oldPath: 'a.txt' }, OPTS)
+    expect(d.typeChange).toBeFalsy()
+    expect(d.additions).toBe(20)
+    expect(d.hunks.flatMap(h => h.lines).some(l => l.text === 'more')).toBe(false)
   })
 
   it('follows a file across a rename, paths kept as they are', async () => {
@@ -1303,6 +1543,30 @@ describe('history', () => {
     expect(readGitVersion('git version 2.35.8')).toMatchObject({ version: '2.35.8', supported: false, recommended: false })
     expect(readGitVersion('git version 3.0')).toMatchObject({ supported: true, recommended: true })
     expect(readGitVersion('not git')).toBeNull()
+    expect((await gitVersion())?.supported).toBe(true)
+  })
+
+  // A repository git refuses was taken for a plain folder, and "Create one in it?" made a second
+  // repository inside it.
+  it('tells a folder a repository may be created in from one git refuses', async () => {
+    const repo = makeRepo()
+    commit(repo, 'base')
+    mkdirSync(join(repo, 'src'))
+    expect(await isRepo(join(repo, '..'))).toBe(false)
+    expect(await isRepo(join(repo, 'src'))).toBe(true)
+    await expect(isRepo(join(repo, '.git'))).rejects.toThrow(/repository's own data/)
+    process.env.GIT_TEST_ASSUME_DIFFERENT_OWNER = '1'
+    try {
+      await expect(isRepo(join(repo, 'src'))).rejects.toThrow(/dubious ownership/)
+    } finally {
+      delete process.env.GIT_TEST_ASSUME_DIFFERENT_OWNER
+    }
+  })
+
+  it('says a repository\'s folder is gone, not that git is missing', async () => {
+    const repo = makeRepo()
+    rmSync(repo, { recursive: true, force: true })
+    await expect(git(repo, ['status'])).rejects.toThrow(/no longer exists/)
     expect((await gitVersion())?.supported).toBe(true)
   })
 

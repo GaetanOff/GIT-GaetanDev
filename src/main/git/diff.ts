@@ -3,6 +3,7 @@ import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { extname, join } from 'node:path'
 import type { DiffHunk, DiffLine, DiffOptions, DiffSource, FileDiff, LineSelection, TextEncoding } from '@shared/types'
+import { unquote } from './blame'
 import { decode, decodeOutput, detect, encode } from './encoding'
 import { git, gitOut, GitError } from './exec'
 
@@ -57,6 +58,14 @@ async function parsed(repo: string, source: DiffSource, opts: DiffOptions, out: 
   const { text, encoding } = decodeOutput(out.raw)
   // Cut at MAX_DIFF_BYTES: the end is missing, so it is shown as too large, without hunks to act on.
   const parsed = parseDiff(text, source.path, opts.force && !out.truncated)
+  // git writes paths in UTF-8, quoting unusual ones, whatever the content's encoding: decoded with
+  // that encoding (Windows-1252), a renamed file's old name came out garbled ("rÃ©sumÃ©.txt"),
+  // and sent back to git with "Unstage lines", whose diff then no longer matched the one shown.
+  if (parsed.oldPath) {
+    const end = out.raw.indexOf('\n@@')
+    const from = /^rename from (.*)$/m.exec(out.raw.subarray(0, end < 0 ? undefined : end).toString('utf8'))?.[1]
+    if (from) parsed.oldPath = unquote(from)
+  }
   if (out.truncated) {
     parsed.tooLarge = true
     parsed.truncated = true
@@ -110,6 +119,15 @@ async function rawDiff(repo: string, source: DiffSource, opts: DiffOptions): Pro
 const HUNK_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@ ?(.*)$/
 
 export function parseDiff(raw: string, path: string, force = false): FileDiff {
+  // Sections of other files: in a file's history, a copy that "--follow" reports is diffed by both
+  // names, without copy detection, which gives one section each. The source's section was taken
+  // for the second half of a type change, and both files' changes were shown mixed as one.
+  // Only the file's own sections count (two of them are a type change).
+  const sections = raw.split(/^(?=diff --git )/m).filter(Boolean)
+  if (sections.length > 1) {
+    const own = sections.filter(s => s.slice(0, s.indexOf('\n')).endsWith(` b/${path}`))
+    if (own.length && own.length < sections.length) raw = own.join('')
+  }
   const result: FileDiff = {
     path, header: [], hunks: [], binary: false, isNew: false, isDeleted: false, additions: 0, deletions: 0, encoding: 'utf8',
   }
@@ -126,9 +144,9 @@ export function parseDiff(raw: string, path: string, force = false): FileDiff {
     else if (l.startsWith('new mode') && result.modeChange) result.modeChange += ` → ${l.slice(9)}`
     else if (l.startsWith('rename from ')) result.oldPath = l.slice(12)
     else if (l.startsWith('Binary files') || l === 'GIT binary patch') result.binary = true
-    else if (l.startsWith('Subproject commit')) {
-      result.submodule ??= {}
-    }
+    // A submodule (mode 160000): its "Subproject commit" lines come in the hunk, where they were
+    // never looked for, so it showed as a two-line text file with lines to stage and discard.
+    if (/^(?:index [0-9a-f]+\.\.[0-9a-f]+|(?:new|deleted) file mode) 160000$/.test(l)) result.submodule ??= {}
   }
 
   const total = lines.length - i
@@ -308,6 +326,7 @@ function lfsPointer(d: FileDiff): FileDiff['lfs'] {
  */
 export function buildPartialPatch(d: FileDiff, selection: LineSelection, direction: 'forward' | 'reverse'): string | null {
   if (d.typeChange) throw new GitError('This file became a link or a submodule (or the reverse): stage it whole.')
+  if (d.submodule) throw new GitError('A submodule changes as a whole: stage or discard it whole.')
   const out: string[] = []
   let partial = false
 
@@ -359,11 +378,17 @@ export function buildPartialPatch(d: FileDiff, selection: LineSelection, directi
       .filter(h => !/^(rename|copy) (from|to) /.test(h))
       .map(h => (h.startsWith('diff --git ') ? `diff --git ${source} ${target}` : h.startsWith('--- ') ? `--- ${source}` : h))
   }
-  // Part of a created/deleted file is a plain modification of the target.
+  // Part of a created/deleted file is a plain modification of the target. Its missing name is
+  // taken from the header's other one, decoded and written back like the rest of the patch: the
+  // path itself, written in the content's encoding (Windows-1252), was another name to git, and an
+  // entry of that invalid name went into the index.
   if (partial && ((direction === 'reverse' && d.isNew) || (direction === 'forward' && d.isDeleted))) {
+    const named = (prefix: string) => header.find(h => h.startsWith(prefix) && h !== `${prefix}/dev/null`)?.slice(prefix.length)
+    const after = named('+++ ')
+    const before = named('--- ')
     header = header
       .filter(h => !/^(new|deleted) file mode/.test(h))
-      .map(h => (h === '--- /dev/null' ? `--- a/${d.path}` : h === '+++ /dev/null' ? `+++ b/${d.path}` : h))
+      .map(h => (h === '--- /dev/null' && after ? `--- ${after.replace(/^("?)b\//, '$1a/')}` : h === '+++ /dev/null' && before ? `+++ ${before.replace(/^("?)a\//, '$1b/')}` : h))
   }
   return [...header, ...out, ''].join('\n')
 }

@@ -261,6 +261,18 @@ class AppState {
     const t = ++this.openToken
     const entry = await api['repo:open'](id)
     if (t !== this.openToken) return
+    // Already in front (opened again from Explorer, dropped, picked with Ctrl+O): it stays as it is,
+    // refreshed. Its tab's memory from when it was last left put an old view, selection and
+    // search back, or, never left, the selection was cleared and the tool open closed.
+    if (this.repo?.id === entry.id) {
+      this.repo = entry
+      if (!this.tabs.includes(entry.id)) {
+        this.tabs = [...this.tabs, entry.id]
+        this.saveTabs()
+      }
+      await this.refreshAll()
+      return
+    }
     // A tab just closed is still in front here: it has nothing to remember.
     if (this.repo && this.repo.id !== entry.id && this.tabs.includes(this.repo.id)) this.memory.set(this.repo.id, this.snapshot())
     this.drafts[entry.id] ??= { summary: '', body: '', amend: false }
@@ -275,8 +287,9 @@ class AppState {
     this.selectedStash = null
     const mem = this.memory.get(entry.id)
     if (mem) {
-      // Show the tab as it was at once; fresh data follows.
+      // Show the tab as it was at once; fresh data follows. Taken again when the tab is left.
       Object.assign(this, mem)
+      this.memory.delete(entry.id)
     } else {
       this.status = null
       this.refs = emptyRefs()
@@ -329,14 +342,20 @@ class AppState {
     this.memory.delete(id)
     this.saveTabs()
     if (this.repo?.id !== id) return
-    const next = this.tabs[Math.min(i, this.tabs.length - 1)]
-    if (next) await this.openRepo(next).catch(e => toast('error', asError(e).message))
-    else {
-      this.repo = null
-      this.status = null
-      this.refs = emptyRefs()
-      await api['watch:set'](null)
+    // The next tab that still opens, right then left: one whose folder is gone (moved, its drive
+    // removed) failed, and the closed tab stayed on screen with no tab in front, still watched.
+    for (const next of [...this.tabs.slice(i), ...this.tabs.slice(0, i).reverse()]) {
+      try {
+        await this.openRepo(next)
+        return
+      } catch (e) {
+        toast('error', asError(e).message)
+      }
     }
+    this.repo = null
+    this.status = null
+    this.refs = emptyRefs()
+    await api['watch:set'](null)
   }
 
   cycleTab(dir: 1 | -1): void {

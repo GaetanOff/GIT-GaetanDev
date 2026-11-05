@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
-import { accessSync, constants, statSync } from 'node:fs'
+import { accessSync, constants, existsSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, isAbsolute, join } from 'node:path'
 import type { GitErrorCode } from '@shared/api'
@@ -90,6 +90,8 @@ export function findOnPath(name: string, exts = process.platform === 'win32' ? [
 }
 
 const MAX_STDERR = 1024 * 1024
+/** How long git's output may keep arriving once git has exited (see run). */
+const EXIT_GRACE_MS = 1000
 
 /** Looked up on the first call, and again after it went missing (installed or moved while the app runs). */
 let gitPath: string | null = null
@@ -104,6 +106,9 @@ const GLOBAL_ARGS = [
   '-c', 'core.quotepath=false', '-c', 'color.ui=false', '-c', 'i18n.logOutputEncoding=UTF-8',
   '-c', 'diff.noprefix=false', '-c', 'diff.mnemonicPrefix=false', '-c', 'diff.srcPrefix=a/', '-c', 'diff.dstPrefix=b/',
   '-c', 'diff.relative=false', '-c', 'diff.suppressBlankEmpty=false', '-c', 'log.showSignature=false',
+  // A submodule as "Subproject commit" lines: "log" left no hunks ("The file is empty"), and "diff"
+  // read the submodule's own files as hunks of the submodule.
+  '-c', 'diff.submodule=short',
 ]
 
 /** The git command an argument list runs: "stash" for ['-c', 'k=v', 'stash', 'push']. */
@@ -292,14 +297,37 @@ function run(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecR
       for (const line of parts) if (line.trim()) opts.onStderrLine(line)
     })
 
+    let settled = false
+    let grace: ReturnType<typeof setTimeout> | undefined
     child.on('error', (e: NodeJS.ErrnoException) => {
-      if (e.code === 'ENOENT') {
+      settled = true
+      // Node reports a working folder that is gone (a repository moved, a drive removed) as ENOENT
+      // too: "Install Git" then showed at every focus of the window, and git was looked up again.
+      if (e.code === 'ENOENT' && !existsSync(cwd)) {
+        reject(new GitError(`"${cwd}" no longer exists: it was moved, renamed or deleted, or its drive is not connected.`))
+      } else if (e.code === 'ENOENT') {
         gitPath = null
         reject(new GitError(NOT_FOUND, 'GIT_NOT_FOUND'))
       } else reject(new GitError(e.message))
     })
 
-    child.on('close', code => {
+    // 'close' waits for every process that holds git's output: a hook that leaves a job running in
+    // the background without redirecting it ("npm ci &" in post-checkout) kept the command, and the
+    // repository's queue behind it, going until that job ended. Once git itself has exited, the
+    // rest of its output gets a moment to arrive, and the job keeps running on its own.
+    child.on('exit', code => {
+      grace = setTimeout(() => {
+        child.stdout.destroy()
+        child.stderr.destroy()
+        finish(code)
+      }, EXIT_GRACE_MS)
+    })
+    child.on('close', code => finish(code))
+
+    function finish(code: number | null) {
+      if (settled) return
+      settled = true
+      clearTimeout(grace)
       const raw = Buffer.concat(out)
       const stdout = raw.toString('utf8')
       const stderr = Buffer.concat(err).toString('utf8')
@@ -308,7 +336,7 @@ function run(cwd: string, args: string[], opts: ExecOptions = {}): Promise<ExecR
       const exit = code ?? 1
       if (exit === 0 || opts.okCodes?.includes(exit)) return resolve({ stdout, stderr, code: exit, raw })
       reject(toGitError(stdout, stderr, exit))
-    })
+    }
 
     // Git may exit before reading all its input (a lock held elsewhere, a failing hook): the write then
     // fails, which 'close' already reports through the exit code. Unhandled, it would crash the main process.

@@ -41,14 +41,40 @@ export function resolveProgram(command: string): { line: string; builtin: boolea
  */
 const unsafeForCmd = (c: string) => c === '"' || c.charCodeAt(0) < 0x20
 
+/**
+ * The line with each `{path}` replaced by a reference to GDG_TARGET that the
+ * shell keeps as one quoted word, wherever the user's own quotes put it.
+ * Quoted again inside the user's quotes (`code -n "{path}"`), the reference
+ * ended up outside any: `""%GDG_TARGET%""` let cmd.exe run what follows a `&`
+ * in a file name, and sh split a path at its spaces.
+ */
+export function withTarget(line: string, posix = !win): string {
+  let out = ''
+  let quote: '"' | "'" | null = null
+  for (let i = 0; i < line.length; i++) {
+    if (line.startsWith('{path}', i)) {
+      if (posix) out += quote === '"' ? '${GDG_TARGET}' : quote === "'" ? `'"$GDG_TARGET"'` : '"$GDG_TARGET"'
+      else out += quote ? '%GDG_TARGET%' : '"%GDG_TARGET%"'
+      i += '{path}'.length - 1
+      continue
+    }
+    const c = line[i]
+    out += c
+    // sh: a backslash keeps the next character from opening or closing quotes, except within single ones.
+    if (posix && c === '\\' && quote !== "'" && i + 1 < line.length) out += line[++i]
+    else if (c === '"' && quote !== "'") quote = quote ? null : '"'
+    else if (posix && c === "'" && quote !== '"') quote = quote ? null : "'"
+  }
+  return out
+}
+
 export function launch(command: string, target: string, cwd: string): ChildProcess {
   if (win && [...target].some(unsafeForCmd)) {
     const shown = [...target].map(c => (c.charCodeAt(0) < 0x20 ? '?' : c)).join('')
     throw new Error(`"${shown}" cannot be opened: Windows file names cannot hold quotes or control characters.`)
   }
   const { line: program, builtin } = resolveProgram(command)
-  const ref = win ? '"%GDG_TARGET%"' : '"$GDG_TARGET"'
-  const line = program.includes('{path}') ? program.replaceAll('{path}', ref) : `${program} ${ref}`
+  const line = withTarget(program.includes('{path}') ? program : `${program} {path}`)
   // Only a line led by a cmd command needs cmd itself told not to search the repository.
   const env = { ...process.env, GDG_TARGET: target, ...(builtin ? { NoDefaultCurrentDirectoryInExePath: '1' } : {}) }
   const child = spawn(line, { cwd, shell: true, detached: true, stdio: 'ignore', windowsHide: false, env })

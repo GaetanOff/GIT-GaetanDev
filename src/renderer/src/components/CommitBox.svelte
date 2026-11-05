@@ -13,7 +13,6 @@
   let identity = $state<{ name: string; email: string; scope: string } | null>(null)
   let committing = $state(false)
   let summaryEl = $state<HTMLInputElement>()
-  let amendBackup: { summary: string; body: string } | null = null
   let setup = $state<{ template: string; signing: boolean }>({ template: '', signing: false })
   let authors = $state.raw<Author[]>([])
   let authorsRepo = ''
@@ -150,17 +149,17 @@
     const on = (e.target as HTMLInputElement).checked
     const d = draft
     if (on) {
-      amendBackup = { summary: d.summary, body: d.body }
+      d.amendBackup = { summary: d.summary, body: d.body }
       if (!d.summary.trim()) {
         const msg = await api['git:lastCommitMessage'](app.repo!.path).catch(() => '')
         const [summary, ...rest] = msg.split('\n')
         d.summary = summary
         d.body = rest.join('\n').trim()
       }
-    } else if (amendBackup) {
-      d.summary = amendBackup.summary
-      d.body = amendBackup.body
-      amendBackup = null
+    } else if (d.amendBackup) {
+      d.summary = d.amendBackup.summary
+      d.body = d.amendBackup.body
+      d.amendBackup = undefined
     }
     d.amend = on
     app.saveDrafts()
@@ -184,8 +183,7 @@
     try {
       if (toStage.length) await api['git:stage'](repo, toStage)
       const sha = await api['git:commit'](repo, message, d.amend, opts)
-      Object.assign(d, { ...splitTemplate(template), amend: false, coAuthors: [], prefill: undefined })
-      amendBackup = null
+      Object.assign(d, { ...splitTemplate(template), amend: false, coAuthors: [], prefill: undefined, amendBackup: undefined })
       app.saveDrafts()
       toast('success', `Committed ${sha.slice(0, 7)} to ${target}.`, { label: 'Undo', run: () => undoLastCommit({ repoId, sha }) })
     } catch (e) {

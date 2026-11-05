@@ -20,10 +20,13 @@ async function entries(repo: string, limit: number, ref = 'HEAD'): Promise<Entry
   })
 }
 
-const GROUP_END = /^(rebase|pull --rebase|pull)( -i| -m)?( \([^)]*\))? ?\((finish|abort)\): (?:returning to )?(?:refs\/heads\/)?(.*)$/
+// A pull names its entries after its whole command line ("pull --rebase --no-autostash --progress
+// (finish)", as the app runs it): only a bare "pull --rebase" was recognised, and the app's own pull
+// showed as an undo that did nothing followed by one entry per replayed commit.
+const GROUP_END = /^(rebase|pull(?: [^(]*?)?)( -i| -m)?( \([^)]*\))? ?\((finish|abort)\): (?:returning to )?(?:refs\/heads\/)?(.*)$/
 // Anchored like GROUP_END: a replayed commit whose subject held "(start)" ("rebase (pick): fix the
 // (start) button") was taken for the start, and undo went back to a half-rebased commit.
-const GROUP_START = /^(rebase|pull --rebase|pull)( -i| -m)?( \([^)]*\))? ?\(start\):/
+const GROUP_START = /^(rebase|pull(?: [^(]*?)?)( -i| -m)?( \([^)]*\))? ?\(start\):/
 
 /**
  * Where a rebased branch was before the rebase: the previous value of its own

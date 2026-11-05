@@ -20,17 +20,26 @@ function newest(dir) {
   return max
 }
 
+/** Runs a build script with Node; on failure, stops here. */
+function build(script, args = []) {
+  const r = spawnSync(process.execPath, [script, ...args], { cwd: root, encoding: 'utf8' })
+  if (r.status === 0) return
+  // The shortcut runs without a console: leave the reason where it can be found.
+  const log = join(tmpdir(), 'gaetandev-git-launch.log')
+  writeFileSync(log, `${r.stdout ?? ''}\n${r.stderr ?? ''}\n${r.error?.message ?? ''}`)
+  console.error(`Build failed, see ${log}`)
+  process.exit(r.status ?? 1)
+}
+
 const built = join(root, 'out', 'main', 'index.js')
 const sources = Math.max(newest(join(root, 'src')), mtime(join(root, 'package.json')), mtime(join(root, 'electron.vite.config.ts')))
-if (sources > mtime(built)) {
-  const r = spawnSync(process.execPath, [join(root, 'node_modules', 'electron-vite', 'bin', 'electron-vite.js'), 'build'], { cwd: root, encoding: 'utf8' })
-  if (r.status !== 0) {
-    // The shortcut runs without a console: leave the reason where it can be found.
-    const log = join(tmpdir(), 'gaetandev-git-launch.log')
-    writeFileSync(log, `${r.stdout ?? ''}\n${r.stderr ?? ''}\n${r.error?.message ?? ''}`)
-    console.error(`Build failed, see ${log}`)
-    process.exit(r.status ?? 1)
-  }
+if (sources > mtime(built)) build(join(root, 'node_modules', 'electron-vite', 'bin', 'electron-vite.js'), ['build'])
+
+// The prompt helper of Windows' OpenSSH, which `npm run build` makes after the bundles: without
+// it, a checkout's app answered every SSH passphrase or new-host question as declined.
+const helper = join(root, 'out', 'askpass', 'gdg-askpass.exe')
+if (process.platform === 'win32' && mtime(join(root, 'src', 'askpass', 'askpass.cs')) > mtime(helper)) {
+  build(join(root, 'scripts', 'build-askpass.cjs'))
 }
 
 // Nothing from a development shell leaks in: no dev server URL, no scripted screenshots, no other profile.

@@ -103,8 +103,21 @@ export async function confirmDestination(path: string, message: string, button: 
 export const opensAsProgram = (folder: string, platform = process.platform): boolean =>
   platform === 'darwin' && /\.(app|appex|bundle|framework|kext|mpkg|pkg|plugin|prefpane|qlgenerator|saver|xpc)[\\/]*$/i.test(folder)
 
-/** Stops the clone under way, if any: a large one or a stalled network no longer leaves only waiting. */
-let cloneAbort: AbortController | null = null
+/**
+ * A repository git reaches through Windows file sharing: "\\host\share",
+ * "//host/share" or "file://host/share". Reaching it sends the user's NTLM
+ * hash to that host, so the main process asks before cloning from or adding
+ * such a remote: the page could name an attacker's host.
+ */
+export const networkUrl = (url: string): boolean => isUnc(url) || /^file:\/\/(?!\/|localhost\/)[^/]/i.test(url)
+
+/**
+ * Stops a clone under way, by the folder it clones into: a large one or a
+ * stalled network no longer leaves only waiting. One for all made "Cancel
+ * clone" on a clone left running in the background stop the one started
+ * after it instead, and delete that one's folder.
+ */
+const cloneAborts = new Map<string, AbortController>()
 
 /** A folder the app was launched with; the renderer opens it instead of the last repo. */
 let launchPath: string | null = null
@@ -191,21 +204,23 @@ export function registerIpc(watcher: RepoWatcher): void {
       return upsertRepo(path)
     },
     'repo:clone': async (url, parent, name) => {
+      if (networkUrl(url) && !(await ask('Clone from this network location?', url, 'Clone'))) throw new GitError('Cancelled: nothing was cloned.', 'CANCELLED')
       const target = join(parent, name)
       // Asked before the disk is touched: looking up "\\host\share" sends the user's NTLM hash there.
       await confirmDestination(target, 'Clone the repository into this folder?', 'Clone')
       if (existsSync(target)) throw new GitError(`"${target}" already exists.`)
       mkdirSync(parent, { recursive: true })
       const abort = new AbortController()
-      cloneAbort = abort
+      const key = folderKey(target)
+      cloneAborts.set(key, abort)
       try {
         await ops.clone(url, parent, name, progress, abort.signal)
       } finally {
-        if (cloneAbort === abort) cloneAbort = null
+        if (cloneAborts.get(key) === abort) cloneAborts.delete(key)
       }
       return upsertRepo(target)
     },
-    'repo:cancelClone': async () => cloneAbort?.abort(),
+    'repo:cancelClone': async (parent, name) => cloneAborts.get(folderKey(join(parent, name)))?.abort(),
     'repo:remove': async id => removeRepo(id),
     'repo:open': async id => {
       const r = repoById(id)
@@ -293,7 +308,11 @@ export function registerIpc(watcher: RepoWatcher): void {
     'git:stashApply': async (repo, index, pop, sha) => ops.stashApply(repo, index, pop, sha),
     'git:stashDrop': async (repo, index, sha) => ops.stashDrop(repo, index, sha),
     'git:stashFiles': async (repo, index) => stashDetail(repo, index),
-    'git:addRemote': async (repo, name, url) => ops.addRemote(repo, name, url),
+    'git:addRemote': async (repo, name, url) => {
+      // Fetched at once and by every background fetch: asked here, where a compromised page can neither show nor answer it.
+      if (networkUrl(url) && !(await ask('Add a remote on this network location?', url, 'Add remote'))) throw new GitError('Cancelled: no remote was added.', 'CANCELLED')
+      return ops.addRemote(repo, name, url)
+    },
     'git:removeRemote': async (repo, name) => ops.removeRemote(repo, name),
     'git:submoduleUpdate': async (repo, path) => submoduleUpdate(repo, path, progress),
     'git:lfsPull': async repo => lfsPull(repo, progress),
@@ -578,6 +597,7 @@ export function checkArgs(channel: string, args: unknown[]): void {
   if ((channel === 'git:resolveContent' || channel === 'git:resolveWhole') && args[channel === 'git:resolveWhole' ? 3 : 4] !== undefined && typeof args[channel === 'git:resolveWhole' ? 3 : 4] !== 'string') {
     throw new GitError('Invalid file state.')
   }
+  if (channel === 'repo:cancelClone' && (typeof args[0] !== 'string' || typeof args[1] !== 'string')) throw new GitError('Invalid clone.')
   if (channel === 'repo:pin' && typeof args[1] !== 'boolean') throw new GitError('Invalid pin.')
   if (channel === 'askpass:respond' && (typeof args[0] !== 'string' || (args[1] !== null && typeof args[1] !== 'string'))) throw new GitError('Invalid answer.')
   for (const r of refs) {
