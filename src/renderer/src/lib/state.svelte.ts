@@ -342,14 +342,20 @@ class AppState {
     this.memory.delete(id)
     this.saveTabs()
     if (this.repo?.id !== id) return
-    const next = this.tabs[Math.min(i, this.tabs.length - 1)]
-    if (next) await this.openRepo(next).catch(e => toast('error', asError(e).message))
-    else {
-      this.repo = null
-      this.status = null
-      this.refs = emptyRefs()
-      await api['watch:set'](null)
+    // The next tab that still opens, right then left: one whose folder is gone (moved, its drive
+    // removed) failed, and the closed tab stayed on screen with no tab in front, still watched.
+    for (const next of [...this.tabs.slice(i), ...this.tabs.slice(0, i).reverse()]) {
+      try {
+        await this.openRepo(next)
+        return
+      } catch (e) {
+        toast('error', asError(e).message)
+      }
     }
+    this.repo = null
+    this.status = null
+    this.refs = emptyRefs()
+    await api['watch:set'](null)
   }
 
   cycleTab(dir: 1 | -1): void {
