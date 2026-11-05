@@ -17,7 +17,15 @@ const quote = (p: string) => `'${posix(p).replace(/'/g, `'\\''`)}'`
 export async function rebasePlan(repo: string, symbolicBase: string | null): Promise<RebasePlan> {
   // Both ends as commits, read once: the plan and the rebase that follows use the same range.
   const head = await resolveCommit(repo, 'HEAD')
-  const base = symbolicBase && await resolveCommit(repo, symbolicBase)
+  let base = symbolicBase && await resolveCommit(repo, symbolicBase)
+  const branch = await currentBranch(repo)
+  const upstream = branch ? await upstreamOf(repo, branch) : null
+  if (base && !(await isAncestor(repo, base, head))) {
+    // The unpushed commits of a branch also behind its upstream: edited where they are, since the
+    // fork. Replayed onto the upstream, they took in its new commits as a pull would.
+    if (upstream && base === await resolveCommit(repo, upstream)) base = (await gitOut(repo, ['merge-base', base, head])).trim()
+    else throw new GitError(NOT_IN_BRANCH)
+  }
   const range = base ? `${base}..${head}` : head
   // Full messages are needed (squashing combines them), so a range from the root of a long history is
   // large: past 32 MB of it, the user is asked for a later start instead of the app filling memory.
@@ -30,8 +38,6 @@ export async function rebasePlan(repo: string, symbolicBase: string | null): Pro
   })
 
   let pushed = 0
-  const branch = await currentBranch(repo)
-  const upstream = branch ? await upstreamOf(repo, branch) : null
   if (upstream && commits.length) {
     const local = +(await gitOut(repo, ['rev-list', '--count', range, `^${upstream}`])).trim()
     pushed = commits.length - local
@@ -44,6 +50,16 @@ export async function rebasePlan(repo: string, symbolicBase: string | null): Pro
 async function resolveCommit(repo: string, rev: string): Promise<string> {
   return (await gitOut(repo, ['rev-parse', '--verify', '--end-of-options', `${rev}^{commit}`])).trim()
 }
+
+const isAncestor = (repo: string, a: string, b: string) =>
+  git(repo, ['merge-base', '--is-ancestor', a, b], { okCodes: [1] }).then(r => r.code === 0)
+
+/**
+ * A base outside the branch's history ("Edit history from here" on another
+ * branch's commit) is refused: the rebase moved the branch onto it, a plan
+ * that never showed the commit picked.
+ */
+const NOT_IN_BRANCH = 'That commit is not in the history of the current branch: editing history from it would move the branch onto it. Check out its branch first.'
 
 /**
  * Asks git for the todo it would run with `--rebase-merges` (labels, resets,
@@ -139,6 +155,7 @@ export async function rebaseRun(repo: string, base: string | null, steps: Rebase
   if ((await resolveCommit(repo, 'HEAD')) !== head) {
     throw new GitError('The branch changed since this plan was shown. Reopen "Edit history" to see the new commits.')
   }
+  if (base && !(await isAncestor(repo, base, head))) throw new GitError(NOT_IN_BRANCH)
 
   const gd = await gitDir(repo)
   // A rebase stopped on a conflict still reads its messages from gdg-rebase when it continues:

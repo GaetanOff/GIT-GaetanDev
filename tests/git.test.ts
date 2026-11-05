@@ -777,6 +777,26 @@ describe('edit history', () => {
     expect(sh(repo, 'log', '-1', '--format=%s')).toBe('made elsewhere')
   })
 
+  // `rebase -i <base>` moved the branch onto a base outside it, from a plan that never showed it.
+  it('edits only the current branch\'s own history', async () => {
+    const repo = makeRepo()
+    commit(repo, 'b0', { 'b.txt': '0\n' })
+    sh(repo, 'checkout', '-q', '-b', 'release')
+    commit(repo, 'r1', { 'r.txt': '1\n' })
+    commit(repo, 'r2', { 'r.txt': '2\n' })
+    sh(repo, 'checkout', '-q', '-b', 'feature', 'main')
+    commit(repo, 'f1', { 'f.txt': '1\n' })
+    const tip = sh(repo, 'rev-parse', 'HEAD')
+    await expect(rebasePlan(repo, 'release~1')).rejects.toThrow(/not in the history of the current branch/)
+    await expect(rebaseRun(repo, sh(repo, 'rev-parse', 'release~1'), [{ sha: tip, action: 'pick' }], tip)).rejects.toThrow(/not in the history/)
+    expect(sh(repo, 'rev-parse', 'HEAD')).toBe(tip)
+    // Behind its upstream as well: the unpushed commits are edited where they are.
+    sh(repo, 'branch', '-q', '--set-upstream-to=release')
+    const plan = await rebasePlan(repo, 'release')
+    expect(plan.base).toBe(sh(repo, 'rev-parse', 'main'))
+    expect(plan.commits.map(c => c.subject)).toEqual(['f1'])
+  })
+
   // The message is applied by an "exec" step, which Continue went on past once it had failed.
   it('keeps a reworded message a hook refused, to apply it again on Continue', async () => {
     const repo = makeRepo()
