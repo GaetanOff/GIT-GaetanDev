@@ -15,8 +15,8 @@ concurrency:
 permissions: {}
 
 jobs:
-  # Everything that runs the project's code and its dependencies (npm ci, lint, tests, the
-  # build) runs here, with a read-only token: a dependency compromised could not publish.
+  # Everything that runs the project's code and its dev tools (npm ci, lint, tests, the build)
+  # runs here, with a read-only token and no secret: a dependency compromised could not publish.
   build:
     runs-on: windows-latest
     timeout-minutes: 45
@@ -57,6 +57,39 @@ jobs:
       - run: npm run check
       - run: npm test
       - run: npm run build
+      - uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: app
+          if-no-files-found: error
+          path: out/
+
+  # The code-signing certificate and its password are only ever in this job. Packaged in the job
+  # above, they were within reach of every dev dependency's install script and of everything the
+  # lint, checks, tests and build ran, any of which could patch electron-builder to take them. Here
+  # no install script runs and nothing of the project's tooling does: only electron-builder, on
+  # the bundles built above.
+  package:
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: 24
+          cache: npm
+      # The app's own dependencies (packed into it) and electron-builder, which downloads Electron itself.
+      - run: npm ci --ignore-scripts
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: app
+          path: out
       # The installer and latest.yml (what auto-update reads), not published from here.
       - run: npx electron-builder --win --publish never
         env:
@@ -82,7 +115,7 @@ jobs:
   # Only this job can write to the repository, and it runs nothing of the project: it uploads
   # the files built above, then publishes the release once every one is in place.
   publish:
-    needs: build
+    needs: package
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
