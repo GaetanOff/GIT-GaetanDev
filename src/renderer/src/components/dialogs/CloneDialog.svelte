@@ -76,7 +76,9 @@
       try { localStorage.setItem('clone-parent', parent) } catch { /* ignore */ }
       const entry = await api['repo:clone'](url.trim(), into.parent, into.name)
       if (hidden) {
-        // The user is at work elsewhere by now: the new repository does not take the front unasked.
+        // In the list of repositories (Ctrl+T, Welcome) like any other, though not opened: the user is
+        // at work elsewhere by now, and the new repository does not take the front unasked.
+        app.repos = await api['repo:list']().catch(() => app.repos)
         toast('success', `Cloned ${entry.name}.`, { label: 'Open', run: () => void app.openRepo(entry.id) })
         return
       }
